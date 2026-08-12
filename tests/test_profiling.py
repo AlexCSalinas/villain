@@ -1,0 +1,178 @@
+"""Priors, archetype matching, exploits and skill.
+
+Several of these are regression tests for mistakes made while building the
+model, and they are named for the mistake rather than the fix.
+"""
+
+import pytest
+
+from villain.archetypes import ARCHETYPES, IMPORTANCE, match, target_frequency
+from villain.exploits import MIN_OPPS, breakeven_fold, find_leaks
+from villain.priors import (HEADS_UP, POPULATION, REGIMES, THREE, prior_for,
+                            population_mean, regime, shrink)
+from villain.profile import PROFILE_FEATURES, build_profile, build_profiles
+from villain.skill import rate
+from villain.stats import StatBook
+
+
+# -- priors -----------------------------------------------------------------
+
+@pytest.mark.parametrize("players,expected", [
+    (2, "hu"), (3, "3max"), (4, "6max"), (6, "6max"), (7, "full"), (9, "full")])
+def test_regime_boundaries(players, expected):
+    assert regime(players) == expected
+
+
+def test_three_handed_sits_between_heads_up_and_six_max():
+    """3-max is its own game; borrowing 6-max priors would call everyone a maniac."""
+    for stat in ("vpip", "pfr", "three_bet"):
+        hu = POPULATION["hu"][stat]
+        three = POPULATION["3max"][stat]
+        six = POPULATION["6max"][stat]
+        assert six < three < hu, stat
+
+
+def test_shrinkage_moves_with_evidence():
+    mean, strength = prior_for("fold_to_cbet:flop", "hu")
+    thin = shrink(3, 3, mean, strength)
+    thick = shrink(60, 80, mean, strength)
+    assert abs(thin.value - mean) < 0.10        # 3 of 3 barely moves it
+    assert thick.value > 0.60                   # 60 of 80 does
+    assert thin.weight < thick.weight
+    assert thin.hi - thin.lo > thick.hi - thick.lo
+
+
+def test_estimate_exposes_its_posterior():
+    est = shrink(10, 20, 0.4, 25)
+    assert est.prob_above(0.0) == pytest.approx(1.0, abs=1e-6)
+    assert est.prob_above(est.value) == pytest.approx(0.5, abs=0.05)
+    assert est.prob_above(0.3) > est.prior_prob_above(0.3)
+
+
+def test_cross_regime_priors_borrow_from_the_same_player():
+    """Someone who never folds three-handed is a better prior than the field."""
+    three = StatBook(player_id="p", regime="3max", hands=200)
+    three.ratios["fold_vs_bet:turn"].hits = 5
+    three.ratios["fold_vs_bet:turn"].opps = 100
+    heads_up = StatBook(player_id="p", regime="hu", hands=10)
+    heads_up.ratios["fold_vs_bet:turn"].hits = 1
+    heads_up.ratios["fold_vs_bet:turn"].opps = 2
+
+    alone = build_profile(heads_up)
+    borrowed = build_profile(heads_up, others={"3max": three})
+    assert borrowed.get("fold_vs_bet:turn") < alone.get("fold_vs_bet:turn")
+    assert borrowed.borrowed_from == ["3max"]
+
+
+# -- archetypes -------------------------------------------------------------
+
+def test_every_archetype_is_recovered_from_its_own_frequencies(synth_profile):
+    for regime_name in ("hu", "3max", "6max"):
+        for arch in ARCHETYPES:
+            profile = synth_profile(arch.name, regime=regime_name, opps=60)
+            assert match(profile)[0] == arch.name, f"{arch.name} at {regime_name}"
+
+
+def test_thin_samples_stay_uncertain(synth_profile):
+    thin = synth_profile("station", opps=4)
+    thick = synth_profile("station", opps=200)
+    assert match(thin)[1] < match(thick)[1]
+    assert match(thick)[1] > 0.8
+
+
+def test_archetypes_are_scored_over_a_common_feature_set():
+    """Regression: scoring each prototype over only the features it names made
+    whichever prototype named the fewest win every time."""
+    counts = {a.name: len(a.traits) for a in ARCHETYPES}
+    assert min(counts.values()) < max(counts.values())      # they do differ
+    book = StatBook(player_id="flat", regime="6max", hands=300)
+    for feature in PROFILE_FEATURES:
+        pop = population_mean(feature, "6max")
+        book.ratios[feature].hits = pop * 100
+        book.ratios[feature].opps = 100
+    book.meters["table_size"].add(6, 1)
+    # A player who is exactly average must land on the average archetype.
+    assert match(build_profile(book))[0] == "tag"
+
+
+def test_archetype_targets_track_table_size():
+    """The same prototype means different frequencies at different table sizes."""
+    station = next(a for a in ARCHETYPES if a.name == "station")
+    assert (target_frequency(station, "vpip", "hu")
+            > target_frequency(station, "vpip", "6max"))
+
+
+def test_feature_importance_is_shared_not_per_archetype():
+    """Per-archetype weights would make the likelihoods incomparable."""
+    for arch in ARCHETYPES:
+        assert not hasattr(arch, "weights")
+    assert set(IMPORTANCE) <= set(PROFILE_FEATURES)
+
+
+# -- exploits ---------------------------------------------------------------
+
+def test_breakeven_folds_follow_pot_odds():
+    assert breakeven_fold(0.5) == pytest.approx(1 / 3)
+    assert breakeven_fold(1.0) == pytest.approx(0.5)
+    assert breakeven_fold(0.66) == pytest.approx(0.397, abs=0.002)
+
+
+def test_a_leak_needs_evidence_not_just_a_prior():
+    """Regression: population frequencies sitting near a breakeven point made
+    every unseen player look exploitable."""
+    empty = StatBook(player_id="new", regime="hu", hands=3)
+    empty.ratios["fold_vs_bet:river"].hits = 1
+    empty.ratios["fold_vs_bet:river"].opps = 1
+    empty.meters["table_size"].add(2, 1)
+    assert find_leaks(build_profile(empty)) == []
+
+
+def test_overfolding_is_detected_and_priced(synth_profile):
+    profile = synth_profile("overfolder", regime="hu", opps=120)
+    leaks = find_leaks(profile)
+    assert any(l.id.startswith("overfold") for l in leaks)
+    top = leaks[0]
+    assert top.severity > 0
+    assert top.value > top.threshold
+    assert top.opps >= MIN_OPPS
+
+
+def test_stations_get_the_opposite_advice(synth_profile):
+    leaks = find_leaks(synth_profile("station", regime="hu", opps=120))
+    ids = {l.id for l in leaks}
+    assert "station_turn" in ids or "station_river" in ids
+    assert not any(i.startswith("overfold") for i in ids)
+
+
+def test_leaks_are_sorted_by_money(synth_profile):
+    leaks = find_leaks(synth_profile("overfolder", regime="hu", opps=150))
+    assert leaks == sorted(leaks, key=lambda l: -l.severity)
+
+
+# -- skill ------------------------------------------------------------------
+
+def test_thin_samples_are_pulled_toward_average(synth_profile):
+    thin = rate(synth_profile("maniac", opps=3))
+    assert 40 < thin.score < 60
+    assert thin.confidence < 0.3
+
+
+def test_exploitable_players_rate_below_solid_ones(synth_profile):
+    solid = rate(synth_profile("tag", regime="hu", opps=150))
+    leaky = rate(synth_profile("station", regime="hu", opps=150))
+    assert solid.score > leaky.score
+    assert leaky.exploitability > solid.exploitability
+
+
+def test_tightness_is_penalised_less_than_looseness(synth_profile):
+    """A nit gives up value; a maniac gives up money. They are not equal errors."""
+    nit = rate(synth_profile("nit", regime="6max", opps=150))
+    maniac = rate(synth_profile("maniac", regime="6max", opps=150))
+    assert nit.score > maniac.score
+
+
+def test_rating_components_are_transparent(synth_profile):
+    skill = rate(synth_profile("lag", regime="hu", opps=120))
+    assert skill.components
+    assert all(0 <= c.score <= 100 for c in skill.components)
+    assert any(c.name == "resistance to exploitation" for c in skill.components)

@@ -1,0 +1,25 @@
+[project]
+name = "villain"
+version = "0.1.0"
+description = "Profile poker opponents from hand histories: exploitative buckets, priced leaks and a skill rating that survives small samples"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+]
+
+[project.scripts]
+villain = "villain.cli:main"
+villain-ui = "villain.web:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["villain*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
