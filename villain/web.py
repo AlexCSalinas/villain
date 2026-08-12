@@ -923,7 +923,7 @@ PAGE = r"""<!doctype html>
     position: relative; padding: 0 0 0 16px; margin: 0 0 10px;
   }
   .narration ul.suggested li::before {
-    content: "\u2013"; position: absolute; left: 0; color: var(--red);
+    content: "\2013"; position: absolute; left: 0; color: var(--red);
   }
   .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
   .ev { display: grid; grid-template-columns: 54px 1fr auto; gap: 10px;
