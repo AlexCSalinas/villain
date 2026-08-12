@@ -72,8 +72,15 @@ POPULATION: dict[str, dict[str, float]] = {
         "donk:flop": 0.06, "donk:turn": 0.06, "donk:river": 0.06,
         "probe:turn": 0.30, "probe:river": 0.30,
         "wwsf": 0.47, "wtsd": 0.32, "wsd": 0.52,
-        "aggression:flop": 0.42, "aggression:turn": 0.40, "aggression:river": 0.36,
+        # With checks in the aggression denominator (see profile.DERIVED).
+        "aggression:flop": 0.32, "aggression:turn": 0.30, "aggression:river": 0.27,
         "tank_fold": 0.12, "snap_call": 0.15, "snap_aggro": 0.10,
+        "tank_fold:pf": 0.12, "tank_fold:flop": 0.12,
+        "tank_fold:turn": 0.12, "tank_fold:river": 0.12,
+        "snap_call:pf": 0.15, "snap_call:flop": 0.15,
+        "snap_call:turn": 0.15, "snap_call:river": 0.15,
+        "snap_aggro:pf": 0.10, "snap_aggro:flop": 0.10,
+        "snap_aggro:turn": 0.10, "snap_aggro:river": 0.10,
         "river_bet_bluff": 0.30, "sd_light_call": 0.35,
     },
     SHORT: {
@@ -89,8 +96,14 @@ POPULATION: dict[str, dict[str, float]] = {
         "donk:flop": 0.05, "donk:turn": 0.05, "donk:river": 0.05,
         "probe:turn": 0.28, "probe:river": 0.28,
         "wwsf": 0.45, "wtsd": 0.27, "wsd": 0.53,
-        "aggression:flop": 0.38, "aggression:turn": 0.36, "aggression:river": 0.33,
+        "aggression:flop": 0.28, "aggression:turn": 0.27, "aggression:river": 0.25,
         "tank_fold": 0.12, "snap_call": 0.15, "snap_aggro": 0.10,
+        "tank_fold:pf": 0.12, "tank_fold:flop": 0.12,
+        "tank_fold:turn": 0.12, "tank_fold:river": 0.12,
+        "snap_call:pf": 0.15, "snap_call:flop": 0.15,
+        "snap_call:turn": 0.15, "snap_call:river": 0.15,
+        "snap_aggro:pf": 0.10, "snap_aggro:flop": 0.10,
+        "snap_aggro:turn": 0.10, "snap_aggro:river": 0.10,
         "river_bet_bluff": 0.28, "sd_light_call": 0.33,
     },
 }
@@ -107,9 +120,9 @@ POPULATION[THREE] = dict(
     cold_call=0.26, wwsf=0.46, wtsd=0.29, wsd=0.53,
     aggression__flop=0.40,
 )
-POPULATION[THREE]["aggression:flop"] = 0.40
-POPULATION[THREE]["aggression:turn"] = 0.38
-POPULATION[THREE]["aggression:river"] = 0.35
+POPULATION[THREE]["aggression:flop"] = 0.30
+POPULATION[THREE]["aggression:turn"] = 0.28
+POPULATION[THREE]["aggression:river"] = 0.26
 POPULATION[THREE].pop("aggression__flop", None)
 POPULATION[FULL] = dict(POPULATION[SHORT], vpip=0.20, pfr=0.15, rfi=0.20,
                         three_bet=0.06, steal=0.30, wtsd=0.25)
@@ -172,7 +185,7 @@ SPREAD = {
     "fold_vs_bet:flop": 0.45, "fold_vs_bet:turn": 0.48, "fold_vs_bet:river": 0.50,
     "check_raise:flop": 0.70, "donk:flop": 0.70,
     "wwsf": 0.32, "wtsd": 0.42, "wsd": 0.32,
-    "aggression:flop": 0.50, "aggression:turn": 0.52, "aggression:river": 0.52,
+    "aggression:flop": 0.48, "aggression:turn": 0.50, "aggression:river": 0.50,
     "limp": 1.00, "bb_defend": 0.45,
 }
 DEFAULT_SPREAD = 0.50

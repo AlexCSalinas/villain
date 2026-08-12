@@ -328,7 +328,7 @@ def test_weak_spots_explain_the_rating(synth_profile):
     assert weak, "a limper should have a visibly weak component"
     assert weak == sorted(weak, key=lambda c: c.score)
     assert all(c.score < WEAK_COMPONENT for c in weak)
-    assert all(c.name != "resistance to exploitation" for c in weak)
+    assert all(c.name != "Resistance to exploitation" for c in weak)
 
 
 def test_every_rated_component_is_explained():

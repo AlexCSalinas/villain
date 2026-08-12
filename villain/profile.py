@@ -33,13 +33,19 @@ PROFILE_FEATURES = [
 ]
 
 # Frequencies computed from other counters rather than counted directly.
+# Aggression includes checks in the denominator: "of everything they do" means
+# check/call/fold/bet/raise. Omitting checks made a 50/50 bet-or-check player
+# look 100% aggressive and polluted archetype + skill reads.
 DERIVED = {
     "aggression:flop": (("act:flop:bet", "act:flop:raise"),
-                        ("act:flop:bet", "act:flop:raise", "act:flop:call", "act:flop:fold")),
+                        ("act:flop:bet", "act:flop:raise", "act:flop:call",
+                         "act:flop:fold", "act:flop:check")),
     "aggression:turn": (("act:turn:bet", "act:turn:raise"),
-                        ("act:turn:bet", "act:turn:raise", "act:turn:call", "act:turn:fold")),
+                        ("act:turn:bet", "act:turn:raise", "act:turn:call",
+                         "act:turn:fold", "act:turn:check")),
     "aggression:river": (("act:river:bet", "act:river:raise"),
-                         ("act:river:bet", "act:river:raise", "act:river:call", "act:river:fold")),
+                         ("act:river:bet", "act:river:raise", "act:river:call",
+                          "act:river:fold", "act:river:check")),
 }
 
 #: How much a player's stats in a *neighbouring* table size are worth as a

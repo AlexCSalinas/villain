@@ -210,10 +210,43 @@ STATS: dict[str, dict[str, str]] = {
                 "actions are the strong ones.",
         "low": "They act at a steady speed — less timing information available.",
     },
+    "tank_fold:flop": {
+        "what": "How often a flop fold came after a long pause.",
+        "high": "Flop tanks that end in a fold mean the bet already worked. "
+                "Respect a flop tank-call.",
+        "low": "Steady flop timing — less to read on the first street.",
+    },
+    "tank_fold:turn": {
+        "what": "How often a turn fold came after a long pause.",
+        "high": "Turn tanks are expensive tells. A pause-then-fold means "
+                "pressure worked; a pause-then-call means give up.",
+        "low": "Steady turn timing — lean on frequencies instead.",
+    },
+    "tank_fold:river": {
+        "what": "How often a river fold came after a long pause.",
+        "high": "River tanks that fold mean the bluff was always getting "
+                "there. Size up next time.",
+        "low": "Steady river timing — less clock information on the end.",
+    },
     "snap_call": {
         "what": "How often a call came instantly.",
         "high": "Instant calls are weak-but-live hands, never traps. Keep betting.",
         "low": "They think before calling — timing tells you less.",
+    },
+    "snap_call:flop": {
+        "what": "How often a flop call came instantly.",
+        "high": "Snap flop calls are weak-but-live. Barrel the turn.",
+        "low": "They pause before calling flops — less of a speed tell.",
+    },
+    "snap_call:turn": {
+        "what": "How often a turn call came instantly.",
+        "high": "Snap turn calls cannot raise. Fire the river.",
+        "low": "They think on the turn — speed is less informative.",
+    },
+    "snap_call:river": {
+        "what": "How often a river call came instantly.",
+        "high": "Snap river calls are bluff-catchers. Value bet thinner.",
+        "low": "They deliberate on rivers — less to read from speed.",
     },
 }
 
@@ -256,26 +289,26 @@ TERMS: dict[str, str] = {
 #: things whether or not a statistical test clears, and saying nothing about
 #: them makes a weak player look unreadable.
 COMPONENTS: dict[str, str] = {
-    "hand selection": "They play the wrong hands -- too many, too few, or "
+    "Hand selection": "They play the wrong hands -- too many, too few, or "
                       "entering pots by calling. Punish it before the flop by "
                       "raising more of your own hands against them.",
-    "preflop aggression": "They call where they should raise. Their calling "
+    "Preflop aggression": "They call where they should raise. Their calling "
                           "range is capped, so bet at them after the flop and "
                           "believe them when they finally raise.",
-    "postflop aggression": "Their betting after the flop is off -- too passive "
+    "Postflop aggression": "Their betting after the flop is off -- too passive "
                            "to protect their good hands, or too busy to have "
                            "them. Either way their bets and checks say more "
                            "than they should.",
-    "discipline vs bets": "They fold at the wrong frequencies when facing "
+    "Discipline vs bets": "They fold at the wrong frequencies when facing "
                           "bets. Whichever way they err, the answer is to "
                           "bet more or bluff less accordingly.",
-    "showdown judgement": "They arrive at showdown with the wrong hands -- "
+    "Showdown judgement": "They arrive at showdown with the wrong hands -- "
                           "paying off too often, or folding hands that were "
                           "good. Value bet thinner against them.",
-    "bet sizing": "Their sizes are readable or badly chosen. One size for "
+    "Bet sizing": "Their sizes are readable or badly chosen. One size for "
                   "every situation means the size tells you nothing they meant "
                   "it to, and often a lot they did not.",
-    "resistance to exploitation": "How much money the leaks found against them "
+    "Resistance to exploitation": "How much money the leaks found against them "
                                   "are worth in total.",
 }
 

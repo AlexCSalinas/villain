@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .archetypes import ARCHETYPE_BY_NAME, target_frequency
-from .exploits import find_leaks
+from .exploits import Leak, dedupe_leaks, find_leaks, leak_family
 from .profile import Profile
 
 TIERS = [
@@ -38,6 +38,15 @@ TIERS = [
     (22, "recreational", "Plays by feel; several large and reliable leaks."),
     (0, "beginner", "Fundamental errors on most streets."),
 ]
+
+
+def deduped_exploitability(leaks: list[Leak]) -> float:
+    """Sum severities after taking the max within each overlapping leak family."""
+    best: dict[str, float] = {}
+    for leak in leaks:
+        key = leak_family(leak.id)
+        best[key] = max(best.get(key, 0.0), leak.severity)
+    return sum(best.values())
 
 
 @dataclass
@@ -65,7 +74,7 @@ class Skill:
 
 
 def rate(profile: Profile) -> Skill:
-    exploitability = sum(l.severity for l in find_leaks(profile, min_confidence=0.55))
+    exploitability = deduped_exploitability(find_leaks(profile, min_confidence=0.55))
     components = [
         _preflop_selection(profile),
         _preflop_aggression(profile),
@@ -137,7 +146,7 @@ def _preflop_selection(profile: Profile) -> Component | None:
         # which is only an error if it is not backed up after the flop.
         score *= max(0.35, 1.0 - 1.6 * (limp - 0.10))
         note = f"limps {100 * limp:.0f}% of first-in spots"
-    return Component("hand selection", score, 1.1, note)
+    return Component("Hand selection", score, 1.1, note)
 
 
 def _preflop_aggression(profile: Profile) -> Component | None:
@@ -154,7 +163,7 @@ def _preflop_aggression(profile: Profile) -> Component | None:
     if three_bet is not None and profile.opps("three_bet") >= 12 and three_bet < 0.04:
         score *= 0.75
         note += ", almost never three-bets"
-    return Component("preflop aggression", score, 1.2, note)
+    return Component("Preflop aggression", score, 1.2, note)
 
 
 def _postflop_aggression(profile: Profile) -> Component | None:
@@ -168,7 +177,7 @@ def _postflop_aggression(profile: Profile) -> Component | None:
     if not scores:
         return None
     score = sum(s * w for s, w in zip(scores, weights)) / sum(weights)
-    return Component("postflop aggression", score, 1.2)
+    return Component("Postflop aggression", score, 1.2)
 
 
 def _discipline(profile: Profile) -> Component | None:
@@ -183,7 +192,7 @@ def _discipline(profile: Profile) -> Component | None:
         scores.append(_band_score(value, 0.44, 0.16))
     if not scores:
         return None
-    return Component("discipline vs bets", sum(scores) / len(scores), 1.4)
+    return Component("Discipline vs bets", sum(scores) / len(scores), 1.4)
 
 
 def _showdown_judgement(profile: Profile) -> Component | None:
@@ -195,7 +204,7 @@ def _showdown_judgement(profile: Profile) -> Component | None:
     score = _band_score(wsd, _solid(profile, "wsd") + 0.04, 0.16)
     if wtsd is not None and profile.opps("wtsd") >= 12:
         score = 0.65 * score + 0.35 * _band_score(wtsd, _solid(profile, "wtsd"), 0.10)
-    return Component("showdown judgement", score, 1.0)
+    return Component("Showdown judgement", score, 1.0)
 
 
 def _sizing(profile: Profile) -> Component | None:
@@ -216,7 +225,7 @@ def _sizing(profile: Profile) -> Component | None:
                 notes.append(f"one size on the {street}")
     if not scores:
         return None
-    return Component("bet sizing", sum(scores) / len(scores), 0.7, ", ".join(notes))
+    return Component("Bet sizing", sum(scores) / len(scores), 0.7, ", ".join(notes))
 
 
 def _exploitability_component(exploitability: float, profile: Profile) -> Component:
@@ -231,7 +240,7 @@ def _exploitability_component(exploitability: float, profile: Profile) -> Compon
         note = f"~{exploitability:.1f} bb/100 available against them"
     else:
         note = "no leak clears the evidence bar yet"
-    return Component("resistance to exploitation", score, round(weight, 2), note)
+    return Component("Resistance to exploitation", score, round(weight, 2), note)
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +301,7 @@ def weaknesses(skill: Skill, limit: int = 3) -> list[Component]:
     it a player rated 68 with no leaks listed looks identical to one rated 90.
     """
     rated = [c for c in skill.components
-             if c.weight > 0 and c.name != "resistance to exploitation"]
+             if c.weight > 0 and c.name != "Resistance to exploitation"]
     weak = [c for c in sorted(rated, key=lambda c: c.score) if c.score < WEAK_COMPONENT]
     return weak[:limit]
 

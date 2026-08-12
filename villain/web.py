@@ -52,7 +52,8 @@ from .skill import weaknesses
 from .narrate import Unavailable, enabled as narrator_enabled, narrate
 from .parsers import UnknownFormat, parse_file
 from .priors import population_mean
-from .profile import build_profiles, build_unified
+from .profile import build_profiles, build_unified, primary_regime
+from .timing import timing_tells
 from .replay import replay
 
 # Stats worth a row in the profile view, in reading order.
@@ -72,6 +73,14 @@ DISPLAY_STATS = [
     ("wsd", "won at showdown", "of showdowns reached"),
     ("aggression:flop", "flop aggression", "bets+raises of all actions"),
     ("aggression:turn", "turn aggression", "bets+raises of all actions"),
+    ("tank_fold", "tank-fold", "folds after a long pause"),
+    ("tank_fold:flop", "tank-fold flop", "flop folds after a long pause"),
+    ("tank_fold:turn", "tank-fold turn", "turn folds after a long pause"),
+    ("tank_fold:river", "tank-fold river", "river folds after a long pause"),
+    ("snap_call", "snap-call", "calls made instantly"),
+    ("snap_call:flop", "snap-call flop", "flop calls made instantly"),
+    ("snap_call:turn", "snap-call turn", "turn calls made instantly"),
+    ("snap_call:river", "snap-call river", "river calls made instantly"),
 ]
 
 # Stats whose exploit threshold is worth drawing as a second reference tick.
@@ -122,10 +131,28 @@ def profile_payload(profile, player_id: int | None = None) -> dict:
     ]
     payload["timing"] = {
         key.split(":", 1)[1]: {"seconds": round(profile.means[key] / 1000, 2),
-                               "n": profile.means.get(f"{key}#n", 0)}
-        for key in ("think:fold", "think:call", "think:check", "think:aggro")
+                               "n": int(profile.means.get(f"{key}#n", 0) or 0)}
+        for key in ("think:fold", "think:call", "think:check", "think:aggro",
+                    "think:pf", "think:flop", "think:turn", "think:river")
         if profile.means.get(key)
     }
+    payload["timing_tells"] = [
+        {"pace": c.pace, "street": c.street, "action": c.action,
+         "action_label": c.action_label, "n": c.n, "total": c.total,
+         "share": None if c.share is None else round(c.share, 3),
+         "won": None if c.won is None else round(c.won, 3),
+         "won_base": None if c.won_base is None else round(c.won_base, 3),
+         "wtsd": None if c.wtsd is None else round(c.wtsd, 3),
+         "wtsd_base": None if c.wtsd_base is None else round(c.wtsd_base, 3),
+         "fold_next": None if c.fold_next is None else round(c.fold_next, 3),
+         "fold_next_base": None if c.fold_next_base is None else round(c.fold_next_base, 3),
+         "fold_next_n": c.fold_next_n,
+         "sd_strength": None if c.sd_strength is None else round(c.sd_strength, 3),
+         "sd_base": None if c.sd_base is None else round(c.sd_base, 3),
+         "sd_n": c.sd_n,
+         "label": c.label, "read": c.read}
+        for c in timing_tells(profile)
+    ]
     return payload
 
 
@@ -290,7 +317,16 @@ def session_payload(token: str, store: Store | None = None) -> dict:
     session = SESSIONS[token]
     extra = database_merges(store, session["hands"]) if store is not None else None
     books = record_hands(merged_hands(session, extra))
-    profiles = [p for p in (build_unified(by_regime) for by_regime in books.values())
+
+    def _unified(by_regime):
+        # Same shrink as database profiles when this pool has fitted priors.
+        priors = None
+        if store is not None and by_regime:
+            fitted = store.fitted_priors(primary_regime(by_regime))
+            priors = fitted or None
+        return build_unified(by_regime, priors=priors)
+
+    profiles = [p for p in (_unified(by_regime) for by_regime in books.values())
                 if p is not None]
     profiles.sort(key=lambda p: -p.hands)
 
@@ -476,11 +512,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, PAGE.encode(), "text/html; charset=utf-8")
             if path == "/api/roster":
                 with Store(self.db_path) as store:
+                    n_players = store.conn.execute(
+                        "SELECT COUNT(*) c FROM players").fetchone()["c"]
+                    n_fitted = store.conn.execute(
+                        "SELECT COUNT(*) c FROM fitted_priors").fetchone()["c"]
                     return self._send(200, {
                         "players": roster_payload(store),
                         "db": str(self.db_path),
                         "hands": store.conn.execute(
                             "SELECT COUNT(*) c FROM hands").fetchone()["c"],
+                        "fit_priors": {
+                            "suggested": n_players >= 8 and n_fitted == 0,
+                            "players": n_players,
+                            "has_fitted": n_fitted > 0,
+                        },
                     })
             if path.startswith("/api/player/"):
                 player_id = int(path.rsplit("/", 1)[1])
@@ -587,6 +632,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, {"error": "reset not confirmed"})
                 with Store(self.db_path) as store:
                     return self._send(200, store.reset())
+            if route == "/api/fit-priors":
+                with Store(self.db_path) as store:
+                    fitted = store.fit_priors(min_players=int(body.get("min_players", 8)))
+                    return self._send(200, {"fitted": fitted})
             if route.startswith("/api/session/") and route.endswith("/identity"):
                 token = route.split("/")[3]
                 if token not in SESSIONS:
@@ -838,15 +887,55 @@ PAGE = r"""<!doctype html>
   }
   button.linkbtn:hover { text-decoration-color: var(--accent); }
   .hero { font-size: 38px; line-height: 1.05; letter-spacing: -0.03em; }
+  .hero-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .skill-badge {
+    width: 58px; height: 58px; border-radius: 50%; flex: none;
+    border: 2px solid var(--red); color: var(--red);
+    display: inline-flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    cursor: help; line-height: 1;
+  }
+  .skill-badge .score { font-size: 20px; font-weight: 800; letter-spacing: -0.03em; }
+  .skill-badge .of { font-size: 9px; font-weight: 600; margin-top: 2px; letter-spacing: .04em;
+                     text-transform: uppercase; opacity: .85; }
+  .read-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 28px 32px;
+    margin-top: 18px; align-items: start;
+  }
+  @media (max-width: 720px) {
+    .read-grid { grid-template-columns: 1fr; }
+  }
+  .read-copy .summary { color: var(--muted); margin: 0 0 10px; }
+  .read-copy .plan { margin: 0; max-width: none; }
+  .read-meta { font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.7; }
+  .skill-side { margin: 0; min-width: 0; max-width: none; text-align: left; }
+  .skill-side .skill-head {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 600; margin-bottom: 10px;
+  }
+  .skill-side .metric { grid-template-columns: 1fr 90px 28px; gap: 8px; margin: 4px 0; }
+  .skill-side .metric .small { font-size: 12.5px; }
   .drop {
     border: 1.5px dashed var(--line); border-radius: 12px; padding: 34px 20px;
     text-align: center; color: var(--muted); cursor: pointer; transition: border-color .12s;
   }
   .drop:hover, .drop.over { border-color: var(--red); color: var(--ink); }
-  .leak { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .leak { padding: 14px 0; border-bottom: 1px solid var(--line); }
   .leak:last-child { border-bottom: 0; }
   .leak-head { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; }
-  .leak-advice { color: var(--muted); font-size: 13.5px; max-width: 68ch; margin-top: 4px; }
+  .leak-head .headline b {
+    font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+  }
+  .leak-advice {
+    color: var(--ink); font-size: 14px; max-width: 68ch; margin-top: 6px;
+    line-height: 1.45;
+  }
+  .leak .numbers { margin-top: 2px; }
+  .how { margin-top: 8px; }
+  .how-body { color: var(--ink); font-size: 14px; line-height: 1.45; }
+  .howblock { margin: 10px 0; max-width: 66ch; }
+  .howlabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+              color: var(--muted); margin-bottom: 3px; font-weight: 600; }
   svg { display: block; overflow: visible; }
   .tip {
     position: fixed; pointer-events: none; z-index: 40; max-width: 270px;
@@ -885,21 +974,20 @@ PAGE = r"""<!doctype html>
   .tip .dir { margin-top: 6px; }
   .tip .dir b { display: inline-block; min-width: 34px; }
   details > summary {
-    cursor: pointer; color: var(--muted); font-size: 12.5px; list-style: none;
-    padding: 4px 0;
+    cursor: pointer; color: var(--ink); font-size: 12.5px; list-style: none;
+    padding: 4px 0; font-weight: 600; letter-spacing: 0.02em;
   }
   details > summary::-webkit-details-marker { display: none; }
-  details > summary::before { content: "\25B8 "; }
-  details[open] > summary::before { content: "\25BE "; }
-  details > summary:hover { color: var(--ink); }
+  details > summary::before {
+    content: "\25B8 "; color: var(--red); font-weight: 700;
+  }
+  details[open] > summary::before { content: "\25BE "; color: var(--red); }
+  details > summary:hover { color: var(--red); }
   .headline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .plan { max-width: 62ch; }
   .meta { text-align: right; line-height: 1.7; }
   .metric { display: grid; grid-template-columns: 170px 1fr 34px; gap: 10px;
             align-items: center; margin: 4px 0; }
-  .howblock { margin: 10px 0; max-width: 66ch; }
-  .howlabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
-              color: var(--muted); margin-bottom: 2px; }
   .footnote { font-size: 12.5px; display: flex; gap: 8px; flex-wrap: wrap;
               align-items: baseline; margin: 22px 2px; }
   .danger-link { color: var(--danger); text-decoration-color: var(--danger); }
@@ -914,17 +1002,39 @@ PAGE = r"""<!doctype html>
   .flag:hover { background: var(--red); color: var(--panel); }
   .leak.watch { opacity: .82; }
   .leak.weakspots .metric { grid-template-columns: 1fr 150px 30px; }
-  .narration { margin-top: 10px; max-width: 66ch; }
+  .timing-street { margin-top: 14px; }
+  .timing-street .street-label {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); font-weight: 600; margin-bottom: 6px;
+  }
+  .timing-grid {
+    display: grid; grid-template-columns: 64px 1fr 1fr 1fr; gap: 1px;
+    background: var(--line); border: 1px solid var(--line);
+  }
+  .timing-grid > * { background: var(--panel); padding: 9px 10px; min-width: 0; }
+  .timing-grid .corner { background: var(--accent-soft); }
+  .timing-grid .colhead, .timing-grid .rowhead {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); background: var(--accent-soft); font-weight: 600;
+  }
+  .timing-grid .rowhead { display: flex; align-items: center; }
+  .timing-cell .tell { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+  .timing-cell .read { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+  .timing-cell .n { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+  .timing-cell.thin .tell { color: var(--muted); font-weight: 500; font-size: 12.5px; }
+  .narration { margin-top: 10px; max-width: none; }
+  .narration.hidden { display: none; }
   .narration blockquote {
     margin: 0 0 6px; padding: 0 0 0 13px; border-left: 2px solid var(--red);
   }
   .narration ul.suggested { margin: 4px 0; padding-left: 0; list-style: none; }
   .narration ul.suggested li {
-    position: relative; padding: 0 0 0 16px; margin: 0 0 10px;
+    position: relative; padding: 0 0 0 16px; margin: 0 0 10px; max-width: none;
   }
   .narration ul.suggested li::before {
     content: "\2013"; position: absolute; left: 0; color: var(--red);
   }
+  .narrate-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
   .ev { display: grid; grid-template-columns: 54px 1fr auto; gap: 10px;
         align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line);
@@ -1024,15 +1134,38 @@ function withInfo(node, html) {
   wrap.appendChild(info(html));
   return wrap;
 }
-/* Full explanation of a statistic: what it counts, and what each direction
-   means for you. Both directions matter -- they call for opposite play. */
-function statTip(stat, label) {
+/* Full explanation of a statistic: what it counts, and whether *this* player
+   is over or under the field -- with the matching play implication. */
+function statTip(stat, label, row) {
   const g = state.glossary;
   const h = g && (g.stats[stat] || g.stats[stat.split(":")[0]]);
   if (!h) return esc(label || stat);
+  let direction = "";
+  if (row && row.population != null && row.value != null) {
+    const delta = row.value - row.population;
+    if (delta > 0.03) {
+      direction = `<div class="dir"><b>High</b> vs field \u2014 ${esc(h.high)}</div>`;
+    } else if (delta < -0.03) {
+      direction = `<div class="dir"><b>Low</b> vs field \u2014 ${esc(h.low)}</div>`;
+    } else {
+      direction = `<div class="dir"><b>Near</b> the field \u2014 neither direction is clear yet.</div>`;
+    }
+  } else {
+    direction = `<div class="dir"><b>High</b> ${esc(h.high)}</div>
+      <div class="dir"><b>Low</b> ${esc(h.low)}</div>`;
+  }
   return `<span class="hl">${esc(label || stat)}</span><br>${esc(h.what)}
-    <div class="dir"><b>High</b> ${esc(h.high)}</div>
-    <div class="dir"><b>Low</b> ${esc(h.low)}</div>`;
+    ${direction}`;
+}
+
+function fieldRead(row) {
+  const g = state.glossary;
+  const h = g && (g.stats[row.stat] || g.stats[row.stat.split(":")[0]]);
+  if (!h || row.population == null) return "";
+  const delta = row.value - row.population;
+  if (delta > 0.03) return `<br><span class="hl">Over the field</span> \u2014 ${esc(h.high)}`;
+  if (delta < -0.03) return `<br><span class="hl">Under the field</span> \u2014 ${esc(h.low)}`;
+  return `<br><span class="muted">Near the field \u2014 neither over nor under yet.</span>`;
 }
 
 /* ---- tooltip ---- */
@@ -1080,7 +1213,8 @@ function statRow(row) {
     <span class="muted">95% range ${fmtPct(row.lo)}\u2013${fmtPct(row.hi)}</span><br>
     raw ${row.raw == null ? "\u2014" : fmtPct(row.raw)} of ${row.opps} ${esc(row.denominator)}<br>
     field ${fmtPct(row.population)}${row.breakeven != null
-      ? `<br><span style="color:var(--warn)">${esc(row.breakeven_label)} ${fmtPct(row.breakeven)}</span>` : ""}`);
+      ? `<br><span style="color:var(--warn)">${esc(row.breakeven_label)} ${fmtPct(row.breakeven)}</span>` : ""}
+    ${fieldRead(row)}`);
   return svg;
 }
 
@@ -1188,35 +1322,46 @@ function profileCard(p, opts) {
   opts = opts || {};
   const card = document.createElement("div");
   const leaks = p.leaks;
-  const maxSeverity = Math.max(0.01, ...leaks.map(l => l.severity_bb100));
 
-  /* Two panels and one disclosure. Everything a player needs mid-hand is the
-     read and the adjustment; the numbers that justify them are a different
-     job, done at a different time, and stacking all of it in one column made
-     the page something to scroll rather than something to use. */
   const head = document.createElement("div");
   head.className = "panel";
   head.innerHTML = `
-    <div class="spread">
-      <div><div class="hero">${esc(p.archetype)}</div>
-           <div class="muted">${esc(p.summary)}</div></div>
-      <div class="meta small muted"></div>
+    <div class="hero-row">
+      <div class="hero">${esc(p.archetype)}</div>
+      <div class="skill-badge" id="skill-badge">
+        <span class="score">${p.skill.score.toFixed(0)}</span>
+        <span class="of">/100</span>
+      </div>
     </div>
-    <p class="plan">${esc(p.plan)}</p>
-    ${opts.narrate ? '<div class="narrate"></div>' : ""}`;
+    <div class="read-meta" id="read-meta"></div>
+    <div class="read-grid">
+      <div class="read-copy">
+        <p class="summary">${esc(p.summary)}</p>
+        <p class="plan">${esc(p.plan)}</p>
+      </div>
+      <div class="skill-side" id="skill-side"></div>
+    </div>`;
   card.appendChild(head);
 
-  const meta = $(".meta", head);
-  const line = document.createElement("div");
+  const badge = $("#skill-badge", head);
+  bindTip(badge, `<b>${esc(p.skill.tier)}</b> ${p.skill.score.toFixed(0)}/100<br>
+    <span class="muted">confidence ${fmtPct(p.skill.confidence)}</span>
+    ${p.skill.observed_bb100 == null ? ""
+      : `<br><span class="muted">${p.skill.observed_bb100.toFixed(1)} bb/100 observed</span>`}`);
+
+  const meta = $("#read-meta", head);
+  const line = document.createElement("span");
   line.append(document.createTextNode(`${p.hands} hands, ${p.sample_quality}`));
   line.appendChild(info(termTip(p.sample_quality)));
-  const conf = document.createElement("div");
+  const conf = document.createElement("span");
+  conf.style.marginLeft = "12px";
   conf.append(document.createTextNode(
     `${esc(p.archetype)} ${fmtPct(p.archetype_confidence)} sure`));
   conf.appendChild(info(`${termTip("confidence")}<br><br>
     <span class="hl">also plausibly</span><br>${
       p.archetype_mix.slice(1, 4).map(([n, v]) => `${esc(n)} ${fmtPct(v)}`).join("<br>")}`));
-  const where = document.createElement("div");
+  const where = document.createElement("span");
+  where.style.marginLeft = "12px";
   where.textContent = p.table_mix || p.regime_label;
   if (p.contributions && Object.keys(p.contributions).length > 1) {
     where.appendChild(info(`<span class="hl">one read, several table sizes</span><br>
@@ -1225,14 +1370,26 @@ function profileCard(p, opts) {
   }
   meta.append(line, conf, where);
 
-  const narrateBox = $(".narrate", head);
-  if (narrateBox) buildNarrator(narrateBox, p);
+  const skillSide = $("#skill-side", head);
+  skillSide.innerHTML = `<div class="skill-head">Skill breakdown
+    <span style="font-weight:400">\u00b7 ${esc(p.skill.tier)}</span></div>`;
+  for (const c of [...p.skill.components].sort((a, b) => a.score - b.score)) {
+    const row = document.createElement("div");
+    row.className = "metric";
+    const label = document.createElement("span");
+    label.className = "small"; label.textContent = c.name;
+    const val = document.createElement("span");
+    val.className = "small muted"; val.style.textAlign = "right";
+    val.textContent = c.score.toFixed(0);
+    row.append(label, bar(c.score, 100, "var(--mark-3)", 90), val);
+    bindTip(row, `<b>${esc(c.name)}</b> ${c.score.toFixed(0)}/100<br>
+      <span class="muted">counts ${c.weight}x${c.note ? " \u00b7 " + esc(c.note) : ""}</span>`);
+    skillSide.appendChild(row);
+  }
 
-  /* What to do. Combinations ride along at the end rather than taking their
-     own panel -- they are the same advice, sharpened. */
   const doBox = document.createElement("div");
   doBox.className = "panel";
-  doBox.innerHTML = `<div class="spread"><h2>what to do</h2>
+  doBox.innerHTML = `<div class="spread"><h2>What to Do</h2>
       <span class="small muted worth"></span></div><div class="leaks"></div>`;
   const worthLabel = $(".worth", doBox);
   worthLabel.append(document.createTextNode(
@@ -1255,36 +1412,34 @@ function profileCard(p, opts) {
     div.className = "leak";
     div.innerHTML = `
       <div class="leak-head">
-        <div class="headline"><b>${esc(l.headline)}</b></div>
-        <div class="num small muted">${l.severity_bb100.toFixed(2)} bb/100
-          <span class="tag tier">${esc(l.tier)}</span></div></div>
-      <div class="small muted numbers"></div>
+        <div class="headline"><b>${esc(l.headline)}</b>
+          <span class="tag tier">${esc(l.tier)}</span></div>
+        <div class="num small muted">${l.severity_bb100.toFixed(2)} bb/100</div></div>
       <div class="leak-advice">${esc(l.do)}</div>
-      <details class="how" open><summary>why, and what not to do</summary>
+      <div class="small muted numbers"></div>
+      <details class="how"><summary>Why, and what not to do</summary>
         <div class="how-body"></div></details>`;
     $(".tier", div).after(info(`${termTip(l.tier)}<br><br>${esc(l.priority)}`));
 
     const numbers = $(".numbers", div);
     numbers.appendChild(document.createTextNode(
-      l.in_words.replace(/seen about .*$/, "")));
+      l.in_words.replace(/seen about .*$/, "").trim()));
     if (p.player_id != null) {
       const link = document.createElement("button");
       link.className = "linkbtn";
       link.textContent = `seen about ${Math.round(l.sample)} times`;
       link.title = "show the hands behind this";
       link.onclick = () => showEvidence(p.player_id, l.stat, l.headline);
+      numbers.appendChild(document.createTextNode(" "));
       numbers.appendChild(link);
     } else {
       numbers.appendChild(document.createTextNode(
-        `seen about ${Math.round(l.sample)} times`));
+        ` seen about ${Math.round(l.sample)} times`));
     }
     numbers.appendChild(info(statTip(l.stat, l.headline)));
 
     const how = $(".how-body", div);
-    for (const [label, text] of [["What they are doing", l.behaviour],
-                                 ["Why it works", l.why],
-                                 ["Do not", l.dont],
-                                 ["How hard to lean on it", l.pressure]]) {
+    for (const [label, text] of [["Why", l.why], ["Do not", l.dont]]) {
       if (!text) continue;
       const block = document.createElement("div");
       block.className = "howblock";
@@ -1295,9 +1450,6 @@ function profileCard(p, opts) {
     leakBox.appendChild(div);
   }
 
-  /* Below the reporting bar. Shown because silence is its own claim: a player
-     the rating calls weak with nothing listed against them reads as "no
-     information" when the truth is "not confirmed yet". Never priced. */
   for (const w of (p.watchlist || [])) {
     const div = document.createElement("div");
     div.className = "leak watch";
@@ -1311,16 +1463,13 @@ function profileCard(p, opts) {
     leakBox.appendChild(div);
   }
 
-  /* What the rating is built on. Always available, because a component score
-     is a description of their play rather than a claim that needs a test. */
   if ((p.weak_spots || []).length) {
     const weak = document.createElement("div");
     weak.className = "leak weakspots";
     weak.innerHTML = `<div class="headline"><b>Weakest parts of their game</b>
         <span class="tag">from the rating</span></div>
       <div class="small muted" style="margin:4px 0 8px">
-        Not frequencies you can attack for a known price \u2014 this is where
-        their game is thinnest, and why the rating is what it is.</div>`;
+        Not priced leaks \u2014 where their game is thinnest.</div>`;
     for (const spot of p.weak_spots) {
       const row = document.createElement("div");
       row.className = "metric";
@@ -1346,40 +1495,89 @@ function profileCard(p, opts) {
     leakBox.appendChild(block);
   }
 
-  /* The evidence, folded away. */
+  if (opts.narrate) {
+    const narrateBox = document.createElement("div");
+    narrateBox.className = "narrate";
+    narrateBox.style.marginTop = "14px";
+    leakBox.appendChild(narrateBox);
+    buildNarrator(narrateBox, p);
+  }
+
+  const tells = p.timing_tells || [];
+  if (tells.some(c => c.n > 0)) {
+    const timingBox = document.createElement("div");
+    timingBox.className = "panel";
+    const headRow = document.createElement("div");
+    headRow.className = "spread";
+    const title = document.createElement("div");
+    title.className = "headline";
+    const h2 = document.createElement("h2");
+    h2.style.margin = "0";
+    h2.textContent = "Timing Tells";
+    const flag = document.createElement("span");
+    flag.className = "flag";
+    flag.textContent = "!";
+    bindTip(flag, `<span class="hl">use with caution</span><br>
+      Timing is noisy online. Each cell is the <em>share</em> of that action
+      at this pace, plus whether they won / went to showdown / folded next
+      <em>differently</em> than after the same action at normal pace. Use it
+      to break ties \u2014 never as the whole basis of a decision.`);
+    title.append(h2, flag);
+    headRow.appendChild(title);
+    const note = document.createElement("span");
+    note.className = "small muted";
+    note.textContent = "share of action + outcome vs normal pace";
+    headRow.appendChild(note);
+    timingBox.appendChild(headRow);
+
+    const byKey = Object.fromEntries(
+      tells.map(c => [`${c.pace}:${c.street}:${c.action}`, c]));
+    for (const street of ["flop", "turn"]) {
+      const block = document.createElement("div");
+      block.className = "timing-street";
+      block.innerHTML = `<div class="street-label">${street}</div>`;
+      const grid = document.createElement("div");
+      grid.className = "timing-grid";
+      grid.innerHTML = `<div class="corner"></div>
+        <div class="colhead">check</div>
+        <div class="colhead">call</div>
+        <div class="colhead">raise</div>`;
+      for (const pace of ["snap", "tank"]) {
+        const rowhead = document.createElement("div");
+        rowhead.className = "rowhead";
+        rowhead.textContent = pace;
+        grid.appendChild(rowhead);
+        for (const action of ["check", "call", "aggro"]) {
+          const cell = byKey[`${pace}:${street}:${action}`] || {
+            n: 0, total: 0, share: null, label: "Not enough data",
+            read: "Need more timed actions."};
+          const div = document.createElement("div");
+          div.className = "timing-cell" + (cell.n < 5 ? " thin" : "");
+          const share = cell.share == null ? ""
+            : `${Math.round(100 * cell.share)}% of ${cell.total}`;
+          const nLine = cell.n
+            ? `${cell.n} timed${share ? ` \u00b7 ${share}` : ""}`
+            : "no data yet";
+          div.innerHTML = `<div class="tell">${esc(cell.label)}</div>
+            <div class="read">${esc(cell.read)}</div>
+            <div class="n">${nLine}</div>`;
+          grid.appendChild(div);
+        }
+      }
+      block.appendChild(grid);
+      timingBox.appendChild(block);
+    }
+    card.appendChild(timingBox);
+  }
+
   const detail = document.createElement("div");
   detail.className = "panel";
-  detail.innerHTML = `<details open><summary>the numbers behind this</summary>
-    <div class="detail-body"></div></details>`;
+  detail.innerHTML = `<h2>Detailed Stats</h2><div class="detail-body"></div>`;
   card.appendChild(detail);
   const body = $(".detail-body", detail);
 
-  const skill = document.createElement("div");
-  skill.innerHTML = `<div class="spread" style="margin-top:12px">
-      <b>skill ${p.skill.score.toFixed(0)}/100 \u2014 ${esc(p.skill.tier)}</b>
-      <span class="small muted">${fmtPct(p.skill.confidence)} confident \u00b7
-        ${p.skill.observed_bb100 == null ? "\u2014"
-          : p.skill.observed_bb100.toFixed(1)} bb/100 observed,
-        ${p.skill.adjusted_bb100 == null ? "\u2014"
-          : p.skill.adjusted_bb100.toFixed(1)} adjusted</span></div>`;
-  body.appendChild(skill);
-  for (const c of [...p.skill.components].sort((a, b) => a.score - b.score)) {
-    const row = document.createElement("div");
-    row.className = "metric";
-    const label = document.createElement("span");
-    label.className = "small"; label.textContent = c.name;
-    const val = document.createElement("span");
-    val.className = "small muted"; val.style.textAlign = "right";
-    val.textContent = c.score.toFixed(0);
-    row.append(label, bar(c.score, 100, "var(--mark-3)", 220), val);
-    bindTip(row, `<b>${esc(c.name)}</b> ${c.score.toFixed(0)}/100<br>
-      <span class="muted">counts ${c.weight}x${c.note ? " \u00b7 " + esc(c.note) : ""}</span>`);
-    body.appendChild(row);
-  }
-
   const table = document.createElement("div");
   table.className = "scroller";
-  table.style.marginTop = "16px";
   table.innerHTML = `<table><thead><tr><th>stat</th>
       <th style="width:310px">0% \u2014 100%</th>
       <th class="num">estimate</th><th class="num">sample</th></tr></thead>
@@ -1392,7 +1590,7 @@ function profileCard(p, opts) {
                     <td class="num small muted">${row.opps}</td>`;
     const label = $(".label", tr);
     label.appendChild(document.createTextNode(row.label));
-    label.appendChild(info(statTip(row.stat, row.label)));
+    label.appendChild(info(statTip(row.stat, row.label, row)));
     tr.children[1].appendChild(statRow(row));
     tbody.appendChild(tr);
   }
@@ -1400,24 +1598,36 @@ function profileCard(p, opts) {
   return card;
 }
 
-/* Exploits the rule engine did not find, written to order for this player.
-   The rules only fire on patterns somebody thought to encode; a model reading
-   the same numbers can combine them and reach spots no single rule covers.
-   Offered only on a saved player: it costs a model call, and an unsaved
-   session has no stable identity to attach the result to. */
 function buildNarrator(box, profile) {
+  const actions = document.createElement("div");
+  actions.className = "narrate-actions";
   const button = document.createElement("button");
   button.className = "act small";
   button.textContent = "Generate additional exploits";
+  const toggle = document.createElement("button");
+  toggle.className = "act small";
+  toggle.disabled = true;
+  toggle.textContent = "Hide";
   const out = document.createElement("div");
   out.className = "narration";
-  box.append(button, out);
+  actions.append(button, toggle);
+  box.append(actions, out);
+
+  let visible = true;
+  toggle.onclick = () => {
+    visible = !visible;
+    out.classList.toggle("hidden", !visible);
+    toggle.textContent = visible ? "Hide" : "Show";
+  };
 
   button.onclick = async () => {
     button.disabled = true;
+    toggle.disabled = true;
     const original = button.textContent;
     button.textContent = "writing\u2026";
-    out.innerHTML = "";
+    out.classList.remove("hidden");
+    visible = true;
+    toggle.textContent = "Hide";
     try {
       const result = await post("/api/narrate", {profile: profile});
       out.innerHTML = `${renderBullets(result.text)}
@@ -1426,10 +1636,12 @@ function buildNarrator(box, profile) {
           the computed profile and cannot state a figure the profile did not
           produce. These are not measured reads: check them against the hands
           before trusting them.</div>`;
-      button.textContent = "Suggest more";
+      button.textContent = "Generate again";
+      toggle.disabled = false;
     } catch (err) {
       out.innerHTML = `<div class="small err">${esc(err.message)}</div>`;
       button.textContent = original;
+      toggle.disabled = true;
     }
     button.disabled = false;
   };
@@ -1691,6 +1903,7 @@ async function viewPlayers() {
   view.innerHTML = `<div class="panel">
       <div class="spread"><h2>database</h2>
         <span class="small muted">click a column to re-rank</span></div>
+      <div id="fit-banner" class="leak" hidden style="margin-bottom:12px"></div>
       <div id="db-roster"></div></div>
     <div id="suggest-panel" class="panel" hidden>
       <h2>possible same person</h2><div id="suggestions"></div></div>
@@ -1701,6 +1914,29 @@ async function viewPlayers() {
     onClick: p => { state.player = p.player_id; viewPlayer(p.player_id); },
   }));
   $("#reset").onclick = () => confirmReset(data);
+
+  const fit = data.fit_priors;
+  if (fit && fit.suggested) {
+    const banner = $("#fit-banner");
+    banner.hidden = false;
+    banner.innerHTML = `<div class="leak-head">
+      <div><b>Fit home-game priors</b>
+        <div class="small muted">You have ${fit.players} players and still use
+          online defaults. Fitting the pool makes session and database reads
+          agree.</div></div>
+      <button class="act small primary" id="fit-priors">fit priors</button>
+    </div>`;
+    $("#fit-priors").onclick = async () => {
+      const btn = $("#fit-priors");
+      btn.disabled = true; btn.textContent = "fitting\u2026";
+      try {
+        await post("/api/fit-priors", {});
+        viewPlayers();
+      } catch (err) {
+        btn.textContent = "failed"; btn.classList.add("err");
+      }
+    };
+  }
 
   const suggestions = await get("/api/suggestions");
   if (suggestions.length) {
@@ -1746,14 +1982,14 @@ async function viewPlayer(id) {
   if (data.by_table && data.by_table.length > 1) {
     const panel = document.createElement("div");
     panel.className = "panel";
-    panel.innerHTML = `<details open><summary>split by table size</summary>
-      <div class="small muted" style="margin:6px 0 12px">
+    panel.innerHTML = `<h2>Split by Table Size</h2>
+      <div class="small muted" style="margin:0 0 12px">
         The read above pools these. Shown separately so you can check the
         pooling is not hiding a difference.</div>
       <div class="scroller"><table><thead><tr>
         <th>table</th><th class="num">hands</th><th>read</th>
         <th class="num">skill</th><th>biggest leak</th>
-      </tr></thead><tbody></tbody></table></div></details>`;
+      </tr></thead><tbody></tbody></table></div>`;
     const body = $("tbody", panel);
     for (const t of data.by_table) {
       const tr = document.createElement("tr");

@@ -168,14 +168,32 @@ def _wrap_plain(text: str, width: int) -> list[str]:
 
 
 def _cmd_scout(args) -> int:
-    """Read files straight through to a report, touching no database."""
+    """Read files straight through to a report, touching no database writes."""
+    from .profile import primary_regime
+
     hands = [h for _, batch in parse_paths(args.paths) for h in batch]
     if not hands:
         print("No file matched a known format.", file=sys.stderr)
         return 1
     books = record_hands(hands)
-    profiles = [p for p in (build_unified(by) for by in books.values())
-                if p is not None and p.hands >= args.min_hands]
+
+    fitted: dict[str, dict[str, tuple[float, float]]] = {}
+    if Path(args.db).exists():
+        with Store(args.db) as store:
+            for by in books.values():
+                if not by:
+                    continue
+                home = primary_regime(by)
+                if home not in fitted:
+                    fitted[home] = store.fitted_priors(home)
+
+    profiles = [
+        p for p in (
+            build_unified(by, priors=fitted.get(primary_regime(by)) or None)
+            for by in books.values() if by
+        )
+        if p is not None and p.hands >= args.min_hands
+    ]
     if not profiles:
         print(f"No player reached {args.min_hands} hands.", file=sys.stderr)
         return 1

@@ -17,8 +17,9 @@ from .skill import rate, weaknesses
 
 #: Internal counters. They exist so aggression frequencies can be derived from
 #: raw action mixes; as standalone frequencies they mean nothing, so they are
-#: kept out of anything user-facing.
-INTERNAL_PREFIXES = ("act:", "seat:", "saw:")
+#: kept out of anything user-facing. Timing shares/outcomes are rendered by
+#: the timing-tell grid, not the raw stats table.
+INTERNAL_PREFIXES = ("act:", "seat:", "saw:", "pace:", "timed:", "after:")
 
 
 def enrich(profile: Profile) -> Profile:
@@ -26,7 +27,9 @@ def enrich(profile: Profile) -> Profile:
     if profile.archetype == "unknown":
         profile.archetype, profile.archetype_confidence, profile.archetype_mix = match(profile)
     if not profile.tags:
-        profile.tags = find_leaks(profile)
+        # Collapse overlapping families so the UI does not stack overfold_flop
+        # with overfold_flop_big and overfold_cbet as three separate leaks.
+        profile.tags = find_leaks(profile, dedupe=True)
     if profile.skill is None:
         profile.skill = rate(profile)
     return profile
@@ -75,7 +78,7 @@ def as_dict(profile: Profile) -> dict:
             f"{c.name} scores {c.score:.0f} out of 100"
             + (f" ({c.note})" if c.note else "")
             for c in sorted(profile.skill.components, key=lambda c: -c.score)
-            if c.score >= 70 and c.name != "resistance to exploitation"
+            if c.score >= 70 and c.name != "Resistance to exploitation"
         ][:4],
         "stats": {
             stat: {"value": round(est.value, 4), "opportunities": est.opps,

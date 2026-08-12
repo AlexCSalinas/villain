@@ -32,21 +32,51 @@ from .stats import HandView, StatBook, size_bucket
 
 #: player id -> table-size regime -> book
 Books = dict[str, dict[str, StatBook]]
+#: (player_id, regime) -> (tank_ms, snap_ms) frozen from a think-time pass
+PaceLocks = dict[tuple[str, str], tuple[float, float]]
 
-TANK_MS = 8_000        # a fold this slow was a real decision, not a formality
-SNAP_MS = 1_200        # faster than a considered action
+TANK_MS = 8_000        # absolute fallback before we know a player's pace
+SNAP_MS = 1_200        # absolute fallback for a snap
+#: Relative pace: tank/snap vs that player's own mean think time once we have
+#: enough samples. Absolute floors/ceilings stop a uniformly fast or slow
+#: player from looking like every action is a tell.
+REL_TANK = 1.75
+REL_SNAP = 0.40
+MIN_PACE_SAMPLES = 5
+FLOOR_TANK_MS = 5_000
+CEIL_SNAP_MS = 2_500
 BLUFF_PCTILE = 0.35    # showdown strength below this, in a bet, was a bluff
 
 
 def record_hands(hands: Iterable[Hand], books: Books | None = None) -> Books:
+    """Extract stats for every hand.
+
+    Timing uses a two-pass read: first accumulate each player's think times,
+    then freeze snap/tank cutoffs from those means and tag every hand with the
+    same thresholds. A one-pass relative mean would tag early hands differently
+    from late ones in the same import.
+    """
+    hands = list(hands)
     books = books if books is not None else {}
+    scratch: Books = {}
     for hand in hands:
-        record_hand(hand, books)
+        _think_pass(hand, scratch)
+    locks: PaceLocks = {}
+    for pid, by_regime in scratch.items():
+        for reg, book in by_regime.items():
+            locks[(pid, reg)] = _pace_thresholds(book)
+    for hand in hands:
+        record_hand(hand, books, pace_locks=locks)
     return books
 
 
-def record_hand(hand: Hand, books: Books) -> None:
-    """Fold one hand into every participating player's book for this regime."""
+def record_hand(hand: Hand, books: Books,
+                pace_locks: PaceLocks | None = None) -> None:
+    """Fold one hand into every participating player's book for this regime.
+
+    ``pace_locks`` freezes snap/tank cutoffs (from :func:`record_hands`).
+    Without locks, thresholds follow the running mean (streaming / evidence).
+    """
     if "pot_mismatch" in hand.flags or hand.big_blind <= 0:
         return
     view = HandView(hand)
@@ -62,9 +92,9 @@ def record_hand(hand: Hand, books: Books) -> None:
         book.measure("table_size", len(hand.seats))
         book.measure("stack_bb", seat.stack / hand.big_blind)
 
-    _preflop(hand, view, books, reg)
-    _postflop(hand, view, books, reg)
-    _results(hand, view, books, reg)
+    _preflop(hand, view, books, reg, pace_locks=pace_locks)
+    pace_events = _postflop(hand, view, books, reg, pace_locks=pace_locks)
+    _results(hand, view, books, reg, pace_events)
 
 
 def book_for(books: Books, player_id: str, reg: str, name: str = "") -> StatBook:
@@ -80,11 +110,26 @@ def _book(hand: Hand, books: Books, seat: int, reg: str) -> StatBook:
     return book_for(books, s.player_id, reg, s.name)
 
 
+def _think_pass(hand: Hand, books: Books) -> None:
+    """First timing pass: think-time meters only, so cutoffs can be frozen."""
+    if "pot_mismatch" in hand.flags or hand.big_blind <= 0:
+        return
+    view = HandView(hand)
+    reg = regime_of(len(hand.seats))
+    for d in view.decisions():
+        ms = d.action.think_ms
+        if ms is None or ms < 0 or ms > 120_000:
+            continue
+        book = _book(hand, books, d.seat, reg)
+        book.measure("think:all", ms)
+
+
 # ---------------------------------------------------------------------------
 # preflop
 # ---------------------------------------------------------------------------
 
-def _preflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
+def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
+             pace_locks: PaceLocks | None = None) -> None:
     opener: int | None = None
     three_bettor: int | None = None
     open_size = 0
@@ -154,7 +199,7 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
             book.count("fold_to_four_bet", folded)
             book.count("five_bet", raised)
 
-        _timing(book, d, "pf")
+        _timing(book, d, "pf", pace_locks=pace_locks, regime=reg)
 
         if raised:
             if opener is None:
@@ -178,13 +223,27 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
 # postflop
 # ---------------------------------------------------------------------------
 
-def _postflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
+def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
+              pace_locks: PaceLocks | None = None
+              ) -> dict[tuple[int, str], tuple[str, str]]:
+    """Postflop frequencies plus pace tags for timing-outcome resolution.
+
+    Returns ``(seat, street) -> (pace, action)`` for the first timed
+    check/call/aggro on each flop/turn, used by :func:`_results`.
+    """
     street = None
     first_bettor: int | None = None
     bettor_had_initiative = False
     checked: set[int] = set()
     declined_initiative: set[int] = set()   # aggressors who checked on an earlier street
     faced_bet_size: dict[int, float] = {}
+    # Fold-vs-bet / c-bet once per street: raise wars must not manufacture
+    # independent opportunities (and confidence) from the same pot.
+    faced_bet_already: set[int] = set()
+    # First timed check/call/aggro per seat per street, for outcome deltas.
+    pace_events: dict[tuple[int, str], tuple[str, str]] = {}
+    # Tags waiting for a later bet faced (fold-next opportunity).
+    pending_fold: dict[int, list[tuple[str, str, str]]] = {}
 
     for d in view.decisions():
         if d.street is Street.PREFLOP:
@@ -192,7 +251,7 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
         if d.street is not street:
             street = d.street
             first_bettor, bettor_had_initiative = None, False
-            checked, faced_bet_size = set(), {}
+            checked, faced_bet_size, faced_bet_already = set(), {}, set()
             for seat in view.saw[street]:
                 _book(hand, books, seat, reg).count(f"saw:{street.label}", True)
 
@@ -205,6 +264,12 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
         folded = a.act is Act.FOLD
         checkd = a.act is Act.CHECK
         initiative = view.initiative_at(street)
+
+        # Resolve fold-next for earlier pace tags before this facing-bet action
+        # becomes a new tag of its own.
+        if d.facing_bet and d.seat in pending_fold:
+            for pace, st, action in pending_fold.pop(d.seat):
+                book.count(f"after:{pace}:{st}:{action}:fold_next", folded)
 
         # Pot sizes are recorded so the exploit layer can price a leak in big
         # blinds instead of reporting an abstract severity score.
@@ -236,14 +301,23 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
         else:
             frac = faced_bet_size.get(d.seat, d.bet_fraction)
             bucket = size_bucket(frac)
-            book.count(f"fold_vs_bet:{s}", folded)
-            book.count(f"fold_vs_bet:{s}:{bucket}", folded)
-            book.count(f"raise_vs_bet:{s}", raised)
-            book.count(f"call_vs_bet:{s}", called)
-            if first_bettor is not None and bettor_had_initiative:
-                book.count(f"fold_to_cbet:{s}", folded)
-                book.count(f"raise_cbet:{s}", raised)
-                book.count(f"call_cbet:{s}", called)
+            first_face = d.seat not in faced_bet_already
+            faced_bet_already.add(d.seat)
+            if first_face:
+                book.count(f"fold_vs_bet:{s}", folded)
+                book.count(f"fold_vs_bet:{s}:{bucket}", folded)
+                # HU vs multiway and IP vs OOP are different games; pooling
+                # them quietly biases short-handed home-game reads.
+                pot_kind = "hu" if d.players_in <= 2 else "mw"
+                book.count(f"fold_vs_bet:{s}:{pot_kind}", folded)
+                pos_kind = "ip" if d.in_position else "oop"
+                book.count(f"fold_vs_bet:{s}:{pos_kind}", folded)
+                book.count(f"raise_vs_bet:{s}", raised)
+                book.count(f"call_vs_bet:{s}", called)
+                if first_bettor is not None and bettor_had_initiative:
+                    book.count(f"fold_to_cbet:{s}", folded)
+                    book.count(f"raise_cbet:{s}", raised)
+                    book.count(f"call_cbet:{s}", called)
             if d.seat in checked:
                 book.count(f"check_raise:{s}", raised)
                 book.count(f"check_fold:{s}", folded)
@@ -253,7 +327,13 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
         if a.all_in:
             book.count("all_in_action", True)
 
-        _timing(book, d, s)
+        tagged = _timing(book, d, s, pace_locks=pace_locks, regime=reg)
+        if tagged is not None:
+            pace, kind = tagged
+            key = (d.seat, s)
+            if key not in pace_events:
+                pace_events[key] = (pace, kind)
+                pending_fold.setdefault(d.seat, []).append((pace, s, kind))
 
         if checkd:
             checked.add(d.seat)
@@ -265,34 +345,86 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
                 if seat != d.seat:
                     faced_bet_size[seat] = d.bet_fraction
 
+    return pace_events
 
-def _timing(book: StatBook, d, street_label: str) -> None:
-    """Record how long the decision took. Timing is uncontaminated read: nobody
-    in a casual game is balancing their clock."""
+
+def _pace_thresholds(book: StatBook) -> tuple[float, float]:
+    """Tank/snap cutoffs: relative to this player's mean once we know it."""
+    meter = book.meters.get("think:all")
+    if meter is None or meter.n < MIN_PACE_SAMPLES or meter.mean is None:
+        return float(TANK_MS), float(SNAP_MS)
+    avg = meter.mean
+    tank = max(FLOOR_TANK_MS, avg * REL_TANK)
+    snap = min(CEIL_SNAP_MS, avg * REL_SNAP)
+    if snap >= tank:
+        return float(TANK_MS), float(SNAP_MS)
+    return tank, snap
+
+
+def _timing(book: StatBook, d, street_label: str,
+            pace_locks: PaceLocks | None = None,
+            regime: str = "") -> tuple[str, str] | None:
+    """Record think times and pace shares. Returns ``(pace, action)`` for a
+    timed flop/turn check, call, or aggressive action; otherwise ``None``.
+
+    With ``pace_locks`` (batch import), every hand uses the same cutoffs from
+    the player's full-sample mean. Without locks, thresholds follow the
+    running mean so a streaming session still adapts.
+    """
     ms = d.action.think_ms
     if ms is None or ms < 0 or ms > 120_000:
-        return
+        return None
+    lock = (pace_locks or {}).get((book.player_id, regime))
+    if lock is not None:
+        tank_ms, snap_ms = lock
+    else:
+        tank_ms, snap_ms = _pace_thresholds(book)
+    book.measure("think:all", ms)
     act = d.action.act
     kind = ("fold" if act is Act.FOLD else "call" if act is Act.CALL
             else "check" if act is Act.CHECK else "aggro")
     book.measure(f"think:{kind}", ms)
     book.measure(f"think:{street_label}", ms)
     if act is Act.FOLD:
-        book.count("tank_fold", ms > TANK_MS)
+        tank = ms > tank_ms
+        book.count("tank_fold", tank)
+        book.count(f"tank_fold:{street_label}", tank)
     if act is Act.CALL:
-        book.count("snap_call", ms < SNAP_MS)
+        snap = ms < snap_ms
+        book.count("snap_call", snap)
+        book.count(f"snap_call:{street_label}", snap)
     if act.is_aggressive:
-        book.count("snap_aggro", ms < SNAP_MS)
+        snap = ms < snap_ms
+        book.count("snap_aggro", snap)
+        book.count(f"snap_aggro:{street_label}", snap)
+
+    if ms > tank_ms:
+        pace = "tank"
+    elif ms < snap_ms:
+        pace = "snap"
+    else:
+        pace = "normal"
+
+    if street_label not in ("flop", "turn") or kind == "fold":
+        return None
+    # Share denominators: every timed check/call/raise, split by pace.
+    book.count(f"timed:{street_label}:{kind}", True)
+    for label in ("snap", "normal", "tank"):
+        book.count(f"pace:{label}:{street_label}:{kind}", pace == label)
+    return pace, kind
 
 
 # ---------------------------------------------------------------------------
 # results and showdown truth
 # ---------------------------------------------------------------------------
 
-def _results(hand: Hand, view: HandView, books: Books, reg: str) -> None:
+def _results(hand: Hand, view: HandView, books: Books, reg: str,
+             pace_events: dict[tuple[int, str], tuple[str, str]] | None = None
+             ) -> None:
     bb = hand.big_blind
     showdown = view.showdown()
     complete_board = len(hand.board) >= 5
+    pace_events = pace_events or {}
 
     for seat in hand.seats:
         book = book_for(books, seat.player_id, reg, seat.name)
@@ -313,6 +445,12 @@ def _results(hand: Hand, view: HandView, books: Books, reg: str) -> None:
             # Showing a single card is a distinctive habit -- usually a bluff
             # being advertised, occasionally a slow-roll.
             book.count("shows_one_card", len(seat.revealed) == 1)
+
+        for (s_seat, street), (pace, action) in pace_events.items():
+            if s_seat != seat.seat:
+                continue
+            book.count(f"after:{pace}:{street}:{action}:won", seat.net > 0)
+            book.count(f"after:{pace}:{street}:{action}:wtsd", seat.seat in showdown)
 
     _all_in_ev(hand, view, books, reg, showdown)
 
@@ -335,6 +473,9 @@ def _results(hand: Hand, view: HandView, books: Books, reg: str) -> None:
         elif seat not in aggressors:
             book.count("sd_light_call", pct < 0.5)
             book.measure("sd_call_strength", pct)
+        for (s_seat, street), (pace, action) in pace_events.items():
+            if s_seat == seat:
+                book.measure(f"after:{pace}:{street}:{action}:sd_strength", pct)
 
 
 def _all_in_ev(hand: Hand, view: HandView, books: Books, reg: str,

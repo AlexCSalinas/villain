@@ -20,9 +20,11 @@ def build_hand(actions, *, board=None, seats=None, bb=10):
     return hand
 
 
-def act(street, seat, kind, amount=0, to_amount=0, pot_before=0, to_call=0):
+def act(street, seat, kind, amount=0, to_amount=0, pot_before=0, to_call=0,
+        think_ms=None):
     return Action(street=street, seat=seat, act=kind, amount=amount,
-                  to_amount=to_amount, pot_before=pot_before, to_call=to_call)
+                  to_amount=to_amount, pot_before=pot_before, to_call=to_call,
+                  think_ms=think_ms)
 
 
 def test_ratio_and_meter_merge_is_additive():
@@ -177,3 +179,194 @@ def test_a_player_who_never_acts_gets_no_vpip_opportunity():
     books = {}
     record_hand(hand, books)
     assert books["b"]["hu"].opps("vpip") == 0
+
+
+def test_tank_and_snap_split_by_street():
+    """A turn tank-fold must not inflate the flop tank rate."""
+    from villain.features import SNAP_MS, TANK_MS
+
+    hand = build_hand([
+        act(Street.PREFLOP, 1, Act.POST_SB, 5, 5),
+        act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5),
+        act(Street.PREFLOP, 1, Act.RAISE, 25, 30, pot_before=15, to_call=5,
+            think_ms=SNAP_MS - 100),
+        act(Street.PREFLOP, 2, Act.CALL, 20, 30, pot_before=40, to_call=20,
+            think_ms=SNAP_MS - 100),
+        act(Street.FLOP, 2, Act.CHECK, pot_before=60, think_ms=2_000),
+        act(Street.FLOP, 1, Act.BET, 40, 40, pot_before=60,
+            think_ms=2_000),
+        act(Street.FLOP, 2, Act.CALL, 40, 40, pot_before=100, to_call=40,
+            think_ms=SNAP_MS - 100),
+        act(Street.TURN, 2, Act.CHECK, pot_before=140, think_ms=2_000),
+        act(Street.TURN, 1, Act.BET, 100, 100, pot_before=140,
+            think_ms=2_000),
+        act(Street.TURN, 2, Act.FOLD, pot_before=240, to_call=100,
+            think_ms=TANK_MS + 500),
+    ], board=["As", "Kd", "7c", "2h"])
+    books = {}
+    record_hand(hand, books)
+    caller = books["b"]["hu"]
+    assert caller.rate("tank_fold:turn") == 1.0
+    assert caller.opps("tank_fold:turn") == 1
+    assert caller.opps("tank_fold:flop") == 0
+    assert caller.rate("snap_call:flop") == 1.0
+    assert caller.rate("tank_fold") == 1.0
+    assert caller.rate("snap_call") == 1.0
+    assert caller.rate("pace:snap:flop:call") == 1.0
+    assert caller.rate("timed:flop:call") == 1.0
+    # Folds are not pace-grid actions; tank_fold still records the pause.
+    assert caller.opps("pace:tank:turn:fold") == 0
+
+
+def test_timing_tells_use_share_and_outcomes_not_folklore():
+    """Snap-check share + fold-next vs normal — no 'Giving up' caption."""
+    from villain.features import record_hand
+    from villain.profile import build_profile
+    from villain.timing import timing_tells
+
+    books = {}
+    # Snap-check flop, then fold the turn bet → fold_next hits.
+    for i in range(10):
+        hand = build_hand([
+            act(Street.PREFLOP, 1, Act.POST_SB, 5, 5),
+            act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5),
+            act(Street.PREFLOP, 1, Act.RAISE, 25, 30, pot_before=15, to_call=5,
+                think_ms=2_000),
+            act(Street.PREFLOP, 2, Act.CALL, 20, 30, pot_before=40, to_call=20,
+                think_ms=2_000),
+            act(Street.FLOP, 2, Act.CHECK, pot_before=60, think_ms=400),
+            act(Street.FLOP, 1, Act.CHECK, pot_before=60, think_ms=2_000),
+            act(Street.TURN, 2, Act.CHECK, pot_before=60, think_ms=2_000),
+            act(Street.TURN, 1, Act.BET, 40, 40, pot_before=60, think_ms=2_000),
+            act(Street.TURN, 2, Act.FOLD, pot_before=100, to_call=40, think_ms=2_000),
+        ], board=["As", "Kd", "7c", "2h"])
+        hand.hand_id = f"snap{i}"
+        record_hand(hand, books)
+
+    # Normal-pace check flop, call the turn → fold_next misses.
+    for i in range(10):
+        hand = build_hand([
+            act(Street.PREFLOP, 1, Act.POST_SB, 5, 5),
+            act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5),
+            act(Street.PREFLOP, 1, Act.RAISE, 25, 30, pot_before=15, to_call=5,
+                think_ms=2_000),
+            act(Street.PREFLOP, 2, Act.CALL, 20, 30, pot_before=40, to_call=20,
+                think_ms=2_000),
+            act(Street.FLOP, 2, Act.CHECK, pot_before=60, think_ms=2_000),
+            act(Street.FLOP, 1, Act.CHECK, pot_before=60, think_ms=2_000),
+            act(Street.TURN, 2, Act.CHECK, pot_before=60, think_ms=2_000),
+            act(Street.TURN, 1, Act.BET, 40, 40, pot_before=60, think_ms=2_000),
+            act(Street.TURN, 2, Act.CALL, 40, 40, pot_before=100, to_call=40,
+                think_ms=2_000),
+        ], board=["As", "Kd", "7c", "2h"])
+        hand.hand_id = f"norm{i}"
+        record_hand(hand, books)
+
+    book = books["b"]["hu"]
+    assert book.rate("pace:snap:flop:check") == pytest.approx(0.5, abs=0.05)
+    assert book.rate("after:snap:flop:check:fold_next") == 1.0
+    assert book.rate("after:normal:flop:check:fold_next") == 0.0
+
+    profile = build_profile(book)
+    cells = {f"{c.pace}:{c.street}:{c.action}": c for c in timing_tells(profile)}
+    snap_check = cells["snap:flop:check"]
+    assert snap_check.n >= 5
+    assert snap_check.share == pytest.approx(0.5, abs=0.05)
+    assert snap_check.label != "Giving up"
+    assert snap_check.fold_next == pytest.approx(1.0)
+    assert snap_check.fold_next_base == pytest.approx(0.0)
+    assert "Weaker" in snap_check.label or "fold" in snap_check.read.lower()
+
+
+def test_aggression_denominator_includes_checks():
+    """A bet-or-check player is 50% aggressive once checks enter the denom."""
+    books = {}
+    for i, kind in enumerate((Act.CHECK, Act.BET)):
+        hand = build_hand([
+            act(Street.PREFLOP, 1, Act.POST_SB, 5, 5),
+            act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5),
+            act(Street.PREFLOP, 1, Act.CALL, 5, 10, pot_before=15, to_call=5),
+            act(Street.PREFLOP, 2, Act.CHECK, to_amount=10, pot_before=20),
+            act(Street.FLOP, 2, Act.CHECK, pot_before=20),
+            act(Street.FLOP, 1, kind, amount=10 if kind is Act.BET else 0,
+                to_amount=10 if kind is Act.BET else 0, pot_before=20),
+            act(Street.FLOP, 2, Act.FOLD, pot_before=30, to_call=10)
+            if kind is Act.BET else act(Street.FLOP, 2, Act.CHECK, pot_before=20),
+        ], board=["2c", "7d", "9h"])
+        hand.hand_id = f"agg{i}"
+        record_hand(hand, books)
+    book = books["a"]["hu"]
+    num = book.ratios["act:flop:bet"].hits + book.ratios["act:flop:raise"].hits
+    den = sum(book.ratios[f"act:flop:{k}"].hits
+              for k in ("bet", "raise", "call", "fold", "check"))
+    assert den == 2 and num / den == 0.5
+    # Without checks in the denom this would have been 1.0.
+    without_checks = sum(book.ratios[f"act:flop:{k}"].hits
+                         for k in ("bet", "raise", "call", "fold"))
+    assert num / without_checks == 1.0
+
+
+def test_fold_vs_bet_counts_once_per_street():
+    """Facing bet → raise → facing re-raise → fold is one opportunity for each."""
+    hand = build_hand([
+        act(Street.PREFLOP, 1, Act.POST_SB, 5, 5),
+        act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5),
+        act(Street.PREFLOP, 1, Act.CALL, 5, 10, pot_before=15, to_call=5),
+        act(Street.PREFLOP, 2, Act.CHECK, to_amount=10, pot_before=20),
+        act(Street.FLOP, 2, Act.CHECK, pot_before=20),
+        act(Street.FLOP, 1, Act.BET, 10, 10, pot_before=20),
+        act(Street.FLOP, 2, Act.RAISE, 30, 30, pot_before=30, to_call=10),
+        act(Street.FLOP, 1, Act.RAISE, 90, 90, pot_before=60, to_call=20),
+        act(Street.FLOP, 2, Act.FOLD, pot_before=150, to_call=60),
+    ], board=["2c", "7d", "9h"])
+    books = {}
+    record_hand(hand, books)
+    # Without the once-per-street gate, B would have 2 fold_vs_bet opportunities
+    # (raise, then fold). Only the first face counts.
+    assert books["b"]["hu"].opps("fold_vs_bet:flop") == 1
+    assert books["b"]["hu"].rate("fold_vs_bet:flop") == 0.0
+    assert books["a"]["hu"].opps("fold_vs_bet:flop") == 1
+    assert books["a"]["hu"].rate("fold_vs_bet:flop") == 0.0
+
+
+def test_fold_vs_bet_splits_hu_and_position():
+    hand = build_hand([
+        act(Street.PREFLOP, 1, Act.POST_SB, 5, 5),
+        act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5),
+        act(Street.PREFLOP, 1, Act.RAISE, 25, 30, pot_before=15, to_call=5),
+        act(Street.PREFLOP, 2, Act.CALL, 20, 30, pot_before=40, to_call=20),
+        act(Street.FLOP, 2, Act.CHECK, pot_before=60),
+        act(Street.FLOP, 1, Act.BET, 30, 30, pot_before=60),
+        act(Street.FLOP, 2, Act.FOLD, pot_before=90, to_call=30),
+    ], board=["2c", "7d", "9h"])
+    books = {}
+    record_hand(hand, books)
+    caller = books["b"]["hu"]
+    assert caller.rate("fold_vs_bet:flop:hu") == 1.0
+    assert caller.opps("fold_vs_bet:flop:mw") == 0
+    assert caller.rate("fold_vs_bet:flop:oop") == 1.0
+
+
+def test_uniformly_slow_player_is_not_a_tank_folder():
+    """Absolute 8s tanks would flag everyone slow; relative pace must not."""
+    from villain.features import TANK_MS
+
+    books = {}
+    slow = TANK_MS + 1_000
+    for i in range(8):
+        hand = build_hand([
+            act(Street.PREFLOP, 1, Act.POST_SB, 5, 5, think_ms=slow),
+            act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5, think_ms=slow),
+            act(Street.PREFLOP, 1, Act.RAISE, 25, 30, pot_before=15, to_call=5,
+                think_ms=slow),
+            act(Street.PREFLOP, 2, Act.CALL, 20, 30, pot_before=40, to_call=20,
+                think_ms=slow),
+            act(Street.FLOP, 2, Act.CHECK, pot_before=60, think_ms=slow),
+            act(Street.FLOP, 1, Act.BET, 40, 40, pot_before=60, think_ms=slow),
+            act(Street.FLOP, 2, Act.FOLD, pot_before=100, to_call=40, think_ms=slow),
+        ], board=["As", "Kd", "7c"])
+        hand.hand_id = f"slow{i}"
+        record_hand(hand, books)
+    caller = books["b"]["hu"]
+    # After a baseline of slow actions, another slow fold is normal pace.
+    assert caller.rate("tank_fold") == pytest.approx(0.0, abs=0.2)

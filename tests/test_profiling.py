@@ -7,11 +7,12 @@ model, and they are named for the mistake rather than the fix.
 import pytest
 
 from villain.archetypes import ARCHETYPES, IMPORTANCE, match, target_frequency
-from villain.exploits import MIN_OPPS, breakeven_fold, find_leaks
+from villain.exploits import (MIN_OPPS, SHOWDOWN_MIN_OPPS, breakeven_fold,
+                              dedupe_leaks, find_leaks, measured_bluff_size)
 from villain.priors import (HEADS_UP, POPULATION, REGIMES, THREE, prior_for,
                             population_mean, regime, shrink)
 from villain.profile import PROFILE_FEATURES, build_profile, build_profiles
-from villain.skill import rate
+from villain.skill import deduped_exploitability, rate
 from villain.stats import StatBook
 
 
@@ -175,4 +176,57 @@ def test_rating_components_are_transparent(synth_profile):
     skill = rate(synth_profile("lag", regime="hu", opps=120))
     assert skill.components
     assert all(0 <= c.score <= 100 for c in skill.components)
-    assert any(c.name == "resistance to exploitation" for c in skill.components)
+    assert any(c.name == "Resistance to exploitation" for c in skill.components)
+
+
+def test_size_bucket_breakeven_matches_bucket_midpoint():
+    assert breakeven_fold(0.33) == pytest.approx(0.33 / 1.33)
+    assert breakeven_fold(0.85) == pytest.approx(0.85 / 1.85)
+
+
+def test_measured_bluff_size_prefers_player_sizing():
+    book = StatBook(player_id="x", name="X", regime="hu", hands=50)
+    profile = build_profile(book)
+    profile.means["bet_size:flop"] = 0.4
+    assert measured_bluff_size(profile, "flop") == pytest.approx(0.4)
+    assert measured_bluff_size(profile, "flop", "big") == pytest.approx(0.85)
+
+
+def test_overlapping_leaks_do_not_double_count_skill():
+    from villain.exploits import Leak, dedupe_leaks
+    from villain.playbook import entry_for
+
+    leaks = [
+        Leak("overfold_flop", "a", "b", "fold_vs_bet:flop", 0.6, 0.4, 0.4,
+             20, 0.9, 0.3, 2.0, "high", entry_for("overfold_flop")),
+        Leak("overfold_cbet", "a", "b", "fold_to_cbet:flop", 0.6, 0.4, 0.4,
+             20, 0.9, 0.3, 1.5, "high", entry_for("overfold_cbet")),
+        Leak("overfold_flop_big", "a", "b", "fold_vs_bet:flop:big", 0.7, 0.46, 0.4,
+             12, 0.85, 0.25, 1.8, "high", entry_for("overfold_flop_big")),
+    ]
+    assert deduped_exploitability(leaks) == pytest.approx(2.0)
+    assert {l.id for l in dedupe_leaks(leaks)} == {"overfold_flop"}
+
+
+def test_showdown_leaks_need_thicker_samples(synth_profile):
+    profile = synth_profile("maniac", regime="hu", opps=12)
+    # Thin river_bet_bluff must not clear the showdown bar.
+    if "river_bet_bluff" in profile.stats:
+        profile.stats["river_bet_bluff"] = shrink(
+            8, 12, 0.30, 20)
+        assert profile.stats["river_bet_bluff"].opps < SHOWDOWN_MIN_OPPS
+        ids = {l.id for l in find_leaks(profile)}
+        assert "bluffs_rivers" not in ids
+
+
+def test_resolve_stat_prefers_oop_fold_sample():
+    from villain.exploits import RULES, _resolve_stat
+    from villain.priors import shrink
+
+    book = StatBook(player_id="x", name="X", regime="hu", hands=100)
+    profile = build_profile(book)
+    # Thick OOP sample, thin pooled.
+    profile.stats["fold_vs_bet:flop"] = shrink(5, 6, 0.4, 20)
+    profile.stats["fold_vs_bet:flop:oop"] = shrink(40, 50, 0.4, 20)
+    rule = next(r for r in RULES if r.id == "overfold_flop")
+    assert _resolve_stat(profile, rule) == "fold_vs_bet:flop:oop"

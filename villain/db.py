@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from .features import record_hand
+from .features import record_hands
 from .model import Hand, hand_from_dict, hand_to_dict
 from .stats import Meter, Ratio, StatBook
 
@@ -365,8 +365,9 @@ class Store:
             if hit is not None:
                 return hit
             return alias_map.get((site, account))
-        books: dict[str, dict[str, StatBook]] = {}
+        books: dict[str, dict[str, StatBook]]
         names: dict[str, str] = {}
+        hands: list[Hand] = []
         for row in self.conn.execute("SELECT site, payload FROM hands ORDER BY started_at"):
             data = json.loads(gzip.decompress(row["payload"]))
             hand = hand_from_dict(data)
@@ -377,7 +378,10 @@ class Store:
                     continue
                 names[str(pid)] = seat.name or names.get(str(pid), "")
                 seat.player_id = str(pid)
-            record_hand(hand, books)
+            hands.append(hand)
+        # Two-pass timing: freeze each player's snap/tank cutoffs from the
+        # full sample, then tag every hand with those same thresholds.
+        books = record_hands(hands)
 
         wanted = {str(p) for p in only} if only else None
         written = 0
