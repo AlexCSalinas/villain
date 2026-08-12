@@ -223,6 +223,25 @@ def test_bluff_severity_is_absolute_bb_per_100():
     assert _severity(profile, rule, 0.60, 0.40) == pytest.approx(35.0)
 
 
+def test_limps_priced_as_preflop_isolation_not_flop_bluff():
+    """Regression: limps used the flop-bluff EV model against limp frequency,
+    so a 30% limper printed ~75 bb/100 from that leak alone."""
+    from villain.exploits import RULES, _severity
+    from villain.priors import shrink
+
+    book = StatBook(player_id="x", name="X", regime="6max", hands=100)
+    book.meters["table_size"].add(6, 1)
+    profile = build_profile(book)
+    profile.hands = 100
+    profile.stats["limp"] = shrink(30, 100, 0.15, 40)
+    profile.means["open_bb"] = 3.0
+    rule = next(r for r in RULES if r.id == "limps")
+    assert rule.spot == "preflop" and rule.ev == "steal"
+    # Excess limp 0.15 × (open 3 + blinds+limp 2.5) × capture 0.5 × 100 spots
+    # = 0.15 * 5.5 * 0.5 * 100 = 41.25
+    assert _severity(profile, rule, 0.30, 0.15) == pytest.approx(41.25)
+
+
 def test_overlapping_leaks_do_not_double_count_skill():
     from villain.exploits import Leak, dedupe_leaks
     from villain.playbook import entry_for

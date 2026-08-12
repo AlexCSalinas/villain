@@ -1408,7 +1408,7 @@ function rosterTable(players, opts) {
       <th data-k="top_leak">biggest leak</th>
     </tr></thead><tbody></tbody></table>`;
   const body = $("tbody", wrap);
-  let sort = {key: "hands", dir: -1};
+  let sort = {key: "skill", dir: -1};
   function draw() {
     const rows = [...players].sort((a, b) => {
       const x = a[sort.key], y = b[sort.key];
@@ -1438,7 +1438,7 @@ function rosterTable(players, opts) {
         <td><span class="tag ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
             <div class="small muted">${fmtPct(p.confidence)} sure</div></td>
         <td class="num"></td>
-        <td class="num">${p.exploitability ? p.exploitability.toFixed(1) + " bb" : "\u2014"}</td>
+        <td class="num">${p.exploitability ? p.exploitability.toFixed(1) + " bb/100" : "\u2014"}</td>
         <td class="small leakcell">${p.top_leak ? esc(p.top_leak)
           : '<span class="muted">nothing yet</span>'}</td>`;
       const holder = document.createElement("div");

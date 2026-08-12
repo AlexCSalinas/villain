@@ -170,7 +170,7 @@ def roster(profiles: list[Profile]) -> str:
         rows.append(
             f"{p.name[:16]:16s} {p.regime_label[:10]:10s} {p.hands:6d}  "
             f"{p.archetype:11s} {p.skill.score:5.0f}/100  "
-            f"{p.skill.exploitability:6.1f}bb  {top[:28]}")
+            f"{p.skill.exploitability:6.1f}bb/100  {top[:28]}")
     return "\n".join(rows)
 
 
