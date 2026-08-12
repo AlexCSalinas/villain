@@ -918,6 +918,13 @@ PAGE = r"""<!doctype html>
   .narration blockquote {
     margin: 0 0 6px; padding: 0 0 0 13px; border-left: 2px solid var(--red);
   }
+  .narration ul.suggested { margin: 4px 0; padding-left: 0; list-style: none; }
+  .narration ul.suggested li {
+    position: relative; padding: 0 0 0 16px; margin: 0 0 10px;
+  }
+  .narration ul.suggested li::before {
+    content: "\u2013"; position: absolute; left: 0; color: var(--red);
+  }
   .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
   .ev { display: grid; grid-template-columns: 54px 1fr auto; gap: 10px;
         align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line);
@@ -1393,13 +1400,15 @@ function profileCard(p, opts) {
   return card;
 }
 
-/* A written-to-order description of this specific player, on demand.
-   Only offered on a saved player: it costs a model call, and an unsaved
+/* Exploits the rule engine did not find, written to order for this player.
+   The rules only fire on patterns somebody thought to encode; a model reading
+   the same numbers can combine them and reach spots no single rule covers.
+   Offered only on a saved player: it costs a model call, and an unsaved
    session has no stable identity to attach the result to. */
 function buildNarrator(box, profile) {
   const button = document.createElement("button");
   button.className = "act small";
-  button.textContent = "Describe this player";
+  button.textContent = "Generate additional exploits";
   const out = document.createElement("div");
   out.className = "narration";
   box.append(button, out);
@@ -1411,17 +1420,32 @@ function buildNarrator(box, profile) {
     out.innerHTML = "";
     try {
       const result = await post("/api/narrate", {profile: profile});
-      out.innerHTML = `<blockquote>${esc(result.text)}</blockquote>
-        <div class="small muted">written by ${esc(result.model)} from the
-          numbers on this page \u2014 it is given the computed profile and
-          cannot state a figure the profile did not produce</div>`;
-      button.textContent = "Rewrite";
+      out.innerHTML = `${renderBullets(result.text)}
+        <div class="small muted" style="margin-top:8px">suggested by
+          ${esc(result.model)} from the numbers on this page \u2014 it is given
+          the computed profile and cannot state a figure the profile did not
+          produce. These are not measured reads: check them against the hands
+          before trusting them.</div>`;
+      button.textContent = "Suggest more";
     } catch (err) {
       out.innerHTML = `<div class="small err">${esc(err.message)}</div>`;
       button.textContent = original;
     }
     button.disabled = false;
   };
+}
+
+/* The model returns bullets. Render them as a list rather than a wall of
+   text, and fall back to paragraphs if it ignored the instruction. */
+function renderBullets(text) {
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const bullets = lines.filter(l => /^[-*\u2022]\s+/.test(l));
+  if (bullets.length < 2) {
+    return lines.map(l => `<p>${esc(l)}</p>`).join("");
+  }
+  const items = bullets
+    .map(l => `<li>${esc(l.replace(/^[-*\u2022]\s+/, ""))}</li>`).join("");
+  return `<ul class="suggested">${items}</ul>`;
 }
 
 /* ---- a strip of player tabs over one profile at a time ---- */

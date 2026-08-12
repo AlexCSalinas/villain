@@ -152,6 +152,58 @@ STATS: dict[str, dict[str, str]] = {
         "high": "They pay off. Value bet every made hand.",
         "low": "Their calls are strong. Do not bet thin against them.",
     },
+    "bb_fold_to_open": {
+        "what": "In the big blind facing a raise, how often they fold.",
+        "high": "Their blind is free money. Raise it with anything.",
+        "low": "They defend. Open hands that can play after the flop.",
+    },
+    "call_vs_bet:flop": {
+        "what": "Facing a bet on the flop, how often they call rather than "
+                "fold or raise.",
+        "high": "They float wide. Keep betting the turn -- most of that "
+                "calling range missed.",
+        "low": "They fold or raise instead of calling; their flop calls mean "
+               "something.",
+    },
+    "call_vs_bet:turn": {
+        "what": "Facing a bet on the turn, how often they call rather than "
+                "fold or raise.",
+        "high": "Sticky on the turn. Value bet thinner and cut the bluffs.",
+        "low": "They will not call turns; barrel them.",
+    },
+    "call_vs_bet:river": {
+        "what": "Facing a bet on the river, how often they call rather than "
+                "fold or raise.",
+        "high": "They pay off. Bet every made hand and never bluff.",
+        "low": "They fold rivers. Bluff the last street relentlessly.",
+    },
+    "call_cbet:flop": {
+        "what": "Facing a continuation bet from the preflop raiser, how often "
+                "they call rather than fold or raise.",
+        "high": "They call the flop wide and give up later. Fire again.",
+        "low": "They fold or raise the flop rather than calling along.",
+    },
+    "raise_vs_bet:flop": {
+        "what": "Facing a bet on the flop, how often they raise.",
+        "high": "Aggressive with their flop range. Bet thinner and be ready to "
+                "fold to the raise.",
+        "low": "They never raise flops, so your bets face no real risk.",
+    },
+    "check_raise:turn": {
+        "what": "Having checked the turn, how often they raise a bet.",
+        "high": "Dangerous to bet into. Check back marginal hands on the turn.",
+        "low": "Their turn check is a surrender; bet it freely.",
+    },
+    "probe:turn": {
+        "what": "Betting the turn after the previous street's aggressor gave up.",
+        "high": "They punish a checked flop. Continue more of your range.",
+        "low": "They let checked pots go. Stab at the turn yourself.",
+    },
+    "probe:river": {
+        "what": "Betting the river after the previous street's aggressor gave up.",
+        "high": "They attack checked rivers; their bets there are often air.",
+        "low": "They check rivers back. Value bet thinner against them.",
+    },
     "tank_fold": {
         "what": "How often a fold came after a long pause.",
         "high": "Long pauses mean they are looking for a fold. Their quick "

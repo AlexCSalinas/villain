@@ -44,8 +44,15 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from .glossary import stat_help
+
 DEFAULT_URL = "http://localhost:11434/v1/chat/completions"
 DEFAULT_MODEL = "llama3.2"
+
+#: Lightest first. The job is short, specific bullets from a fact sheet,
+#: not prose that needs a large model -- and the small models have the
+#: roomier free quotas, which is what actually decides whether the button
+#: works when you press it.
 
 #: A 450-word report is a slow generation. The old 60s was tight enough that a
 #: busy endpoint looked like a broken one.
@@ -102,32 +109,31 @@ def setting(name: str, default: str | None = None) -> str | None:
     return os.environ.get(name) or _config().get(name) or default
 
 SYSTEM = (
-    "You are a poker coach writing a scouting report on one opponent, for a "
-    "player about to sit down with them. You are given facts already computed "
-    "from their hand history. Write a detailed profile.\n\n"
-    "Cover, in this order, as flowing paragraphs:\n"
-    "1. What kind of player they are -- the shape of their game, not a "
-    "restatement of the label.\n"
-    "2. Their strengths: what they do competently, and which parts of their "
-    "game not to attack. If the facts show none worth naming, say so rather "
-    "than inventing one.\n"
-    "3. Their exploitable weaknesses, most valuable first, and the mechanism "
-    "behind each -- why it costs them money, not merely that it exists.\n"
-    "4. What to do: concrete adjustments, with streets and bet sizes where the "
-    "facts supply them.\n"
-    "5. What not to do: how a player who read this profile would over-adjust "
-    "and hand the money back. This matters as much as the section before it.\n\n"
+    "You are a poker coach. You are given facts computed from one opponent's "
+    "hand history, including the leaks a rule engine has already reported. "
+    "Your job is to find the exploits it missed.\n\n"
+    "Write bullet points. Nothing else -- no introduction, no summary, no "
+    "closing paragraph. Each bullet is one specific, playable exploit.\n\n"
+    "Each bullet must give:\n"
+    "- the exact situation it applies to (street, position, what happened "
+    "before);\n"
+    "- what to do, with a bet size where the facts support one;\n"
+    "- why it works, in terms of what their numbers say about the range they "
+    "hold there.\n\n"
     "Rules you must follow:\n"
-    "- Use only the facts given. Never state a figure that is not in them. To "
-    "describe a frequency you were not told, use words or leave it out.\n"
-    "- Prefer words to numbers throughout. \'folds most rivers\' beats \'51%\'.\n"
-    "- Four to six paragraphs, at least 250 words. No headings, no bullet "
-    "points, no preamble, no sign-off. Just the report.\n"
-    "- Plain English a competent player would use at the table.\n"
-    "- Be specific to this opponent. Generic advice that would fit anyone is "
-    "worthless here.\n"
-    "- If the sample is small, say which parts of the read are provisional "
-    "rather than hedging every sentence."
+    "- Go past the leaks already listed. Do not restate them. Combine "
+    "statistics, look at what a frequency implies two streets later, and find "
+    "the spots that follow from several numbers at once rather than one.\n"
+    "- Use only the numbers given. Never state a figure that is not in the "
+    "facts. Describe frequencies you were not given in words, or leave them "
+    "out.\n"
+    "- Be concrete. 'Bet more against them' is not an exploit; 'when they "
+    "check the turn after calling a flop bet, bet two thirds pot with any two "
+    "cards' is.\n"
+    "- Four to seven bullets. Each one to three sentences.\n"
+    "- If the sample is too thin to support a bullet, do not write it. Fewer "
+    "real exploits beats a full list of guesses.\n"
+    "- Plain English a player would use at the table."
 )
 
 
@@ -184,19 +190,30 @@ def fact_sheet(payload: dict) -> str:
     for item in payload.get("strengths") or []:
         lines.append(f"Does competently (do not attack): {item}")
 
-    # Only well-observed frequencies. A stat with four observations is noise,
-    # and handing it to a model invites a confident sentence about nothing.
+    # Only well-observed frequencies, and each one spelled out. Handing over a
+    # key like "cbet:turn" invites a confident sentence about the wrong thing:
+    # the number is real, the reading is not, and no guard on invented figures
+    # catches a correctly quoted statistic used to mean something else.
     measured = []
     for stat, entry in (payload.get("stats") or {}).items():
-        if isinstance(entry, dict) and (entry.get("opportunities") or 0) >= 10:
-            measured.append(f"- {stat}: {round(100 * entry['value'])}% over "
-                            f"{round(entry['opportunities'])} spots")
+        if not isinstance(entry, dict) or (entry.get("opportunities") or 0) < 10:
+            continue
+        help_text = stat_help(stat)
+        if help_text is None:
+            # If the tool cannot say unambiguously what a number counts, it has
+            # no business handing it to something that will write a confident
+            # sentence about it.
+            continue
+        measured.append(f"- {help_text['what']} {round(100 * entry['value'])}%, "
+                        f"measured over {round(entry['opportunities'])} spots")
     if measured:
-        lines.append("Measured frequencies, with the observations behind each:")
+        lines.append("Measured frequencies. Each line says exactly what was "
+                     "counted; do not read them as anything else:")
         lines.extend(measured)
 
     if payload.get("leaks"):
-        lines.append("Leaks found, most valuable first:")
+        lines.append("ALREADY REPORTED to the user -- do not restate these, "
+                     "build past them:")
         for leak in payload["leaks"]:
             lines.append(
                 f"- {leak['headline']}. {leak['in_words']} "
@@ -207,7 +224,10 @@ def fact_sheet(payload: dict) -> str:
     else:
         lines.append("No leak has enough evidence behind it yet.")
     for combo in payload.get("combinations", []):
-        lines.append(f"Compounding: {combo['headline']}. {combo['body']}")
+        lines.append(f"Also already reported: {combo['headline']}. {combo['body']}")
+    for item in payload.get("watchlist") or []:
+        lines.append(f"Suspected but unconfirmed: {item['headline']}. "
+                     f"{item['in_words']}")
     return "\n".join(lines)
 
 
