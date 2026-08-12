@@ -38,11 +38,10 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
         out.append(f"  measured against {profile.regime_label} norms")
     else:
         out.append(f"  {profile.regime_label}")
-    out.append(RULE)
 
     # 1. The plan.
     if arch:
-        out.append(f"READ: {profile.archetype.upper()}  "
+        out.append(f"READ: {profile.archetype}  "
                    f"(confidence {profile.archetype_confidence:.0%})")
         out.append(f"  {arch.summary}")
         out.append("")
@@ -64,15 +63,15 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
         for line in _wrap(leak.in_words, WIDTH - 6):
             out.append(f"      {line}")
         out.append("")
-        for label, text in (("WHAT", leak.behaviour), ("WHY", leak.why),
-                            ("DO", leak.do), ("DON'T", leak.dont)):
+        for label, text in (("what", leak.behaviour), ("why", leak.why),
+                            ("do", leak.do), ("don't", leak.dont)):
             if not text:
                 continue
             wrapped = _wrap(text, WIDTH - 14)
             out.append(f"      {label:6s}  {wrapped[0]}")
             for line in wrapped[1:]:
                 out.append(f"              {line}")
-        out.append(f"      {'SIZE':6s}  " + _wrap(leak.priority, WIDTH - 14)[0])
+        out.append(f"      {'size':6s}  " + _wrap(leak.priority, WIDTH - 14)[0])
         for line in _wrap(leak.priority, WIDTH - 14)[1:]:
             out.append(f"              {line}")
         out.append("")
@@ -82,7 +81,7 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
 
     watch = find_watchlist(profile)
     if watch:
-        out.append("  NOT CONFIRMED YET")
+        out.append("  not confirmed yet")
         for leak in watch:
             out.append(f"    {leak.headline}  ({leak.confidence:.0%} sure, "
                        f"n={leak.opps:.0f})")
@@ -92,7 +91,7 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
 
     weak = weaknesses(profile.skill)
     if weak and not leaks:
-        out.append("  WEAKEST PARTS OF THEIR GAME")
+        out.append("  weakest parts of their game")
         out.append("  (no frequency clears the evidence bar, but this is where")
         out.append("   the rating says their game is thinnest)")
         for c in weak:
@@ -102,7 +101,7 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
 
     combos = combinations_for(l.id for l in leaks)
     if combos:
-        out.append("  THESE COMPOUND")
+        out.append("  these compound")
         for combo in combos:
             out.append(f"    {combo.headline}")
             for line in _wrap(combo.body, WIDTH - 6):
@@ -125,7 +124,7 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
     out.append("")
 
     # 4. The numbers, for anyone who wants to check the work.
-    out.append("KEY NUMBERS  (shrunk estimate, raw sample in brackets)")
+    out.append("key numbers  (shrunk estimate, raw sample in brackets)")
     for stat, label in _HEADLINE_STATS:
         est = profile.stats.get(stat)
         if est is None:
@@ -135,13 +134,13 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
 
     if verbose:
         out.append("")
-        out.append("DEVIATIONS FROM THE FIELD  (in population spreads)")
+        out.append("deviations from the field  (in population spreads)")
         for feature, z in sorted(deviations(profile).items(), key=lambda kv: -abs(kv[1]))[:12]:
             out.append(f"    {feature:26s} {z:+.2f}")
         timing = profile.means.get("think:fold"), profile.means.get("think:aggro")
         if any(t is not None for t in timing):
             out.append("")
-            out.append("TIMING")
+            out.append("timing")
             for key in ("think:fold", "think:call", "think:check", "think:aggro"):
                 value = profile.means.get(key)
                 if value:

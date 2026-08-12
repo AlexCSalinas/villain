@@ -47,7 +47,7 @@ from .features import record_hands
 from .evidence import find as find_evidence
 from .glossary import payload as glossary_payload
 from .model import hand_from_dict, hand_to_dict
-from .identity import session_questions, suggest_links
+from .identity import askable_questions, auto_answers, session_questions, suggest_links
 from .skill import weaknesses
 from .narrate import Unavailable, enabled as narrator_enabled, narrate
 from .parsers import UnknownFormat, parse_file
@@ -118,7 +118,10 @@ def profile_payload(profile, player_id: int | None = None) -> dict:
             "stat": stat, "label": label, "denominator": denominator,
             "value": round(est.value, 4), "lo": round(est.lo, 4), "hi": round(est.hi, 4),
             "raw": None if est.raw is None else round(est.raw, 4),
-            "opps": est.opps, "weight": round(est.weight, 3),
+            # Opportunity counts are fractional inside the model (pooling
+            # across table sizes), but a sample size rendered as
+            # 92.86041666666667 is noise on screen.
+            "opps": round(est.opps, 1), "weight": round(est.weight, 3),
             **_references(stat, profile.regime, profile),
         })
     arch = ARCHETYPE_BY_NAME.get(profile.archetype)
@@ -222,6 +225,12 @@ def roster_payload(store: Store) -> list[dict]:
 # A session is deliberately not written anywhere. You can drop a file in, read
 # the table, and close the tab without the database gaining a single hand.
 
+#: Hostnames the UI may be reached on. Anything else is a rebinding attempt.
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", ""})
+
+#: Cap on a request body. The upload route holds what it reads in memory.
+MAX_BODY_BYTES = 64 * 1024 * 1024
+
 SESSIONS: dict[str, dict] = {}
 SESSION_TTL = 6 * 3600
 MAX_SESSIONS = 12
@@ -312,6 +321,36 @@ def merged_hands(session: dict, extra: dict | None = None) -> list:
     return hands
 
 
+def session_identity_labels(session: dict) -> dict[str, dict]:
+    """For each pooled display name, session aliases and a database name if linked.
+
+    After auto-merge the roster title is often already the database name; the
+    muted line still needs the other side so you can see what is merging with
+    what.
+    """
+    answers = session.get("answers") or {}
+    by_keep: dict[str, dict] = {}
+    for question in session.get("questions") or []:
+        answer = answers.get(question.id)
+        if not answer or not answer.get("same"):
+            continue
+        keep = answer.get("name") or question.default_name
+        if not keep:
+            continue
+        entry = by_keep.setdefault(keep, {"db_name": None, "session_names": []})
+        sides = [s for s in (question.left, question.right) if s]
+        db_side = next((s for s in sides
+                        if "database" in (s.get("where") or "")), None)
+        if db_side and db_side.get("name"):
+            entry["db_name"] = db_side["name"]
+        for side in sides:
+            name = side.get("name")
+            where = side.get("where") or ""
+            if name and "session" in where and name not in entry["session_names"]:
+                entry["session_names"].append(name)
+    return by_keep
+
+
 def session_payload(token: str, store: Store | None = None) -> dict:
     """Profiles for an uploaded session. Reads the store, never writes to it."""
     session = SESSIONS[token]
@@ -330,12 +369,54 @@ def session_payload(token: str, store: Store | None = None) -> dict:
                 if p is not None]
     profiles.sort(key=lambda p: -p.hands)
 
+    labels = session_identity_labels(session)
+    # Also surface database display names from already-linked aliases when the
+    # session did not need a question (same account id, same name).
+    if store is not None:
+        alias_names = {
+            (r["site"], r["account"]): r["name"]
+            for r in store.conn.execute(
+                "SELECT site, account, name FROM aliases")
+        }
+        player_names = {int(r["id"]): r["display_name"] for r in store.players()}
+        alias_player = {
+            (r["site"], r["account"]): int(r["player_id"])
+            for r in store.conn.execute(
+                "SELECT site, account, player_id FROM aliases")
+        }
+        for hand in session["hands"]:
+            for seat in hand.seats:
+                key = (hand.site, seat.player_id)
+                pid = alias_player.get(key) or alias_player.get(
+                    (hand.site, split_key(seat.player_id, seat.name)))
+                if pid is None:
+                    continue
+                db_name = player_names.get(pid) or alias_names.get(key)
+                if not db_name:
+                    continue
+                # Profile name after merge is the keep/db name.
+                keep = db_name
+                entry = labels.setdefault(
+                    keep, {"db_name": None, "session_names": []})
+                entry["db_name"] = db_name
+                if seat.name and seat.name not in entry["session_names"]:
+                    entry["session_names"].append(seat.name)
+
     rows = []
+    profile_payloads = []
     for profile in profiles:
         enrich(profile)
         top = profile.tags[0] if profile.tags else None
-        rows.append({
+        link = labels.get(profile.name) or {}
+        db_name = link.get("db_name")
+        session_names = [n for n in (link.get("session_names") or [])
+                         if n and n != profile.name]
+        if db_name and db_name != profile.name and profile.name not in session_names:
+            session_names = [profile.name] + session_names
+        row = {
             "player_id": None, "name": profile.name,
+            "db_name": db_name if db_name else None,
+            "session_names": session_names,
             "regime": profile.regime, "regime_label": profile.regime_label,
             "table_mix": profile.table_mix,
             "hands": profile.hands, "sample_quality": profile.sample_quality,
@@ -345,16 +426,23 @@ def session_payload(token: str, store: Store | None = None) -> dict:
             "exploitability": profile.skill.exploitability,
             "top_leak": top.headline if top else None,
             "leak_count": len(profile.tags),
-        })
+        }
+        rows.append(row)
+        pp = profile_payload(profile)
+        pp["db_name"] = row["db_name"]
+        pp["session_names"] = row["session_names"]
+        profile_payloads.append(pp)
     return {
         "token": token,
         "files": session["files"],
         "hands": len(session["hands"]),
         "players": rows,
-        "profiles": [profile_payload(p) for p in profiles],
+        "profiles": profile_payloads,
         "saved": session.get("saved", False),
-        "questions": [question_payload(q) for q in session.get("questions", [])],
+        "questions": [question_payload(q) for q in askable_questions(
+            session.get("questions") or [])],
         "answered": bool(session.get("answers")),
+        "auto_merged": len(auto_answers(session.get("questions") or [])),
         "merges": [{"from": k[1], "to": v["name"]}
                    for k, v in (session.get("merges") or {}).items()],
     }
@@ -366,6 +454,7 @@ def question_payload(question) -> dict:
         "detail": question.detail, "default": question.default,
         "confidence": question.confidence, "left": question.left, "right": question.right,
         "names": question.names, "default_name": question.default_name,
+        "auto": question.auto,
     }
 
 
@@ -374,12 +463,15 @@ def apply_answers(session: dict, answers: dict) -> None:
 
     Asked at upload rather than at save, so the session you are reading has
     already combined them. One player split across two names halves both
-    samples exactly when sample size is the scarce thing.
+    samples exactly when sample size is the scarce thing. New answers merge
+    onto any auto-applied ones rather than replacing them.
     """
-    session["answers"] = answers
+    merged_answers = dict(session.get("answers") or {})
+    merged_answers.update(answers or {})
+    session["answers"] = merged_answers
     merges: dict[tuple[str, str], dict] = {}
     for question in session.get("questions", []):
-        answer = answers.get(question.id) or {}
+        answer = merged_answers.get(question.id) or {}
         if not answer.get("same"):
             continue
         keep_name = answer.get("name") or question.default_name
@@ -605,18 +697,55 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, [{
                         "keep": s.keep, "absorb": s.absorb,
                         "keep_name": s.keep_name, "absorb_name": s.absorb_name,
+                        "matched_a": s.matched_a, "matched_b": s.matched_b,
                         "confidence": s.confidence, "reason": s.reason,
                     } for s in suggest_links(store)])
             return self._send(404, {"error": "not found"})
         except Exception as exc:                      # keep the server alive
             return self._send(500, {"error": str(exc)})
 
+    def _same_origin(self) -> bool:
+        """Accept only requests the local UI itself could have made.
+
+        Checks Origin when the browser sends one, falls back to Referer, and
+        validates Host either way so a DNS-rebinding name cannot point at this
+        port and read the database. A request with neither header is allowed:
+        that is curl and the CLI, which are not a browser and carry no
+        ambient cookies or cross-site risk.
+        """
+        host = (self.headers.get("Host") or "").split(":")[0]
+        if host and host not in LOCAL_HOSTS:
+            return False
+        stated = self.headers.get("Origin") or self.headers.get("Referer")
+        if not stated:
+            return True
+        try:
+            parsed = urlparse(stated)
+        except ValueError:
+            return False
+        return parsed.hostname in LOCAL_HOSTS
+
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
+        if not self._same_origin():
+            # Every POST here is a write, and two of them are irreversible: a
+            # merge cannot be undone and a reset empties the database. Without
+            # this check any page open in the same browser could fire one at
+            # localhost -- a text/plain body is a CORS-simple request, so it is
+            # sent without a preflight and the typed "delete everything"
+            # confirmation, which lives in the page, never enters into it.
+            return self._send(403, {"error": "cross-origin request refused"})
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            return self._send(400, {"error": "bad content-length"})
+        if length < 0 or length > MAX_BODY_BYTES:
+            return self._send(413, {"error": "body too large"})
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
             return self._send(400, {"error": "bad json"})
+        if not isinstance(body, dict):
+            return self._send(400, {"error": "body must be an object"})
         route = urlparse(self.path).path
         try:
             if route == "/api/upload":
@@ -705,7 +834,14 @@ class Handler(BaseHTTPRequestHandler):
         # pooled. Reading the database to ask a better question is not the
         # same as writing to it -- nothing is stored until you save.
         with Store(self.db_path) as store:
-            SESSIONS[token]["questions"] = session_questions(store, unique)
+            questions = session_questions(store, unique)
+            SESSIONS[token]["questions"] = questions
+            # Clear matches to existing players (and same-account renames) are
+            # applied immediately — keep the database display name, only ask
+            # about leftover net-new / ambiguous pairs.
+            auto = auto_answers(questions)
+            if auto:
+                apply_answers(SESSIONS[token], auto)
             payload = session_payload(token, store)
         payload["rejected"] = rejected
         return self._send(200, payload)
@@ -749,15 +885,22 @@ PAGE = r"""<!doctype html>
     color-scheme: light;
     --bg: #f6f6f5; --panel: #ffffff; --ink: #111111; --muted: #6b6b68;
     --line: #e3e2df; --accent: #111111; --accent-soft: #f1f0ee;
-    --warn: #b4532a;
+    /* One warm hue, and it is load-bearing: the breakeven tick, a destructive
+       control, an unconfirmed claim. --red and --danger used to be declared
+       only inside the two dark blocks, so in light mode every rule using them
+       was invalid at computed-value time -- the reset link lost its colour and
+       the skill badge lost its whole border shorthand. */
+    --warn: #9a4a2c; --danger: #9a4a2c; --red: #9a4a2c;
     /* Neutral ordinal ramp, validated light->dark on the panel surface:
-       light end clears 2:1, monotone lightness, visible step gaps. Shade
-       carries confidence, never identity. */
-    --mark-1: #a8a6a2;   /* tentative */
+       light end clears 3:1 for graphical objects, monotone lightness, visible
+       step gaps. Shade carries confidence, never identity. */
+    --mark-1: #8a8a86;   /* tentative */
     --mark-2: #5c5a57;   /* likely */
     --mark-3: #111111;   /* strong */
     --band: #e8e7e4;     /* credible interval wash */
-    --grid: #e6e5e2; --axis: #b9b7b2; --tick: #898781;
+    /* --axis is the population reference drawn on every chart; at #b9b7b2 it
+       sat at 2.0:1 and was effectively invisible. */
+    --grid: #e6e5e2; --axis: #8a8a86; --tick: #6f6e69;
     --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   @media (prefers-color-scheme: dark) {
@@ -768,7 +911,7 @@ PAGE = r"""<!doctype html>
       --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
       --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
       --band: #26272a;
-      --grid: #232427; --axis: #3a3b3e; --tick: #898781;
+      --grid: #232427; --axis: #75746f; --tick: #9b9a94;
     }
   }
   :root[data-theme="dark"] {
@@ -778,7 +921,7 @@ PAGE = r"""<!doctype html>
     --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
     --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
     --band: #26272a;
-    --grid: #232427; --axis: #3a3b3e; --tick: #898781;
+    --grid: #232427; --axis: #75746f; --tick: #9b9a94;
   }
   * { box-sizing: border-box; }
   body {
@@ -788,14 +931,10 @@ PAGE = r"""<!doctype html>
   .wrap { max-width: 1060px; margin: 0 auto; padding: 24px 20px 90px; }
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
   h1 {
-    font-size: 40px; margin: 0; letter-spacing: -0.05em; font-weight: 800;
-    line-height: 0.95;
+    font-size: 24px; margin: 0; letter-spacing: -0.02em; font-weight: 600;
+    line-height: 1.1;
   }
   h1 a { color: inherit; text-decoration: none; display: inline-flex; align-items: center; }
-  h1 .dot {
-    width: 10px; height: 10px; border-radius: 50%; background: var(--red);
-    display: inline-block; margin-left: 8px; margin-bottom: 18px;
-  }
   .iconbtn {
     border: 1px solid var(--line); background: transparent; color: var(--muted);
     border-radius: 999px; width: 34px; height: 34px; cursor: pointer;
@@ -810,30 +949,33 @@ PAGE = r"""<!doctype html>
     font: inherit; font-size: 14px; padding: 8px 14px; cursor: pointer; border-radius: 0;
   }
   nav button:hover { color: var(--ink); }
-  nav button.on { color: var(--ink); border-bottom-color: var(--red); font-weight: 600; }
+  nav button.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
   .panel {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 18px; margin: 16px 0;
   }
   .panel h2 {
-    font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em;
-    color: var(--muted); margin: 0 0 14px; font-weight: 600;
+    /* A section title, not a micro-label. It was 11.5px uppercase muted, which
+       made it compete with the content underneath instead of introducing it. */
+    font-size: 15px;
+    color: var(--ink); margin: 0 0 14px; font-weight: 600;
   }
   table { border-collapse: collapse; width: 100%; font-size: 14px; }
   th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
-  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  th { font-size: 11.5px;
        color: var(--muted); font-weight: 600; cursor: pointer; white-space: nowrap; }
   th.sorted::after { content: " \25BE"; color: var(--accent); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   tbody tr.clickable { cursor: pointer; }
-  tbody tr.clickable:hover { background: var(--accent-soft); }
+  tbody tr.clickable:hover, tbody tr.clickable:focus-visible { background: var(--accent-soft); }
+  .ev:hover, .ev:focus-visible { background: var(--accent-soft); }
+  .ev.clickable { cursor: pointer; }
   .name { font-weight: 600; }
   .tag {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11.5px; border: 1px solid var(--line); color: var(--muted);
     white-space: nowrap;
   }
-  .tag.on { border-color: var(--red); color: var(--ink); }
   .scroller { overflow-x: auto; }
   .muted { color: var(--muted); }
   .small { font-size: 12.5px; }
@@ -887,17 +1029,21 @@ PAGE = r"""<!doctype html>
   }
   button.linkbtn:hover { text-decoration-color: var(--accent); }
   .hero { font-size: 38px; line-height: 1.05; letter-spacing: -0.03em; }
-  .hero-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .skill-badge {
-    width: 58px; height: 58px; border-radius: 50%; flex: none;
-    border: 2px solid var(--red); color: var(--red);
-    display: inline-flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    cursor: help; line-height: 1;
+  .hero-row { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+  .arch-label {
+    font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em;
+    display: inline-flex; align-items: baseline; gap: 2px; margin-bottom: 6px;
   }
-  .skill-badge .score { font-size: 20px; font-weight: 800; letter-spacing: -0.03em; }
-  .skill-badge .of { font-size: 9px; font-weight: 600; margin-top: 2px; letter-spacing: .04em;
-                     text-transform: uppercase; opacity: .85; }
+  .hero-plan {
+    font-size: 18px; line-height: 1.4; letter-spacing: -0.015em; max-width: 40em;
+    margin: 0; color: var(--ink);
+  }
+  .skill-badge {
+    flex: none; display: inline-flex; align-items: baseline; gap: 1px;
+    cursor: help; line-height: 1; color: var(--ink);
+  }
+  .skill-badge .score { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+  .skill-badge .of { font-size: 12px; font-weight: 400; color: var(--muted); }
   .read-grid {
     display: grid; grid-template-columns: 1fr 1fr; gap: 28px 32px;
     margin-top: 18px; align-items: start;
@@ -910,8 +1056,8 @@ PAGE = r"""<!doctype html>
   .read-meta { font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.7; }
   .skill-side { margin: 0; min-width: 0; max-width: none; text-align: left; }
   .skill-side .skill-head {
-    font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
-    color: var(--muted); font-weight: 600; margin-bottom: 10px;
+    font-size: 12.5px; color: var(--muted); font-weight: 500;
+    margin-bottom: 10px;
   }
   .skill-side .metric { grid-template-columns: 1fr 90px 28px; gap: 8px; margin: 4px 0; }
   .skill-side .metric .small { font-size: 12.5px; }
@@ -919,7 +1065,7 @@ PAGE = r"""<!doctype html>
     border: 1.5px dashed var(--line); border-radius: 12px; padding: 34px 20px;
     text-align: center; color: var(--muted); cursor: pointer; transition: border-color .12s;
   }
-  .drop:hover, .drop.over { border-color: var(--red); color: var(--ink); }
+  .drop:hover, .drop.over { border-color: var(--ink); color: var(--ink); }
   .leak { padding: 14px 0; border-bottom: 1px solid var(--line); }
   .leak:last-child { border-bottom: 0; }
   .leak-head { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; }
@@ -934,7 +1080,7 @@ PAGE = r"""<!doctype html>
   .how { margin-top: 8px; }
   .how-body { color: var(--ink); font-size: 14px; line-height: 1.45; }
   .howblock { margin: 10px 0; max-width: 66ch; }
-  .howlabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  .howlabel { font-size: 12px;
               color: var(--muted); margin-bottom: 3px; font-weight: 600; }
   svg { display: block; overflow: visible; }
   .tip {
@@ -960,16 +1106,25 @@ PAGE = r"""<!doctype html>
     cursor: pointer; display: flex; align-items: center; gap: 7px;
   }
   .ptab:hover { color: var(--ink); }
-  .ptab.on { border-color: var(--red); color: var(--ink); font-weight: 600; }
+  .ptab.on { border-color: var(--ink); color: var(--ink); font-weight: 600; }
   .ptab .meta { font-size: 11.5px; color: var(--muted); font-weight: 400; }
   /* the hover-for-meaning affordance */
   .info {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--line);
-    color: var(--muted); font-size: 10px; font-weight: 700; cursor: help;
-    vertical-align: 1px; margin-left: 5px; font-style: normal; flex: none;
+    color: var(--muted); font-size: 11px; font-weight: 400; cursor: help;
+    vertical-align: 1px; margin-left: 4px; font-style: normal; flex: none;
+    opacity: .7; background: none; border: 0; padding: 0; line-height: 1;
   }
-  .info:hover { color: var(--ink); border-color: var(--accent); }
+  /* The ring is an affordance, not a decoration: it appears when you reach for
+     it. Twenty-one permanently-ringed badges read as a rash. */
+  .info:hover, .info:focus-visible {
+    color: var(--ink); opacity: 1; outline: 1px solid var(--line);
+    outline-offset: 2px; border-radius: 50%;
+  }
+  /* There was not one :focus rule in the stylesheet. */
+  :focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px;
+  }
   .tip .hl { color: var(--ink); font-weight: 600; }
   .tip .dir { margin-top: 6px; }
   .tip .dir b { display: inline-block; min-width: 34px; }
@@ -979,10 +1134,10 @@ PAGE = r"""<!doctype html>
   }
   details > summary::-webkit-details-marker { display: none; }
   details > summary::before {
-    content: "\25B8 "; color: var(--red); font-weight: 700;
+    content: "\25B8 "; color: var(--muted); font-weight: 400;
   }
-  details[open] > summary::before { content: "\25BE "; color: var(--red); }
-  details > summary:hover { color: var(--red); }
+  details[open] > summary::before { content: "\25BE "; color: var(--muted); }
+  details > summary:hover { color: var(--ink); }
   .headline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .plan { max-width: 62ch; }
   .meta { text-align: right; line-height: 1.7; }
@@ -1000,11 +1155,10 @@ PAGE = r"""<!doctype html>
     font-size: 9.5px; font-weight: 700; cursor: help; vertical-align: 1px;
   }
   .flag:hover { background: var(--red); color: var(--panel); }
-  .leak.watch { opacity: .82; }
   .leak.weakspots .metric { grid-template-columns: 1fr 150px 30px; }
   .timing-street { margin-top: 14px; }
   .timing-street .street-label {
-    font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    font-size: 12px;
     color: var(--muted); font-weight: 600; margin-bottom: 6px;
   }
   .timing-grid {
@@ -1014,7 +1168,7 @@ PAGE = r"""<!doctype html>
   .timing-grid > * { background: var(--panel); padding: 9px 10px; min-width: 0; }
   .timing-grid .corner { background: var(--accent-soft); }
   .timing-grid .colhead, .timing-grid .rowhead {
-    font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    font-size: 12px;
     color: var(--muted); background: var(--accent-soft); font-weight: 600;
   }
   .timing-grid .rowhead { display: flex; align-items: center; }
@@ -1025,30 +1179,29 @@ PAGE = r"""<!doctype html>
   .narration { margin-top: 10px; max-width: none; }
   .narration.hidden { display: none; }
   .narration blockquote {
-    margin: 0 0 6px; padding: 0 0 0 13px; border-left: 2px solid var(--red);
+    margin: 0 0 6px; padding: 0 0 0 13px; border-left: 2px solid var(--line);
   }
   .narration ul.suggested { margin: 4px 0; padding-left: 0; list-style: none; }
   .narration ul.suggested li {
     position: relative; padding: 0 0 0 16px; margin: 0 0 10px; max-width: none;
   }
   .narration ul.suggested li::before {
-    content: "\2013"; position: absolute; left: 0; color: var(--red);
+    content: "\2013"; position: absolute; left: 0; color: var(--muted);
   }
   .narrate-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
-  .ev { display: grid; grid-template-columns: 54px 1fr auto; gap: 10px;
+  .ev { display: grid; grid-template-columns: 84px 1fr auto; gap: 10px;
         align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line);
         cursor: pointer; }
-  .ev:hover { background: var(--accent-soft); }
   .ev:last-child { border-bottom: 0; }
-  .ev .verdict { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
-  .ev .verdict.hit { color: var(--red); font-weight: 600; }
+  .ev .verdict { font-size: 12px; }
+  /* A hand that supports the read is not a warning. */
+  .ev .verdict.hit { color: var(--ink); font-weight: 500; }
   .ev .verdict.miss { color: var(--muted); }
   .cards { font-family: var(--mono); letter-spacing: .04em; }
   .street { border-top: 1px solid var(--line); padding: 10px 0; }
   .street:first-child { border-top: 0; }
-  .street h4 { margin: 0 0 6px; font-size: 11.5px; text-transform: uppercase;
-               letter-spacing: .06em; color: var(--muted); font-weight: 600;
+  .street h4 { margin: 0 0 6px; font-size: 11.5px; color: var(--muted); font-weight: 600;
                display: flex; gap: 10px; align-items: baseline; }
   .act { display: grid; grid-template-columns: 44px 1fr auto auto; gap: 10px;
          padding: 3px 0; font-size: 13.5px; }
@@ -1087,12 +1240,28 @@ PAGE = r"""<!doctype html>
   .choice.disabled label:has(input:checked) {
     border-color: var(--line); color: var(--muted); font-weight: 400;
   }
+  /* Non-blocking save toast — does not freeze the page. */
+  .toast {
+    position: fixed; right: 20px; bottom: 20px; z-index: 40;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; max-width: 360px; box-shadow: 0 8px 28px rgba(0,0,0,.18);
+    animation: toast-in .25s ease-out;
+  }
+  .toast h3 { margin: 0 0 6px; font-size: 15px; }
+  .toast p { margin: 0 0 4px; font-size: 13px; color: var(--muted); }
+  .toast .toast-actions { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+  .toast .bar {
+    height: 2px; background: var(--accent); margin: 10px -16px -14px; border-radius: 0 0 12px 12px;
+    transform-origin: left;
+  }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .act.busy { opacity: .65; pointer-events: none; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1><a href="#/">Villain<span class="dot"></span></a></h1>
+    <h1><a href="#/">Villain</a></h1>
     <span class="sub" id="meta"></span>
     <span style="flex:1"></span>
     <button class="iconbtn" id="theme" title="light / dark" aria-label="switch theme"></button>
@@ -1105,6 +1274,7 @@ PAGE = r"""<!doctype html>
 </div>
 <div class="tip" id="tip"></div>
 <div id="modal"></div>
+<div id="toast"></div>
 <script>
 const $ = (s, r) => (r || document).querySelector(s);
 const fmtPct = v => (100 * v).toFixed(0) + "%";
@@ -1113,14 +1283,17 @@ const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
 const SVG = "http://www.w3.org/2000/svg";
 const state = {tab: "session", session: null, player: null, glossary: null};
 
-/* An "i" that explains a term on hover. Everything the tool says in shorthand
-   gets one, because a number nobody can interpret is worse than no number. */
+/* An "i" that explains a term on hover, focus, or tap. Everything the tool
+   says in shorthand gets one, because a number nobody can interpret is worse
+   than no number. */
 function info(html) {
-  const span = document.createElement("i");
-  span.className = "info"; span.textContent = "i";
-  span.setAttribute("aria-label", "what this means");
-  bindTip(span, html);
-  return span;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "info";
+  btn.textContent = "i";
+  btn.setAttribute("aria-label", "what this means");
+  bindTip(btn, html);
+  return btn;
 }
 function termTip(term) {
   const g = state.glossary;
@@ -1171,15 +1344,86 @@ function fieldRead(row) {
 /* ---- tooltip ---- */
 const tip = $("#tip");
 function bindTip(el, html) {
-  el.addEventListener("mousemove", e => {
-    tip.innerHTML = html; tip.classList.add("on");
-    const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
-    let x = e.clientX + pad, y = e.clientY + pad;
-    if (x + w > innerWidth - 8) x = e.clientX - w - pad;
-    if (y + h > innerHeight - 8) y = e.clientY - h - pad;
-    tip.style.left = x + "px"; tip.style.top = y + "px";
+  const showAt = (clientX, clientY, rect) => {
+    tip.innerHTML = html;
+    tip.classList.add("on");
+    const pad = 14, tw = tip.offsetWidth, th = tip.offsetHeight;
+    let x, y;
+    if (clientX != null && clientY != null) {
+      x = clientX + pad;
+      y = clientY + pad;
+    } else {
+      x = rect.left;
+      y = rect.bottom + 8;
+    }
+    if (x + tw > innerWidth - 8) {
+      x = clientX != null ? clientX - tw - pad : Math.max(8, rect.right - tw);
+    }
+    if (y + th > innerHeight - 8) {
+      y = rect ? Math.max(8, rect.top - th - 8)
+        : Math.max(8, clientY - th - pad);
+    }
+    tip.style.left = `${Math.max(8, x)}px`;
+    tip.style.top = `${Math.max(8, y)}px`;
+  };
+  const hide = () => tip.classList.remove("on");
+  el.addEventListener("mousemove", e => showAt(e.clientX, e.clientY, el.getBoundingClientRect()));
+  el.addEventListener("mouseleave", hide);
+  el.addEventListener("focus", () => showAt(null, null, el.getBoundingClientRect()));
+  el.addEventListener("blur", hide);
+  el.addEventListener("touchstart", e => {
+    e.preventDefault();
+    if (tip.classList.contains("on")) hide();
+    else showAt(null, null, el.getBoundingClientRect());
+  }, {passive: false});
+}
+function makeClickable(el, fn) {
+  el.classList.add("clickable");
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  el.addEventListener("click", fn);
+  el.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fn(e);
+    }
   });
-  el.addEventListener("mouseleave", () => tip.classList.remove("on"));
+}
+/** Escape, veil click, role=dialog. Returns ``{dismiss, detach}``. */
+function wireModal(onDismiss) {
+  const modal = $("#modal");
+  const veil = $(".veil", modal);
+  const sheet = $(".sheet", modal);
+  if (sheet) {
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-modal", "true");
+  }
+  let alive = true;
+  const detach = () => {
+    if (!alive) return;
+    alive = false;
+    document.removeEventListener("keydown", onKey);
+  };
+  const dismiss = () => {
+    detach();
+    if (typeof onDismiss === "function") onDismiss();
+    else modal.innerHTML = "";
+  };
+  const onKey = e => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    dismiss();
+  };
+  document.addEventListener("keydown", onKey);
+  if (veil) {
+    veil.addEventListener("click", e => {
+      if (e.target === veil) dismiss();
+    });
+  }
+  const focusable = sheet && sheet.querySelector(
+    "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])");
+  if (focusable) focusable.focus();
+  return { dismiss, detach };
 }
 function el(tag, attrs, parent) {
   const node = document.createElementNS(SVG, tag);
@@ -1249,7 +1493,6 @@ function rosterTable(players, opts) {
       <th data-k="name">player</th>
       <th data-k="hands" class="num">hands</th><th data-k="archetype">read</th>
       <th data-k="skill" class="num">skill</th>
-      <th data-k="exploitability" class="num">worth to you</th>
       <th data-k="top_leak">biggest leak</th>
     </tr></thead><tbody></tbody></table>`;
   const body = $("tbody", wrap);
@@ -1265,24 +1508,29 @@ function rosterTable(players, opts) {
     for (const p of rows) {
       const tr = document.createElement("tr");
       if (opts && opts.onClick && p.player_id != null) {
-        tr.className = "clickable";
-        tr.onclick = () => opts.onClick(p);
+        makeClickable(tr, () => opts.onClick(p));
       }
+      const shown = (p.session_names && p.session_names.length && p.db_name)
+        ? p.session_names.join(" / ") : p.name;
+      const linkBits = [];
+      if (p.db_name) linkBits.push(`database: ${esc(p.db_name)}`);
+      else if (p.session_names && p.session_names.length)
+        linkBits.push(`as ${p.session_names.map(n => `\u201c${esc(n)}\u201d`).join(", ")}`);
       tr.innerHTML = `
-        <td><span class="name">${esc(p.name)}</span>
-            <div class="small muted quality">${esc(p.sample_quality)}</div></td>
+        <td><span class="name">${esc(shown)}</span>
+            <div class="small muted quality">${esc(p.sample_quality)}</div>
+            ${linkBits.length
+              ? `<div class="small muted">${linkBits.join(" \u00b7 ")}</div>` : ""}</td>
         <td class="num">${p.hands}</td>
-        <td><span class="tag ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
+        <td><span class="tag">${esc(p.archetype)}</span>
             <div class="small muted">${fmtPct(p.confidence)} sure</div></td>
-        <td class="num"></td>
-        <td class="num">${p.exploitability ? p.exploitability.toFixed(1) + " bb" : "\u2014"}</td>
+        <td class="num skillcell"></td>
         <td class="small leakcell">${p.top_leak ? esc(p.top_leak)
           : '<span class="muted">nothing yet</span>'}</td>`;
-      const holder = document.createElement("div");
-      holder.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:flex-end";
-      const label = document.createElement("span");
-      label.textContent = p.skill.toFixed(0);
-      holder.append(bar(p.skill, 100, "var(--mark-3)", 66), label);
+      const skillCell = $(".skillcell", tr);
+      skillCell.textContent = p.skill.toFixed(0);
+      bindTip(skillCell, `<b>${esc(p.skill_tier)}</b> ${p.skill.toFixed(0)}/100<br>
+        <span class="muted">confidence ${fmtPct(p.skill_confidence)}</span>`);
       const q = $(".quality", tr);
       if (q) q.appendChild(info(termTip(p.sample_quality)));
       /* An unconfirmed read still belongs in the column -- "none clears the
@@ -1302,9 +1550,6 @@ function rosterTable(players, opts) {
       if (q && p.table_mix) {
         q.appendChild(document.createTextNode(" \u00b7 " + p.regime_label));
       }
-      tr.children[3].appendChild(holder);
-      bindTip(holder, `<b>${esc(p.skill_tier)}</b> ${p.skill.toFixed(0)}/100<br>
-        <span class="muted">confidence ${fmtPct(p.skill_confidence)}</span>`);
       body.appendChild(tr);
     }
     wrap.querySelectorAll("th").forEach(th => th.classList.toggle("sorted", th.dataset.k === sort.key));
@@ -1327,7 +1572,10 @@ function profileCard(p, opts) {
   head.className = "panel";
   head.innerHTML = `
     <div class="hero-row">
-      <div class="hero">${esc(p.archetype)}</div>
+      <div style="flex:1;min-width:220px">
+        <div class="arch-label" id="arch-label"></div>
+        <p class="hero-plan">${esc(p.plan)}</p>
+      </div>
       <div class="skill-badge" id="skill-badge">
         <span class="score">${p.skill.score.toFixed(0)}</span>
         <span class="of">/100</span>
@@ -1335,13 +1583,15 @@ function profileCard(p, opts) {
     </div>
     <div class="read-meta" id="read-meta"></div>
     <div class="read-grid">
-      <div class="read-copy">
-        <p class="summary">${esc(p.summary)}</p>
-        <p class="plan">${esc(p.plan)}</p>
-      </div>
+      <div class="read-copy"></div>
       <div class="skill-side" id="skill-side"></div>
     </div>`;
   card.appendChild(head);
+
+  const archLabel = $("#arch-label", head);
+  archLabel.appendChild(document.createTextNode(p.archetype));
+  archLabel.appendChild(info(
+    `<span class="hl">${esc(p.archetype)}</span><br>${esc(p.summary || "")}`));
 
   const badge = $("#skill-badge", head);
   bindTip(badge, `<b>${esc(p.skill.tier)}</b> ${p.skill.score.toFixed(0)}/100<br>
@@ -1371,8 +1621,14 @@ function profileCard(p, opts) {
   meta.append(line, conf, where);
 
   const skillSide = $("#skill-side", head);
-  skillSide.innerHTML = `<div class="skill-head">Skill breakdown
-    <span style="font-weight:400">\u00b7 ${esc(p.skill.tier)}</span></div>`;
+  // The components live behind a disclosure: the tier word is already in the
+  // header and the score is already in the badge, so seven bars spanning
+  // 79-100 competed with the plan for the reader's eye and settled nothing.
+  skillSide.innerHTML = "";
+  const skillWrap = document.createElement("details");
+  skillWrap.innerHTML =
+    `<summary>Skill breakdown \u00b7 ${esc(p.skill.tier)}</summary>`;
+  skillSide.appendChild(skillWrap);
   for (const c of [...p.skill.components].sort((a, b) => a.score - b.score)) {
     const row = document.createElement("div");
     row.className = "metric";
@@ -1381,10 +1637,10 @@ function profileCard(p, opts) {
     const val = document.createElement("span");
     val.className = "small muted"; val.style.textAlign = "right";
     val.textContent = c.score.toFixed(0);
-    row.append(label, bar(c.score, 100, "var(--mark-3)", 90), val);
+    row.append(label, bar(c.score, 100, "var(--mark-1)", 90), val);
     bindTip(row, `<b>${esc(c.name)}</b> ${c.score.toFixed(0)}/100<br>
       <span class="muted">counts ${c.weight}x${c.note ? " \u00b7 " + esc(c.note) : ""}</span>`);
-    skillSide.appendChild(row);
+    skillWrap.appendChild(row);
   }
 
   const doBox = document.createElement("div");
@@ -1458,8 +1714,27 @@ function profileCard(p, opts) {
         <div class="headline"><b>${esc(w.headline)}</b>
           <span class="tag tier">watch</span></div>
         <div class="num small muted">${fmtPct(w.confidence)} sure</div></div>
-      <div class="small muted numbers">${esc(w.in_words)}</div>`;
+      <div class="small muted numbers"></div>`;
     $(".tier", div).after(info(termTip("watch")));
+
+    // A watch item needs the evidence button more than a confirmed leak does,
+    // not less: it is the claim you are least sure of. On a small database
+    // every player has watch items and no leaks at all, so attaching this only
+    // to leaks meant the "see the hands" affordance -- the thing that lets you
+    // catch the tool being wrong -- never appeared on screen.
+    const wn = $(".numbers", div);
+    wn.appendChild(document.createTextNode(
+      w.in_words.replace(/seen about .*$/, "").trim()));
+    if (p.player_id != null && w.stat) {
+      const link = document.createElement("button");
+      link.className = "linkbtn";
+      link.textContent = `seen about ${Math.round(w.sample)} times`;
+      link.title = "show the hands behind this";
+      link.onclick = () => showEvidence(p.player_id, w.stat, w.headline);
+      wn.appendChild(document.createTextNode(" "));
+      wn.appendChild(link);
+    }
+    if (w.stat) wn.appendChild(info(statTip(w.stat, w.headline)));
     leakBox.appendChild(div);
   }
 
@@ -1505,14 +1780,12 @@ function profileCard(p, opts) {
 
   const tells = p.timing_tells || [];
   if (tells.some(c => c.n > 0)) {
-    const timingBox = document.createElement("div");
+    const timingBox = document.createElement("details");
     timingBox.className = "panel";
-    const headRow = document.createElement("div");
-    headRow.className = "spread";
-    const title = document.createElement("div");
-    title.className = "headline";
-    const h2 = document.createElement("h2");
-    h2.style.margin = "0";
+    const summary = document.createElement("summary");
+    summary.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap";
+    const h2 = document.createElement("span");
+    h2.style.cssText = "font-size:15px;font-weight:600;color:var(--ink)";
     h2.textContent = "Timing Tells";
     const flag = document.createElement("span");
     flag.className = "flag";
@@ -1522,13 +1795,12 @@ function profileCard(p, opts) {
       at this pace, plus whether they won / went to showdown / folded next
       <em>differently</em> than after the same action at normal pace. Use it
       to break ties \u2014 never as the whole basis of a decision.`);
-    title.append(h2, flag);
-    headRow.appendChild(title);
     const note = document.createElement("span");
     note.className = "small muted";
+    note.style.fontWeight = "400";
     note.textContent = "share of action + outcome vs normal pace";
-    headRow.appendChild(note);
-    timingBox.appendChild(headRow);
+    summary.append(h2, flag, note);
+    timingBox.appendChild(summary);
 
     const byKey = Object.fromEntries(
       tells.map(c => [`${c.pace}:${c.street}:${c.action}`, c]));
@@ -1572,29 +1844,59 @@ function profileCard(p, opts) {
 
   const detail = document.createElement("div");
   detail.className = "panel";
-  detail.innerHTML = `<h2>Detailed Stats</h2><div class="detail-body"></div>`;
+  detail.innerHTML = `<h2>Key numbers</h2><div class="detail-body"></div>`;
   card.appendChild(detail);
   const body = $(".detail-body", detail);
 
-  const table = document.createElement("div");
-  table.className = "scroller";
-  table.innerHTML = `<table><thead><tr><th>stat</th>
-      <th style="width:310px">0% \u2014 100%</th>
-      <th class="num">estimate</th><th class="num">sample</th></tr></thead>
-    <tbody></tbody></table>`;
-  const tbody = $("tbody", table);
-  for (const row of p.rows) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td class="label"></td><td></td>
-                    <td class="num">${fmtPct(row.value)}</td>
-                    <td class="num small muted">${row.opps}</td>`;
-    const label = $(".label", tr);
-    label.appendChild(document.createTextNode(row.label));
-    label.appendChild(info(statTip(row.stat, row.label, row)));
-    tr.children[1].appendChild(statRow(row));
-    tbody.appendChild(tr);
+  // Six headline numbers, the rest behind a disclosure. All seventeen rendered
+  // open made this panel taller than the read, the plan and the exploits
+  // combined -- and a mid-session read that requires scrolling is one you will
+  // not use.
+  const HEADLINE = ["vpip", "pfr", "three_bet", "fold_to_three_bet",
+                    "cbet:flop", "fold_vs_bet:flop"];
+  const rank = (r) => {
+    const i = HEADLINE.indexOf(r.stat);
+    return i === -1 ? HEADLINE.length : i;
+  };
+  const ordered = [...p.rows].sort((a, b) => rank(a) - rank(b));
+  const headline = ordered.filter((r) => HEADLINE.includes(r.stat));
+  const rest = ordered.filter((r) => !HEADLINE.includes(r.stat));
+
+  const makeTable = () => {
+    const table = document.createElement("div");
+    table.className = "scroller";
+    table.innerHTML = `<table><thead><tr><th>stat</th>
+        <th style="width:310px">0% \u2014 100%</th>
+        <th class="num">estimate</th><th class="num">sample</th></tr></thead>
+      <tbody></tbody></table>`;
+    return table;
+  };
+  const fill = (table, rows) => {
+    const tbody = $("tbody", table);
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="label"></td><td></td>
+                      <td class="num">${fmtPct(row.value)}</td>
+                      <td class="num small muted">${Math.round(row.opps)}</td>`;
+      const label = $(".label", tr);
+      label.appendChild(document.createTextNode(row.label));
+      label.appendChild(info(statTip(row.stat, row.label, row)));
+      tr.children[1].appendChild(statRow(row));
+      tbody.appendChild(tr);
+    }
+  };
+
+  const first = makeTable();
+  fill(first, headline.length ? headline : ordered);
+  body.appendChild(first);
+  if (rest.length) {
+    const more = document.createElement("details");
+    more.innerHTML = `<summary>the other ${rest.length} numbers</summary>`;
+    const table = makeTable();
+    fill(table, rest);
+    more.appendChild(table);
+    body.appendChild(more);
   }
-  body.appendChild(table);
   return card;
 }
 
@@ -1686,8 +1988,12 @@ function playerTabs(profiles, container, opts) {
   profiles.forEach((p, i) => {
     const b = document.createElement("button");
     b.className = "ptab";
-    b.innerHTML = `<span>${esc(p.name)}</span>
-      <span class="meta">${esc(p.regime_label)} \u00b7 ${p.hands}h</span>`;
+    const shown = (p.session_names && p.session_names.length && p.db_name)
+      ? p.session_names.join(" / ") : p.name;
+    const meta = [esc(p.regime_label), `${p.hands}h`];
+    if (p.db_name) meta.push(`database: ${esc(p.db_name)}`);
+    b.innerHTML = `<span>${esc(shown)}</span>
+      <span class="meta">${meta.join(" \u00b7 ")}</span>`;
     b.onclick = () => show(i);
     strip.appendChild(b);
   });
@@ -1761,6 +2067,9 @@ function renderSession() {
             ${data.saved ? "saved" : "Add to database"}</button>
         </div>
       </div>
+      ${data.auto_merged ? `<p class="small muted" style="margin:8px 0 0">
+        Linked ${data.auto_merged} known player match(es) automatically
+        (kept existing database names).</p>` : ""}
       <div id="session-roster" style="margin-top:12px"></div>
     </div>
     <div id="session-profiles"></div>`;
@@ -1771,23 +2080,22 @@ function renderSession() {
 }
 
 /* ---- identity, settled at upload ---- */
-/* Asked when the file lands rather than when it is saved, so the session you
-   are reading has already pooled the accounts. Merging also asks what to call
-   the result: choosing silently files a player under a name they have stopped
-   using. */
+/* Known-player matches are auto-applied (database name kept). This dialog
+   only asks about leftover net-new / ambiguous pairs. */
 async function askIdentity(token, questions, onDone) {
   const modal = $("#modal");
   modal.innerHTML = `
     <div class="veil"><div class="sheet">
       <h2 style="margin-top:0">Same player?</h2>
       <p class="small muted" style="margin-top:0">
-        These accounts might belong to one person. Answering now means the
-        session below is read with their hands pooled. Nothing is saved either
-        way \u2014 but merging two real players makes both profiles fiction, so
-        the tool will not guess.</p>
+        Matches to people already in your database were linked automatically
+        (keeping their existing name). These leftover accounts have nearly
+        the same screen name \u2014 merging two real players makes both
+        profiles fiction, so the tool will not guess.</p>
       <div id="questions"></div>
-      <div class="row" style="justify-content:flex-end;margin-top:18px">
+      <div class="row" style="justify-content:flex-end;margin-top:18px;gap:8px;flex-wrap:wrap">
         <button class="act" id="cancel">Keep them separate</button>
+        <button class="act" id="automerge">Auto-merge all</button>
         <button class="act primary" id="confirm">Apply</button>
       </div>
     </div></div>`;
@@ -1817,9 +2125,6 @@ async function askIdentity(token, questions, onDone) {
         <span class="small muted namelabel">keep the name</span>${names}</div>`;
     box.appendChild(div);
 
-    // The name only means anything if they are one person, so it greys out
-    // rather than disappearing -- a control that vanishes leaves you wondering
-    // whether you missed something.
     const setEnabled = same => {
       const group = $(".namechoice", div);
       group.classList.toggle("disabled", !same);
@@ -1829,60 +2134,97 @@ async function askIdentity(token, questions, onDone) {
     div.querySelectorAll(`input[name="${CSS.escape(q.id)}"]`).forEach(radio =>
       radio.onchange = () => setEnabled(radio.value === "yes"));
   }
-  $("#cancel").onclick = async () => {
-    modal.innerHTML = "";
-    await post(`/api/session/${token}/identity`, {answers: {}});
-    if (onDone) onDone();
-  };
-  $("#confirm").onclick = async () => {
+  const collect = (forceSame) => {
     const answers = {};
     for (const q of questions) {
+      if (forceSame) {
+        answers[q.id] = {same: true, name: q.default_name};
+        continue;
+      }
       const picked = modal.querySelector(`input[name="${CSS.escape(q.id)}"]:checked`);
       const name = modal.querySelector(`input[name="name-${CSS.escape(q.id)}"]:checked`);
       answers[q.id] = {same: picked ? picked.value === "yes" : q.default,
                        name: name ? name.value : q.default_name};
     }
+    return answers;
+  };
+  let modalCtl;
+  const finish = async (answers) => {
+    if (modalCtl) modalCtl.detach();
     modal.innerHTML = "";
     const refreshed = await post(`/api/session/${token}/identity`, {answers});
     state.session = refreshed;
     renderSession();
     if (onDone) onDone();
   };
+  $("#cancel").onclick = async () => {
+    // Leave auto-merges in place; mark only these leftovers as separate.
+    const answers = {};
+    for (const q of questions) answers[q.id] = {same: false, name: q.default_name};
+    await finish(answers);
+  };
+  $("#automerge").onclick = () => finish(collect(true));
+  $("#confirm").onclick = () => finish(collect(false));
+  modalCtl = wireModal(async () => {
+    const answers = {};
+    for (const q of questions) answers[q.id] = {same: false, name: q.default_name};
+    await finish(answers);
+  });
 }
 
 async function commit(token) {
+  const save = $("#save");
+  if (save) {
+    save.classList.add("busy");
+    save.textContent = "Saving\u2026";
+  }
+  const note = $("#save-note");
+  if (note) note.textContent = "writing hands to the database\u2026";
   try {
     const result = await post(`/api/session/${token}/commit`, {});
     state.session.saved = true;
     renderSession();
-    showResult(result);
+    showToast(result);
   } catch (err) {
-    showResult({error: err.message});
+    if (save) { save.classList.remove("busy"); save.textContent = "Add to database"; }
+    if (note) note.textContent = "not in the database";
+    showToast({error: err.message});
   }
 }
 
-function showResult(result) {
-  const modal = $("#modal");
+function showToast(result) {
+  const host = $("#toast");
+  if (!host) return;
   const body = result.error
     ? `<p class="err">${esc(result.error)}</p>`
     : result.reset
     ? `<p>Removed ${result.reset.hands} hands and ${result.reset.players} players.</p>`
     : `<p>${result.hands_new} new hands stored${result.duplicates
         ? `, ${result.duplicates} already known` : ""}.</p>
-       <p class="small muted">${result.players_new} new player(s)\u00b7
-         ${result.merged} merge(s) applied.</p>
-       ${(result.blocked || []).map(b => `<p class="err small">${esc(b)}</p>`).join("")}`;
+       <p>${result.players_new} new player(s) \u00b7 ${result.merged} merge(s) applied.</p>
+       ${(result.blocked || []).map(b => `<p class="err">${esc(b)}</p>`).join("")}`;
   const heading = result.error ? "Could not save" : result.reset ? "Database reset" : "Saved";
-  modal.innerHTML = `<div class="veil"><div class="sheet">
-    <h2 style="margin-top:0">${heading}</h2>
+  const canGo = !result.error && !result.reset;
+  host.innerHTML = `<div class="toast">
+    <h3>${heading}</h3>
     ${body}
-    <div class="row" style="justify-content:flex-end;margin-top:16px">
-      <button class="act" id="close">Close</button>
-      ${result.error || result.reset ? "" : '<button class="act primary" id="godb">Open players</button>'}
-    </div></div></div>`;
-  $("#close").onclick = () => { modal.innerHTML = ""; };
-  const go = $("#godb");
-  if (go) go.onclick = () => { modal.innerHTML = ""; switchTab("players"); };
+    <div class="toast-actions">
+      <button class="act" id="toast-close">Close</button>
+      ${canGo ? '<button class="act primary" id="toast-dash">Go to dashboard</button>' : ""}
+    </div>
+    <div class="bar"></div>
+  </div>`;
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
+    host.innerHTML = "";
+  };
+  const timer = setTimeout(close, 5000);
+  $("#toast-close").onclick = close;
+  const go = $("#toast-dash");
+  if (go) go.onclick = () => { close(); switchTab("players"); };
 }
 
 /* ---- tab 2: players ---- */
@@ -1952,6 +2294,7 @@ async function viewPlayers() {
       b.disabled = true; b.textContent = "merging\u2026";
       try {
         await post("/api/link", {keep: +b.dataset.keep, absorb: +b.dataset.absorb});
+        b.textContent = "done";
         // A session on the other tab is about the same people; leaving it
         // unmerged would contradict the database it is about to be saved into.
         if (state.session && state.session.token) {
@@ -1959,8 +2302,22 @@ async function viewPlayers() {
             state.session = await get(`/api/session/${state.session.token}`);
           } catch (ignored) { /* session expired; nothing to refresh */ }
         }
-        viewPlayers();
-      } catch (err) { b.textContent = "blocked"; b.classList.add("err"); }
+        await viewPlayers();
+      } catch (err) {
+        b.disabled = false;
+        b.textContent = "merge";
+        b.title = err.message || "merge failed";
+        const note = b.closest(".leak");
+        if (note) {
+          let msg = note.querySelector(".merge-err");
+          if (!msg) {
+            msg = document.createElement("div");
+            msg.className = "small err merge-err";
+            note.appendChild(msg);
+          }
+          msg.textContent = err.message || "merge failed";
+        }
+      }
     });
   }
 }
@@ -1980,9 +2337,9 @@ async function viewPlayer(id) {
   playerTabs(data.profiles, holder, {narrate: true});
 
   if (data.by_table && data.by_table.length > 1) {
-    const panel = document.createElement("div");
+    const panel = document.createElement("details");
     panel.className = "panel";
-    panel.innerHTML = `<h2>Split by Table Size</h2>
+    panel.innerHTML = `<summary>Split by table size</summary>
       <div class="small muted" style="margin:0 0 12px">
         The read above pools these. Shown separately so you can check the
         pooling is not hiding a difference.</div>
@@ -2026,16 +2383,18 @@ function confirmReset(data) {
   const text = $("#confirm-text"), go = $("#go");
   text.focus();
   text.oninput = () => { go.disabled = text.value.trim().toLowerCase() !== "delete everything"; };
-  $("#cancel").onclick = () => { modal.innerHTML = ""; };
+  const modalCtl = wireModal(() => { modal.innerHTML = ""; });
+  $("#cancel").onclick = modalCtl.dismiss;
   go.onclick = async () => {
     go.disabled = true; go.textContent = "resetting\u2026";
     try {
       const result = await post("/api/reset", {confirm: "delete everything"});
+      modalCtl.detach();
       modal.innerHTML = "";
       state.player = null; state.session = null;
       viewPlayers();
-      showResult({reset: result});
-    } catch (err) { showResult({error: err.message}); }
+      showToast({reset: result});
+    } catch (err) { showToast({error: err.message}); }
   };
 }
 
@@ -2053,7 +2412,8 @@ async function showEvidence(playerId, stat, headline) {
       <p class="err">${esc(err.message)}</p>
       <div class="row" style="justify-content:flex-end"><button class="act" id="close">Close</button></div>
       </div></div>`;
-    $("#close").onclick = () => { modal.innerHTML = ""; };
+    const dismiss = wireModal(() => { modal.innerHTML = ""; });
+    $("#close").onclick = dismiss.dismiss;
     return;
   }
   modal.innerHTML = `<div class="veil"><div class="sheet">
@@ -2065,7 +2425,8 @@ async function showEvidence(playerId, stat, headline) {
       this count.</p>
     <div id="evlist"></div>
     <div id="replay"></div></div></div>`;
-  $("#close").onclick = () => { modal.innerHTML = ""; };
+  const modalCtl = wireModal(() => { modal.innerHTML = ""; });
+  $("#close").onclick = modalCtl.dismiss;
 
   const list = $("#evlist");
   for (const h of data.hands) {
@@ -2073,12 +2434,12 @@ async function showEvidence(playerId, stat, headline) {
     row.className = "ev";
     const when = h.started_at ? new Date(h.started_at).toLocaleString() : "";
     row.innerHTML = `
-      <span class="verdict ${h.hit ? "hit" : "miss"}">${h.hit ? "counted" : "no"}</span>
+      <span class="verdict ${h.hit ? "hit" : "miss"}">${h.hit ? "counted" : "not counted"}</span>
       <span><span class="cards">${esc(h.board.join(" ")) || "\u2014"}</span>
         <div class="small muted">${esc(h.summary)}</div></span>
       <span class="small muted" style="text-align:right">${h.net_bb > 0 ? "+" : ""}${h.net_bb} bb
         <div style="font-size:11px">${esc(when)}</div></span>`;
-    row.onclick = () => showReplay(h.hand_id, playerId);
+    makeClickable(row, () => showReplay(h.hand_id, playerId));
     list.appendChild(row);
   }
 }

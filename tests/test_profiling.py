@@ -92,8 +92,18 @@ def test_archetypes_are_scored_over_a_common_feature_set():
         book.ratios[feature].hits = pop * 100
         book.ratios[feature].opps = 100
     book.meters["table_size"].add(6, 1)
-    # A player who is exactly average must land on the average archetype.
-    assert match(build_profile(book))[0] == "tag"
+    # Field-average play lands on TAG (near-field solid). Extreme buckets must not.
+    name, conf, mix = match(build_profile(book))
+    assert name == "tag"
+    assert conf > 0.4
+    assert mix[0][0] == "tag"
+
+
+def test_passive_buckets_catch_non_tags(synth_profile):
+    """Home-game fish used to collapse onto TAG because it sat at zero."""
+    assert match(synth_profile("loose passive", opps=80))[0] == "loose passive"
+    assert match(synth_profile("tight passive", opps=80))[0] == "tight passive"
+    assert match(synth_profile("tag", opps=80))[0] == "tag"
 
 
 def test_archetype_targets_track_table_size():

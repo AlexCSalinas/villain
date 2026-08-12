@@ -111,6 +111,30 @@ def test_trailing_digits_and_punctuation_are_noise(a, b, expected):
     assert name_similarity(a, b) == expected
 
 
+def test_suggestion_reason_cites_the_matching_alias(tmp_path, hands):
+    """Display names can drift; the reason must cite the aliases that scored."""
+    from villain.db import Store
+    db = tmp_path / "v.db"
+    with Store(db) as store:
+        store.add_hands(hands)
+        # Plant a second player whose only alias collides with player1's name,
+        # but whose display name is unrelated — the bug that made TinHusband
+        # look like a 100% match for ShishGL.
+        store.conn.execute(
+            "INSERT INTO players (display_name, created_at) VALUES ('OtherFace', 0)")
+        pid = store.conn.execute("SELECT id FROM players WHERE display_name='OtherFace'"
+                                 ).fetchone()["id"]
+        store.conn.execute(
+            "INSERT INTO aliases (site, account, name, player_id, hands) "
+            "VALUES ('pokernow', 'ghost-acct', 'player1', ?, 10)", (pid,))
+        store.conn.commit()
+        hits = [s for s in suggest_links(store)
+                if {s.keep_name, s.absorb_name} == {"player1", "OtherFace"}]
+        assert hits, "same screen name on two accounts should surface"
+        assert "player1" in hits[0].reason
+        assert "100%" not in hits[0].reason or "appeared as" in hits[0].reason
+
+
 def test_unrelated_names_stay_apart():
     assert name_similarity("aryan", "Arnav2") < 0.8
     assert normalise("Bob!!") == "bob"

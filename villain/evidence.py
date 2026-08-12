@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .features import record_hand
+from .features import _pace_thresholds, _think_pass, record_hand
 from .model import Act, Hand, Street
 
 #: Which street a statistic is about, read off its name.
@@ -58,10 +58,24 @@ def find(hands: list[Hand], player_key: str, stat: str,
     matter: sixteen fold-to-river-bet opportunities of which nine were folds is
     the whole picture, and showing only the folds would misrepresent it.
     """
+    # Freeze the snap/tank cutoffs over the whole hand list, exactly as
+    # record_hands does when the profile is built. Replaying one hand at a
+    # time leaves each hand below MIN_PACE_SAMPLES, so _pace_thresholds falls
+    # back to absolute cutoffs and the evidence panel disagrees with the very
+    # number it is opened to explain -- a player whose own mean is 20s had
+    # every fold shown as a "tank fold" against a profile that counted none.
+    scratch: dict = {}
+    for hand in hands:
+        _think_pass(hand, scratch)
+    locks: dict = {}
+    for pid, by_regime in scratch.items():
+        for reg, book in by_regime.items():
+            locks[(pid, reg)] = _pace_thresholds(book)
+
     out: list[Evidence] = []
     for hand in hands:
         books: dict = {}
-        record_hand(hand, books)
+        record_hand(hand, books, pace_locks=locks)
         by_regime = books.get(player_key)
         if not by_regime:
             continue

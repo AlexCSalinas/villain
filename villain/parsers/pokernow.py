@@ -135,7 +135,12 @@ def _replay(hand: Hand, events: list[dict[str, Any]], by_seat: dict[int, Seat]) 
     """Walk the event log, resolving pot and street state as we go."""
     street = Street.PREFLOP
     street_wager: dict[int, int] = {}      # seat -> cumulative wager this street
-    committed: dict[int, int] = {}         # seat -> wagered on *previous* streets
+    # Seeded with the ante, which every seat posts before a card is dealt. It
+    # was previously counted in ``pot_before`` but never in ``committed``, so
+    # ``hand.pot`` came up short by exactly the antes while ``awarded``
+    # included them -- every hand of an ante game failed the balance check and
+    # was dropped, silently, for every player at the table.
+    committed: dict[int, int] = {seat: hand.ante for seat in by_seat} if hand.ante else {}
     returned = 0
     awarded = 0
     prev_at: int | None = None
@@ -202,7 +207,7 @@ def _replay(hand: Hand, events: list[dict[str, Any]], by_seat: dict[int, Seat]) 
 
         prior = street_wager.get(seat, 0)
         street_max = max(street_wager.values(), default=0)
-        pot_before = sum(committed.values()) + sum(street_wager.values()) + hand.ante * len(by_seat)
+        pot_before = sum(committed.values()) + sum(street_wager.values())
 
         if act is Act.FOLD or act is Act.CHECK:
             to_amount, amount = prior, 0
@@ -240,10 +245,17 @@ def _replay(hand: Hand, events: list[dict[str, Any]], by_seat: dict[int, Seat]) 
     hand.pot = sum(committed.values())
     hand.run_count = max(len(runs_seen), 1)
     if awarded and hand.pot and awarded != hand.pot:
-        # Rake, or an opcode we misread. Either way the hand is not trustworthy
-        # for money-based stats, so mark it instead of quietly using it.
         hand.rake = hand.pot - awarded
-        if abs(hand.rake) > 0:
+        if hand.rake > 0:
+            # Less was paid out than went in: rake, which is expected and
+            # explains itself. It makes the money figures for this hand
+            # slightly optimistic, but it says nothing about who folded to
+            # what -- and dropping the hand outright, as a ``pot_mismatch``
+            # did, discarded every behavioural statistic in a raked game.
+            hand.flags.add("raked")
+        elif hand.rake < 0:
+            # More was paid out than went in. That cannot happen at a real
+            # table, so the decode is wrong and the hand is not trustworthy.
             hand.flags.add("pot_mismatch")
 
 

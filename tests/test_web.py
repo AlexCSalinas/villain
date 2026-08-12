@@ -87,7 +87,13 @@ def test_similar_names_raise_an_alias_question(session, tmp_path):
         questions = session_questions(store, hands + twin)
     alias = [q for q in questions if q.kind == "alias"]
     assert alias
-    assert all(q.default is False for q in alias), "merging must never be the default"
+    session_only = [q for q in alias
+                    if "database" not in q.left.get("where", "")
+                    and "database" not in q.right.get("where", "")]
+    assert session_only, "fixture should include a session-only alias candidate"
+    assert all(q.default is False for q in session_only), (
+        "merging two session accounts must never be the default")
+    assert all(not q.auto for q in session_only)
 
 
 def test_regular_opponents_are_never_offered_as_one(session, tmp_path):
@@ -126,6 +132,8 @@ def test_same_account_new_name_raises_a_rename_question(session, tmp_path):
     renames = [q for q in questions if q.kind == "rename"]
     assert len(renames) == 1
     assert renames[0].default is True, "a shared account id defaults to one person"
+    assert renames[0].auto is True
+    assert renames[0].default_name == "player1"
     assert "player1" in renames[0].left["name"]
 
 
@@ -168,11 +176,12 @@ def test_accepting_a_rename_pools_the_hands(tmp_path, hands):
         SESSIONS[token] = {"hands": later, "files": [], "created": 0.0,
                            "questions": session_questions(store, later)}
         rename = next(q for q in SESSIONS[token]["questions"] if q.kind == "rename")
-        commit_session(store, token, {rename.id: True})
+        # Default keeps the database name; hands still pool onto that player.
+        commit_session(store, token, {rename.id: {"same": True, "name": rename.default_name}})
         after = {r["display_name"]: r["hands"] for r in store.players()}
     SESSIONS.pop(token, None)
-    assert "player1" not in after, "the confirmed rename becomes the display name"
-    assert after["player1 v2"] == before["player1"] * 2
+    assert "player1 v2" not in after, "reconnect name must not replace the DB display"
+    assert after["player1"] == before["player1"] * 2
 
 
 def test_roster_hides_rounding_error_profiles(tmp_path, hands):

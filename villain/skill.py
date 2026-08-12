@@ -234,8 +234,20 @@ def _exploitability_component(exploitability: float, profile: Profile) -> Compon
     Weighted by sample size, because "no leaks found" and "no leaks yet
     findable" are the same number here and only one of them is a compliment.
     """
-    score = 100.0 / (1.0 + max(0.0, exploitability) / 4.0)
-    weight = 2.2 * min(1.0, profile.hands / 150.0)
+    # The divisor is calibrated against real bb/100: a leak worth ~3bb/100 (the
+    # "big" band in exploits.py) lands near 75, ~9 near 50, ~30 near 25. It was
+    # 4.0 when severities were accidentally computed as bb per *hand*, i.e. a
+    # hundred times too small, which pinned essentially every player at 100.
+    score = 100.0 / (1.0 + max(0.0, exploitability) / 9.0)
+    # Deliberately no longer the heaviest component. With severities computed
+    # correctly this score swings the full 0-100 while the fundamentals sit in
+    # a 35-100 band, so equal weight already gives it more pull -- and its
+    # coverage is one-sided: the rules that price *passive* errors clear the
+    # evidence bar far more easily than the ones that price aggression, whose
+    # stats are thinner (two are showdown-only). A measure that can see one
+    # kind of mistake better than the other should inform the rating, not
+    # decide it.
+    weight = 1.2 * min(1.0, profile.hands / 150.0)
     if exploitability:
         note = f"~{exploitability:.1f} bb/100 available against them"
     else:

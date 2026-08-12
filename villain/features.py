@@ -284,10 +284,23 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
             if d.has_initiative:
                 # Continuation bet: they took the betting lead last street and
                 # the action is on them with nothing wagered yet.
-                book.count(f"cbet:{s}", bet)
-                if bet:
-                    book.measure(f"cbet_size:{s}", d.bet_fraction)
+                #
+                # ``has_initiative`` walks back through every earlier street, so
+                # a preflop raiser who checked the flop still holds the lead on
+                # the turn. Betting there is a *delayed* c-bet, not a second
+                # barrel, and pooling the two made "having bet the flop, how
+                # often they fire again on the turn" -- the sentence the
+                # glossary shows and the model is given -- describe a number
+                # that was counting something else.
+                if d.seat in declined_initiative:
+                    book.count(f"delayed_cbet:{s}", bet)
+                    if bet:
+                        book.measure(f"delayed_cbet_size:{s}", d.bet_fraction)
                 else:
+                    book.count(f"cbet:{s}", bet)
+                    if bet:
+                        book.measure(f"cbet_size:{s}", d.bet_fraction)
+                if not bet:
                     declined_initiative.add(d.seat)
             elif initiative is not None and initiative not in declined_initiative:
                 # Betting into the player who holds the lead.
@@ -318,9 +331,15 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
                     book.count(f"fold_to_cbet:{s}", folded)
                     book.count(f"raise_cbet:{s}", raised)
                     book.count(f"call_cbet:{s}", called)
-            if d.seat in checked:
-                book.count(f"check_raise:{s}", raised)
-                book.count(f"check_fold:{s}", folded)
+                if d.seat in checked:
+                    # Guarded by first_face for the same reason the fold
+                    # counters above are: in a raise war a player faces a bet,
+                    # check-raises, faces the re-raise and folds. Counting the
+                    # second decision too recorded one check-raise out of *two*
+                    # opportunities, and booked the player who check-*raised*
+                    # as having check-folded.
+                    book.count(f"check_raise:{s}", raised)
+                    book.count(f"check_fold:{s}", folded)
             if raised:
                 book.measure(f"raise_ratio:{s}", a.to_amount / max(a.to_call, 1))
 
@@ -487,9 +506,14 @@ def _all_in_ev(hand: Hand, view: HandView, books: Books, reg: str,
     that cannot tell those apart is rating luck. So when the money goes in with
     cards face up, the pot is also credited by equity at that moment.
 
-    Side pots are not modelled -- with three or more all-in players of
-    different stacks the equity share is approximate, so those hands are
-    flagged rather than trusted.
+    A player can only win what they matched. Each seat's eligible pot is
+    therefore capped at ``sum(min(other.invested, mine))`` over the table --
+    without that cap a short all-in was credited with equity in money it could
+    never have won, so an aces-in-for-10 against two 100bb stacks scored +75bb
+    of "equity" in a hand whose main pot capped it at +10bb.
+
+    Where a genuine side pot forms (three or more all-in players at different
+    depths) the split is still approximate, so the hand is flagged.
     """
     all_in_actions = [a for a in hand.actions if a.all_in]
     if not all_in_actions or len(showdown) < 2:
@@ -505,11 +529,16 @@ def _all_in_ev(hand: Hand, view: HandView, books: Books, reg: str,
         shares = equities(list(known.values()), board)
     except ValueError:
         return
-    pot = sum(s.invested for s in hand.seats)
+    invested = [s.invested for s in hand.seats]
+    depths = {s.invested for s in hand.seats if s.invested > 0}
+    if len(depths) > 1 and len([a for a in all_in_actions]) > 1:
+        # Unequal stacks all-in: layered pots, which this does not model.
+        hand.flags.add("side_pot")
     for (seat, _), share in zip(known.items(), shares):
         book = book_for(books, hand.seat(seat).player_id, reg)
         player = hand.seat(seat)
-        book.measure("ev_net_bb", (share * pot - player.invested) / hand.big_blind)
+        eligible = sum(min(other, player.invested) for other in invested)
+        book.measure("ev_net_bb", (share * eligible - player.invested) / hand.big_blind)
         # The realised result of the same pots, so a rating can swap one for
         # the other instead of counting the all-in twice.
         book.measure("allin_realised_bb", player.net / hand.big_blind)

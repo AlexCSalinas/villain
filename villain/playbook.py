@@ -338,6 +338,43 @@ PLAYBOOK: dict[str, Entry] = {
         ),
         dont="Do not extend the assumption to their leads and turn raises."
     ),
+    "barrels_flop": Entry(
+        behaviour=(
+            "They bet and raise the flop far more often than the hands they "
+            "could be holding justify. Every flop is a fight."
+        ),
+        why=(
+            "A flop range that bets this often is mostly hands that missed. "
+            "You are being priced out of pots you are winning."
+        ),
+        do=(
+            "Call with any pair and most draws, and float in position with "
+            "overcards. Let them bet the turn into you rather than raising -- "
+            "their next barrel is more money from the same mistake."
+        ),
+        dont=(
+            "Do not start check-raising light to fight back. Raising folds out "
+            "the bluffs you are trying to collect."
+        )
+    ),
+    "barrels_river": Entry(
+        behaviour=(
+            "They keep firing on the river at a frequency no value range can "
+            "support, including on boards where nothing they played gets there."
+        ),
+        why=(
+            "By the river their value hands are a small, countable set. Betting "
+            "far past that means the rest is air, and a bluff-catcher beats air."
+        ),
+        do=(
+            "Call rivers with any hand that beats a bluff, including ace high "
+            "in the right spot. The call does not need to be close to be right."
+        ),
+        dont=(
+            "Do not raise as a bluff, and do not start folding good bluff-"
+            "catchers because one call went badly."
+        )
+    ),
     "barrels_relentlessly": Entry(
         behaviour=(
             "They keep betting -- flop, turn, and often the river -- at a rate no "

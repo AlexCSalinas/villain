@@ -64,13 +64,13 @@ from .profile import PROFILE_FEATURES, Profile
 #: archetype: these are exponents in a likelihood, so varying them per
 #: archetype would make the scores incomparable.
 IMPORTANCE = {
-    "vpip": 1.4, "pfr": 1.3, "three_bet": 1.1, "fold_to_three_bet": 0.9,
+    "vpip": 2.0, "pfr": 1.3, "three_bet": 1.1, "fold_to_three_bet": 0.9,
     "fold_vs_bet:flop": 1.4, "fold_vs_bet:turn": 1.6, "fold_vs_bet:river": 1.3,
     "fold_to_cbet:flop": 1.2, "fold_to_cbet:turn": 1.0,
     "aggression:flop": 1.4, "aggression:turn": 1.4, "aggression:river": 1.2,
     "cbet:flop": 1.1, "cbet:turn": 1.0, "cbet:river": 0.8,
     "check_raise:flop": 1.2, "donk:flop": 0.8,
-    "wtsd": 1.5, "wsd": 1.0, "wwsf": 0.8, "limp": 1.5, "bb_defend": 1.0,
+    "wtsd": 1.5, "wsd": 1.0, "wwsf": 0.8, "limp": 1.2, "bb_defend": 1.0,
 }
 DEFAULT_IMPORTANCE = 1.0
 
@@ -110,7 +110,15 @@ ARCHETYPES: list[Archetype] = [
         "here. The discipline is the other half: never bluff, not on a "
         "scare card and not with a busted draw. Checking back your air is "
         "where most of the edge against them comes from.",
-        {"vpip": +1.2, "pfr": -1.2, "three_bet": -1.0,
+        # Preflop volume is deliberately mild. "Station" is a *postflop* plan,
+        # and the fold family below is its identity; hanging half the label on
+        # VPIP made this a preflop-looseness detector that threw out every
+        # tight player who will not fold after the flop -- which is most of
+        # them. Loose entry belongs to "loose passive" and "limper". Note the
+        # asymmetry: *passivity* (low PFR given entry) stays a full part of the
+        # identity, because that is the plan -- it is only the volume that was
+        # borrowed from a different bucket.
+        {"vpip": +0.7, "pfr": -1.2, "three_bet": -1.0,
          "fold_to_cbet:flop": -2.0, "fold_vs_bet:flop": -2.0, "fold_vs_bet:turn": -2.2,
          "fold_vs_bet:river": -1.8, "wtsd": +1.6, "wsd": -0.8,
          "aggression:flop": -1.4, "aggression:turn": -1.5},
@@ -158,16 +166,55 @@ ARCHETYPES: list[Archetype] = [
     ),
     Archetype(
         "tag",
-        "Solid and hard to exploit; frequencies sit close to the field.",
+        "Solid home-game reg: field-sized volume, raises when in, no cheap "
+        "limp-call leaks.",
         "There is no cheap edge here, so stop looking for one -- the "
         "mistake against a solid player is inventing a read and over-"
         "adjusting to it. Play a straightforward positional game, keep pots "
         "small out of position, and take thin value where it exists. If "
         "there is a weaker player at the table, your attention belongs on "
         "them; against this one, breaking even is a fine result.",
-        {"vpip": 0.0, "pfr": +0.2, "three_bet": +0.1, "fold_to_three_bet": 0.0,
-         "cbet:flop": +0.1, "fold_to_cbet:flop": 0.0, "fold_vs_bet:turn": 0.0,
-         "aggression:flop": +0.2, "aggression:turn": +0.2, "wtsd": 0.0, "wsd": +0.4},
+        # Near-field volume, but a real identity rather than a near-copy of the
+        # population: this prototype used to sit ~8x closer to the field than
+        # any other, which made it the bucket every ambiguous player fell into.
+        # The identity is discipline -- enters raising, never limps, never
+        # donks -- not raw aggression frequency, which a tight winner reads
+        # *below* field on. It says nothing at all about fold frequency: that
+        # axis is "station"'s identity, and a TAG may be sticky or not without
+        # leaving the bucket.
+        {"vpip": 0.0, "pfr": +0.2, "three_bet": +0.35, "limp": -1.0,
+         "donk:flop": -0.6, "fold_to_three_bet": -0.3, "cbet:flop": +0.3,
+         "check_raise:flop": +0.2, "wsd": +0.3, "wtsd": -0.2},
+    ),
+    Archetype(
+        "tight passive",
+        "Below-field volume and timid after the flop -- weak-tight, not a TAG.",
+        "Open wider into their blinds and keep betting when they check; they "
+        "are folding more than the pot odds ask for and rarely put you in "
+        "hard spots themselves. Do not pay off their rare raises -- those "
+        "are the strong end of an otherwise timid range. Value is thinner "
+        "than against a station because they will get away from weak pairs, "
+        "so prefer bluffs and small-stab continuation bets over three-street "
+        "value with mediocre holdings.",
+        {"vpip": -1.0, "pfr": -1.0, "three_bet": -0.8, "fold_to_three_bet": +0.6,
+         "fold_vs_bet:flop": +0.6, "fold_vs_bet:turn": +0.5, "cbet:flop": -0.8,
+         "aggression:flop": -1.1, "aggression:turn": -1.1, "wtsd": +0.5,
+         "check_raise:flop": -0.6},
+    ),
+    Archetype(
+        "loose passive",
+        "Sees too many flops and then calls along -- passive fish, not a station.",
+        "Isolate their limps and calls with a wide raising range, then bet "
+        "for thin value on later streets; they came to play and will stick "
+        "around with second pair. Bluff less than against a nit -- they call "
+        "too often for pure air to print -- but do not turn into a station "
+        "yourself: when they finally raise, give them credit. The edge is "
+        "volume of small-to-medium value pots, not one heroic bluff.",
+        # Elevated VPIP is the gate. Limp is optional — many fish just flat.
+        {"vpip": +1.7, "pfr": +0.35, "three_bet": -0.3, "limp": 0.0,
+         "fold_to_cbet:flop": -0.5, "fold_vs_bet:flop": -0.4, "fold_vs_bet:turn": -0.3,
+         "aggression:flop": -0.9, "aggression:turn": -0.9, "cbet:flop": -0.3,
+         "wtsd": +0.8, "wsd": -0.3},
     ),
     Archetype(
         "limper",
@@ -190,8 +237,8 @@ ARCHETYPES: list[Archetype] = [
         "marginal holdings and treat every check-raise as the real thing -- "
         "they do not have a bluffing range there. The edge comes from not "
         "paying them off in the big pots they engineer.",
-        {"vpip": -0.8, "pfr": -0.6, "check_raise:flop": +2.0, "donk:flop": -0.5,
-         "cbet:flop": -1.2, "aggression:flop": -0.8, "wtsd": +0.6, "wsd": +1.0},
+        {"vpip": -0.8, "pfr": -0.6, "check_raise:flop": +2.2, "donk:flop": -0.5,
+         "cbet:flop": -1.4, "aggression:flop": -0.9, "wtsd": +0.6, "wsd": +1.0},
     ),
 ]
 
@@ -199,18 +246,26 @@ ARCHETYPE_BY_NAME = {a.name: a for a in ARCHETYPES}
 
 #: Beta-Binomial concentration. Low values mean an archetype tolerates a wide
 #: band of frequencies; high values demand players hit the prototype exactly.
-CONCENTRATION = 22.0
+#: At 22 the implied tolerance was ~0.95 population spreads -- half of an
+#: entire prototype signature -- which cost only the archetypes whose identity
+#: *is* being far from the mean, and left the near-field ones untouched.
+CONCENTRATION = 40.0
 
 #: Features are correlated (VPIP with PFR, every fold stat with every other),
 #: so the naive-Bayes product over-counts evidence. Discounting the total
 #: log-likelihood keeps the posterior from reaching false certainty.
-CORRELATION_DISCOUNT = 0.35
+#: 0.35 over-corrected by roughly 2x: a stated 51% came true about 90% of the
+#: time. Some discount is still right -- real players sit between buckets in a
+#: way the prototype-plus-noise check cannot show -- so this is half the
+#: measured gap, not all of it.
+CORRELATION_DISCOUNT = 0.55
 
 #: How common each archetype is in the wild -- the prior the likelihood updates.
 #: With no hands on a player, this is the answer.
 POPULATION_MIX = {
-    "tag": 0.20, "station": 0.18, "overfolder": 0.16, "nit": 0.13,
-    "lag": 0.12, "limper": 0.10, "maniac": 0.06, "trapper": 0.05,
+    "tag": 0.16, "loose passive": 0.16, "station": 0.12, "overfolder": 0.11,
+    "tight passive": 0.10, "lag": 0.10, "limper": 0.09, "nit": 0.08,
+    "maniac": 0.04, "trapper": 0.04,
 }
 
 
@@ -271,12 +326,16 @@ def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
 
 
 def _log_beta_binomial(hits: float, opps: float, mean: float,
-                       concentration: float = CONCENTRATION) -> float:
+                       concentration: float | None = None) -> float:
     """Log marginal likelihood of ``hits``/``opps`` under a Beta(mean) prior.
 
     The binomial coefficient is dropped: it is identical across archetypes and
     only the differences matter.
     """
+    # Read the module constant at call time: binding it as a default would
+    # freeze it at import, silently ignoring anything that tries to fit it.
+    if concentration is None:
+        concentration = CONCENTRATION
     a = mean * concentration
     b = (1 - mean) * concentration
     return _log_beta(a + hits, b + opps - hits) - _log_beta(a, b)

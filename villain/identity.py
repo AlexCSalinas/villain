@@ -6,12 +6,9 @@ restarts each time is worthless. Two independent signals are combined:
 
 * **Name similarity**, after stripping the noise accounts accumulate: case,
   punctuation, and trailing digits. ``Arnav`` and ``Arnav2`` normalise to the
-  same string.
-* **Behavioural similarity**, as a Bayes factor. For each statistic, compare
-  the probability of both samples having come from one player against the
-  probability of them having come from two. Summed across statistics this is a
-  real test: two tight-passive players will not be merged just because they are
-  both tight, since the evidence has to beat the population's own explanation.
+  same string. Only a high name match is offered as a possible merge; play
+  style is not used — two tight-passives looking alike is not evidence they
+  are one person.
 
 One hard constraint overrides both: accounts dealt into the same hand are
 different people, whatever their names look like. Those pairs are recorded at
@@ -37,6 +34,12 @@ STRONG_EVIDENCE = 4.0
 #: Minimum hands each side needs before behaviour is worth testing at all.
 MIN_HANDS_FOR_BEHAVIOUR = 60
 
+#: Name similarity required before we even mention a possible merge. Trailing
+#: digits and punctuation already normalise away (``Arnav`` / ``Arnav2`` score
+#: 1.0); this bar is for everything else. Play style is not used — agreeing
+#: that two tight-passives are "similar" is not evidence they are one person.
+HIGH_NAME_SCORE = 0.92
+
 
 @dataclass
 class Suggestion:
@@ -48,6 +51,8 @@ class Suggestion:
     behaviour_log_bf: float | None
     confidence: float
     reason: str
+    matched_a: str = ""
+    matched_b: str = ""
 
 
 def normalise(name: str) -> str:
@@ -116,14 +121,13 @@ def behaviour_log_bf(a: StatBook, b: StatBook) -> float | None:
     return total if used >= 5 else None
 
 
-def suggest_links(store, min_name_score: float = 0.70) -> list[Suggestion]:
+def suggest_links(store, min_name_score: float = HIGH_NAME_SCORE) -> list[Suggestion]:
     """Candidate merges, most confident first.
 
-    Only pairs that are not already known to be different people, and only
-    those with either a plausible name match or convincing behaviour. Nothing
-    is merged automatically: a wrong merge silently corrupts two profiles at
-    once and is far more expensive than a missed one, so the confidence is
-    reported and the decision stays with the user.
+    Name match only, and only at a high bar. Behavioural similarity is not
+    offered: two nits looking alike is not evidence they are one person, and
+    a wrong merge corrupts both profiles. Pairs already marked distinct are
+    skipped. Nothing merges automatically.
     """
     players = {int(r["id"]): r for r in store.players()}
     aliases: dict[int, list[str]] = {}
@@ -136,60 +140,55 @@ def suggest_links(store, min_name_score: float = 0.70) -> list[Suggestion]:
         for b in ids[i + 1:]:
             if store.are_distinct(a, b):
                 continue
-            score = max((name_similarity(x, y)
-                         for x in aliases.get(a, []) for y in aliases.get(b, [])),
-                        default=0.0)
-            books_a, books_b = store.books(a), store.books(b)
-            log_bf = _best_regime_bf(books_a, books_b)
-
-            if score < min_name_score and (log_bf is None or log_bf < STRONG_EVIDENCE):
+            best = (0.0, "", "")
+            for x in aliases.get(a, []):
+                for y in aliases.get(b, []):
+                    score = name_similarity(x, y)
+                    if score > best[0]:
+                        best = (score, x, y)
+            score, matched_a, matched_b = best
+            if score < min_name_score:
                 continue
-            confidence, reason = _combine(score, log_bf)
+            confidence, _ = _combine(score, None)
+            reason = _name_match_reason(matched_a, matched_b, score)
             # The busier account keeps its identity, so the merged profile
             # keeps the name the player is better known by.
             keep, absorb = (a, b) if players[a]["hands"] >= players[b]["hands"] else (b, a)
+            if keep != a:
+                matched_a, matched_b = matched_b, matched_a
             out.append(Suggestion(
                 keep=keep, absorb=absorb,
                 keep_name=players[keep]["display_name"],
                 absorb_name=players[absorb]["display_name"],
                 name_score=round(score, 3),
-                behaviour_log_bf=None if log_bf is None else round(log_bf, 2),
+                behaviour_log_bf=None,
                 confidence=round(confidence, 3), reason=reason,
+                matched_a=matched_a, matched_b=matched_b,
             ))
     out.sort(key=lambda s: -s.confidence)
     return out
 
 
-def _best_regime_bf(books_a: dict[str, StatBook], books_b: dict[str, StatBook]) -> float | None:
-    """Behaviour evidence from the regime where both have the most data."""
-    best = None
-    for regime, book_a in books_a.items():
-        book_b = books_b.get(regime)
-        if book_b is None:
-            continue
-        bf = behaviour_log_bf(book_a, book_b)
-        if bf is not None and (best is None or bf > best):
-            best = bf
-    return best
+def _name_match_reason(a: str, b: str, score: float) -> str:
+    """Explain the match using the aliases that actually scored, not display names.
+
+    Display names can drift (``TinHusband`` while the only alias is still
+    ``ShishGL``); citing those makes a real same-screen-name hit look fake.
+    """
+    if normalise(a) == normalise(b):
+        return f"both appeared as “{a}”"
+    return f"“{a}” ≈ “{b}” ({score:.0%})"
 
 
-def _combine(name_score: float, log_bf: float | None) -> tuple[float, str]:
-    """Fold the two signals into one probability and an explanation."""
-    # Name similarity as log-odds, capped: a matching name is good evidence in
-    # a home game and weak evidence in a public pool, so it is not allowed to
-    # carry the decision alone.
+def _combine(name_score: float, log_bf: float | None = None) -> tuple[float, str]:
+    """Turn a name score into a probability and a one-line reason.
+
+    ``log_bf`` is accepted for callers that still compute it, but merge
+    suggestions are name-only — play-style agreement is not a reason to merge.
+    """
     name_odds = min(3.0, max(-2.0, 8.0 * (name_score - 0.75)))
-    total = name_odds + (log_bf or 0.0)
-    confidence = 1.0 / (1.0 + math.exp(-total))
-    if log_bf is None:
-        reason = f"names match ({name_score:.0%}); not enough hands to check behaviour"
-    elif log_bf >= STRONG_EVIDENCE:
-        reason = f"names match ({name_score:.0%}) and play styles agree (log BF {log_bf:+.1f})"
-    elif log_bf <= -STRONG_EVIDENCE:
-        reason = f"names match ({name_score:.0%}) but play styles differ (log BF {log_bf:+.1f})"
-    else:
-        reason = f"names match ({name_score:.0%}); behaviour inconclusive (log BF {log_bf:+.1f})"
-    return confidence, reason
+    confidence = 1.0 / (1.0 + math.exp(-(name_odds + (log_bf or 0.0))))
+    return confidence, f"names match ({name_score:.0%})"
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +207,9 @@ class Question:
 
     ``names`` carries the display names in play, because saying "yes, same
     person" leaves a second question unanswered: what to call the result.
-    Picking silently files a profile under a name its owner has stopped using,
-    which is the exact failure identity resolution exists to prevent.
+    ``auto`` marks matches safe to apply without asking (same account rename,
+    or a clear match to somebody already in the database); the UI only prompts
+    for the rest — typically two session accounts that might be one person.
     """
 
     id: str
@@ -222,7 +222,20 @@ class Question:
     right: dict
     names: list[str] = field(default_factory=list)
     default_name: str = ""
+    auto: bool = False        # apply without prompting; prefer the DB name
 
+
+def auto_answers(questions: list[Question]) -> dict[str, dict]:
+    """Answers for questions marked ``auto``: same person, keep the DB name."""
+    return {
+        q.id: {"same": True, "name": q.default_name}
+        for q in questions if q.auto
+    }
+
+
+def askable_questions(questions: list[Question]) -> list[Question]:
+    """Questions that still need a human — net-new / ambiguous cases."""
+    return [q for q in questions if not q.auto]
 
 def _account_index(hands) -> dict[tuple[str, str], dict]:
     """Every (site, account) in a batch of hands, with its name and volume."""
@@ -255,15 +268,14 @@ def _incoming_co_occurrence(hands) -> dict[frozenset, int]:
     return pairs
 
 
-def session_questions(store, hands, min_name_score: float = 0.70) -> list[Question]:
+def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> list[Question]:
     """What to ask before folding a session into the database.
 
-    Renames come first: an account id that has appeared before under a
-    different display name is almost always the same person renaming
-    themselves, so it defaults to yes. Alias candidates -- two different
-    account ids that look like one person -- default to no, because merging
-    two real players is the more expensive mistake and the evidence for it is
-    weaker.
+    Renames and clear matches against somebody already in the database are
+    marked ``auto``: same person, keep the database's display name. The UI
+    applies those silently and only prompts for leftover cases — usually two
+    session accounts that might be one person, i.e. net-new identity questions.
+    Alias prompts require a high name match; play style is not considered.
     """
     incoming = _account_index(hands)
     blocked = _incoming_co_occurrence(hands)
@@ -280,21 +292,25 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
         row = stored.get(key)
         if row is None or not row["name"] or row["name"] == entry["name"]:
             continue
+        db_name, new_name = row["name"], entry["name"]
         questions.append(Question(
             id=f"rename:{key[0]}:{key[1]}",
             kind="rename",
-            prompt=f"Is “{entry['name']}” the same player as “{row['name']}”?",
+            prompt=f"Is “{new_name}” the same player as “{db_name}”?",
             detail=(f"Both are account {key[1]} on {key[0]}. Same id usually means "
                     f"one person who renamed themselves; answer no and they are "
                     f"kept as two players from here on."),
             default=True,
             confidence=None,
-            left={"name": row["name"], "hands": row["hands"], "player_id": row["player_id"],
+            left={"name": db_name, "hands": row["hands"], "player_id": row["player_id"],
                   "where": "already in the database"},
-            right={"name": entry["name"], "hands": entry["hands"],
+            right={"name": new_name, "hands": entry["hands"],
                    "site": key[0], "account": key[1], "where": "in this session"},
-            names=[entry["name"], row["name"]],
-            default_name=entry["name"],
+            # Prefer the name already on file so a reconnect does not invent a
+            # second display name for somebody you already track.
+            names=[db_name, new_name],
+            default_name=db_name,
+            auto=True,
         ))
 
     # 2. Different account ids that look like the same person.
@@ -303,8 +319,11 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
     for row in store.conn.execute("SELECT player_id, name FROM aliases"):
         db_aliases.setdefault(int(row["player_id"]), []).append(row["name"])
 
-    def add_alias_question(qid, score, left, right, log_bf=None, overlap=0):
-        confidence, reason = _combine(score, log_bf)
+    def add_alias_question(qid, score, left, right, log_bf=None, overlap=0,
+                           auto=False, matched_a=None, matched_b=None):
+        confidence, _ = _combine(score, log_bf)
+        reason = _name_match_reason(
+            matched_a or left["name"], matched_b or right["name"], score)
         if overlap:
             # State it rather than hiding it: the user is being asked to
             # overrule the strongest signal the tool has.
@@ -312,16 +331,29 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
                        f"{'s' if overlap > 1 else ''} -- usually a reconnect "
                        "leaving a stale seat, but check before merging")
             confidence *= 0.5
-        # Default to the busier account's name -- the one they are better known
-        # by -- but offer both, because merging leaves a second question open:
-        # what to call the result.
-        busier = left if left.get("hands", 0) >= right.get("hands", 0) else right
+            auto = False
+        # When one side is already in the database, keep that display name.
+        # Otherwise keep the busier account's name.
+        db_side = next((s for s in (left, right)
+                        if "database" in (s.get("where") or "")), None)
+        if db_side is not None:
+            default_name = db_side["name"]
+            names = [db_side["name"]] + [s["name"] for s in (left, right)
+                                         if s["name"] != db_side["name"]]
+        else:
+            busier = left if left.get("hands", 0) >= right.get("hands", 0) else right
+            default_name = busier["name"]
+            names = [left["name"], right["name"]]
         questions.append(Question(
             id=qid, kind="alias",
             prompt=f"Are “{left['name']}” and “{right['name']}” the same person?",
-            detail=reason, default=False, confidence=confidence,
+            detail=reason,
+            # Clear matches to a known player default to yes; session-only
+            # pairs still default to no (merging two real people is costly).
+            default=auto or (db_side is not None and overlap == 0),
+            confidence=confidence,
             left=left, right=right,
-            names=[left["name"], right["name"]], default_name=busier["name"]))
+            names=names, default_name=default_name, auto=auto))
 
     def already_one_player(a_key, b_key) -> bool:
         """Skip pairs the database has already been told are one person."""
@@ -331,7 +363,7 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
     seen_pairs: set[frozenset] = set()
     items = sorted(incoming.items())
     for i, (key, entry) in enumerate(items):
-        # incoming vs incoming
+        # incoming vs incoming — never auto; two session seats may be two people
         for other_key, other in items[i + 1:]:
             overlap = blocked.get(frozenset((key, other_key)), 0)
             if overlap > SPURIOUS_OVERLAP:
@@ -347,26 +379,31 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
                  "account": key[1], "where": "in this session"},
                 {"name": other["name"], "hands": other["hands"], "site": other_key[0],
                  "account": other_key[1], "where": "in this session"},
-                overlap=overlap)
+                overlap=overlap, auto=False)
 
-        # incoming vs the database
+        # incoming vs the database — clear name match auto-merges onto the
+        # existing player and keeps their database display name.
         if key in stored:
             continue                    # already a known account, not a new face
         for player_id, row in db_players.items():
-            best = max((name_similarity(entry["name"], n)
-                        for n in db_aliases.get(player_id, [])), default=0.0)
-            if best < min_name_score:
+            best = (0.0, "")
+            for n in db_aliases.get(player_id, []):
+                score = name_similarity(entry["name"], n)
+                if score > best[0]:
+                    best = (score, n)
+            if best[0] < min_name_score:
                 continue
             pair = frozenset((key, ("db", str(player_id))))
             if pair in seen_pairs:
                 continue
             seen_pairs.add(pair)
             add_alias_question(
-                f"alias:{key[1]}|db{player_id}", best,
+                f"alias:{key[1]}|db{player_id}", best[0],
                 {"name": row["display_name"], "hands": row["hands"] or 0,
                  "player_id": player_id, "where": "already in the database"},
                 {"name": entry["name"], "hands": entry["hands"], "site": key[0],
-                 "account": key[1], "where": "in this session"})
+                 "account": key[1], "where": "in this session"},
+                auto=True, matched_a=best[1], matched_b=entry["name"])
 
     questions.sort(key=lambda q: (q.kind != "rename", -(q.confidence or 1.0)))
     return questions

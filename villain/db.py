@@ -132,12 +132,18 @@ class ImportReport:
     hands_seen: int = 0
     hands_new: int = 0
     duplicates: int = 0
+    unusable: int = 0            # stored, but no statistics could be extracted
     players_new: int = 0
     players: dict[str, int] = field(default_factory=dict)   # display name -> hands added
 
     def __str__(self) -> str:
-        return (f"{self.hands_new} new hands from {self.files} file(s) "
+        text = (f"{self.hands_new} new hands from {self.files} file(s) "
                 f"({self.duplicates} already known), {self.players_new} new player(s)")
+        if self.unusable:
+            # An import that yields no statistics must not look like a success.
+            text += (f"\n  {self.unusable} hand(s) could not be read and "
+                     "produced no statistics")
+        return text
 
 
 class Store:
@@ -161,6 +167,35 @@ class Store:
             # the honest floor: it is the least the overlap can have been.
             self.conn.execute(
                 "ALTER TABLE distinct_pairs ADD COLUMN hands INTEGER NOT NULL DEFAULT 1")
+        self._repair_distinct_pairs()
+
+    def _repair_distinct_pairs(self) -> None:
+        """Restore the ``a < b`` invariant that a past merge could break.
+
+        Earlier versions re-pointed these rows with a bare UPDATE, which could
+        leave ``a > b``. Such a row is invisible to :meth:`shared_hands`, which
+        looks the pair up sorted -- so a constraint saying two accounts were
+        dealt in together silently stopped applying, and the merge it was there
+        to prevent became possible. Rows left pointing at a player that no
+        longer exists go too; they can never match anything and only confuse a
+        later repair.
+        """
+        live = {r["id"] for r in self.conn.execute("SELECT id FROM players")}
+        rows = self.conn.execute("SELECT a, b, hands FROM distinct_pairs").fetchall()
+        fixed: dict[tuple[int, int], int] = {}
+        for row in rows:
+            a, b, hands = int(row["a"]), int(row["b"]), int(row["hands"])
+            if a == b or a not in live or b not in live:
+                continue
+            key = (min(a, b), max(a, b))
+            fixed[key] = fixed.get(key, 0) + hands
+        if len(fixed) == len(rows) and all(
+                int(r["a"]) < int(r["b"]) for r in rows):
+            return                          # already clean; leave it alone
+        self.conn.execute("DELETE FROM distinct_pairs")
+        self.conn.executemany(
+            "INSERT INTO distinct_pairs (a, b, hands) VALUES (?, ?, ?)",
+            [(a, b, n) for (a, b), n in fixed.items()])
 
     def close(self) -> None:
         self.conn.close()
@@ -168,8 +203,14 @@ class Store:
     def __enter__(self) -> "Store":
         return self
 
-    def __exit__(self, *exc) -> None:
-        self.conn.commit()
+    def __exit__(self, exc_type, exc, tb) -> None:
+        # Roll back on the way out of a failed block. Committing regardless
+        # meant a parse failure halfway through ``villain import`` left the
+        # files before it, and half of the one that broke, permanently stored.
+        if exc_type is None:
+            self.conn.commit()
+        else:
+            self.conn.rollback()
         self.close()
 
     # -- identity --------------------------------------------------------
@@ -237,10 +278,28 @@ class Store:
                               (keep, absorb))
         self.conn.execute("DELETE FROM players WHERE id = ?", (absorb,))
         # Inherit the absorbed player's distinctness constraints.
-        self.conn.execute(
-            "UPDATE OR IGNORE distinct_pairs SET a = ? WHERE a = ?", (keep, absorb))
-        self.conn.execute(
-            "UPDATE OR IGNORE distinct_pairs SET b = ? WHERE b = ?", (keep, absorb))
+        # Re-point every constraint the absorbed player carried onto ``keep``.
+        # A bare UPDATE cannot do this: the table's whole contract is that ``a
+        # < b`` (mark_distinct inserts sorted, shared_hands looks up sorted),
+        # and renaming one column of a sorted pair can invert it. An inverted
+        # row is invisible to shared_hands, which silently drops the constraint
+        # -- and that is exactly how two accounts dealt into the same hand
+        # became mergeable. UPDATE OR IGNORE also discarded, rather than
+        # summed, the overlap when both players already had a row.
+        rows = self.conn.execute(
+            "SELECT a, b, hands FROM distinct_pairs WHERE a = ? OR b = ?",
+            (absorb, absorb)).fetchall()
+        self.conn.execute("DELETE FROM distinct_pairs WHERE a = ? OR b = ?",
+                          (absorb, absorb))
+        for row in rows:
+            other = row["b"] if row["a"] == absorb else row["a"]
+            if other == keep:
+                continue                    # the pair being merged; not a constraint
+            lo, hi = sorted((keep, other))
+            self.conn.execute(
+                "INSERT INTO distinct_pairs (a, b, hands) VALUES (?, ?, ?) "
+                "ON CONFLICT(a, b) DO UPDATE SET hands = hands + excluded.hands",
+                (lo, hi, int(row["hands"])))
         self.conn.execute("DELETE FROM distinct_pairs WHERE a = b")
         self.conn.commit()
         self.rebuild(only=[keep])
@@ -296,6 +355,8 @@ class Store:
             )
             fresh.append(hand)
             report.hands_new += 1
+            if "pot_mismatch" in hand.flags or hand.big_blind <= 0:
+                report.unusable += 1
 
         touched = self._ingest(fresh, report, name_splits or set())
         self.conn.commit()
@@ -347,11 +408,15 @@ class Store:
     # -- books -----------------------------------------------------------
 
     def rebuild(self, only: list[int] | None = None) -> int:
-        """Recompute books from stored hands. The cache is always disposable."""
-        alias_map = {
-            (r["site"], r["account"]): int(r["player_id"])
-            for r in self.conn.execute("SELECT site, account, player_id FROM aliases")
-        }
+        """Recompute books from stored hands. The cache is always disposable.
+
+        When ``only`` is set, hands that never seat those players are skipped so
+        a single-player rebuild (e.g. after a merge) does not rescan the whole
+        database through the feature pipeline.
+        """
+        alias_rows = list(self.conn.execute(
+            "SELECT site, account, player_id FROM aliases"))
+        alias_map = {(r["site"], r["account"]): int(r["player_id"]) for r in alias_rows}
 
         def resolve(site: str, account: str, name: str) -> int | None:
             """Split key first, then the bare account.
@@ -365,11 +430,27 @@ class Store:
             if hit is not None:
                 return hit
             return alias_map.get((site, account))
-        books: dict[str, dict[str, StatBook]]
+
+        wanted = {int(p) for p in only} if only else None
+        wanted_keys = None
+        if wanted is not None:
+            wanted_keys = {(r["site"], r["account"]) for r in alias_rows
+                           if int(r["player_id"]) in wanted}
+
         names: dict[str, str] = {}
         hands: list[Hand] = []
         for row in self.conn.execute("SELECT site, payload FROM hands ORDER BY started_at"):
             data = json.loads(gzip.decompress(row["payload"]))
+            site = row["site"]
+            seats = data.get("seats") or []
+            if wanted_keys is not None:
+                if not any(
+                    (site, seat.get("player_id")) in wanted_keys
+                    or (site, split_key(seat.get("player_id", ""), seat.get("name") or ""))
+                    in wanted_keys
+                    for seat in seats
+                ):
+                    continue
             hand = hand_from_dict(data)
             # Re-key seats onto internal player ids so merged aliases pool.
             for seat in hand.seats:
@@ -383,10 +464,10 @@ class Store:
         # full sample, then tag every hand with those same thresholds.
         books = record_hands(hands)
 
-        wanted = {str(p) for p in only} if only else None
+        wanted_str = {str(p) for p in wanted} if wanted is not None else None
         written = 0
         for pid, by_regime in books.items():
-            if wanted is not None and pid not in wanted:
+            if wanted_str is not None and pid not in wanted_str:
                 continue
             self._write_books(int(pid), by_regime, names.get(pid, ""))
             written += 1
