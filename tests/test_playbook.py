@@ -1,6 +1,7 @@
 """The plain-language layer: what a leak says, and the guard on the optional model."""
 
 import json
+import pathlib
 
 import pytest
 
@@ -106,10 +107,57 @@ def test_analyze_export_carries_the_language(tmp_path, hands):
 
 # -- the optional model -----------------------------------------------------
 
-def test_narrator_is_off_unless_configured(monkeypatch):
+def test_narrator_is_off_unless_configured(monkeypatch, tmp_path):
+    """With nothing set anywhere, the tool must behave as if the model does not
+    exist. The config file is redirected too, or this passes or fails depending
+    on whether the machine running the tests happens to have a key."""
+    from villain import narrate as module
     monkeypatch.delenv("VILLAIN_LLM_MODEL", raising=False)
     monkeypatch.delenv("VILLAIN_LLM_URL", raising=False)
+    monkeypatch.setattr(module, "CONFIG_PATH", tmp_path / "absent")
     assert enabled() is False
+
+
+def test_config_file_enables_the_narrator(monkeypatch, tmp_path):
+    from villain import narrate as module
+    monkeypatch.delenv("VILLAIN_LLM_MODEL", raising=False)
+    monkeypatch.delenv("VILLAIN_LLM_URL", raising=False)
+    config = tmp_path / "env"
+    config.write_text("# comment\nVILLAIN_LLM_MODEL=some-model\n"
+                      "VILLAIN_LLM_KEY='quoted-secret'\nIGNORED=nope\n")
+    monkeypatch.setattr(module, "CONFIG_PATH", config)
+    assert enabled() is True
+    assert module.setting("VILLAIN_LLM_MODEL") == "some-model"
+    assert module.setting("VILLAIN_LLM_KEY") == "quoted-secret"
+    assert module.setting("IGNORED") is None, "only known settings are read"
+
+
+def test_environment_beats_the_config_file(monkeypatch, tmp_path):
+    from villain import narrate as module
+    config = tmp_path / "env"
+    config.write_text("VILLAIN_LLM_MODEL=from-file\n")
+    monkeypatch.setattr(module, "CONFIG_PATH", config)
+    monkeypatch.setenv("VILLAIN_LLM_MODEL", "from-env")
+    assert module.setting("VILLAIN_LLM_MODEL") == "from-env"
+
+
+def test_credentials_live_outside_the_repository():
+    """A key under the working tree is one `git add -A` from being published."""
+    from villain.narrate import CONFIG_PATH
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    assert repo not in CONFIG_PATH.resolve().parents
+
+
+def test_endpoint_description_never_includes_the_key(monkeypatch, tmp_path):
+    from villain import narrate as module
+    config = tmp_path / "env"
+    config.write_text("VILLAIN_LLM_KEY=super-secret-value\n"
+                      "VILLAIN_LLM_URL=https://example.com/v1/chat/completions\n")
+    monkeypatch.setattr(module, "CONFIG_PATH", config)
+    monkeypatch.delenv("VILLAIN_LLM_KEY", raising=False)
+    monkeypatch.delenv("VILLAIN_LLM_URL", raising=False)
+    assert "super-secret-value" not in module.describe_endpoint()
+    assert "example.com" in module.describe_endpoint()
 
 
 def test_fact_sheet_contains_only_computed_values(tmp_path, hands):

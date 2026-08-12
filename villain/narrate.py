@@ -9,12 +9,17 @@ in accordingly.
 anything outside the standard library. With nothing configured the tool behaves
 exactly as it did before.
 
-**It runs against a local model by default.** The endpoint is an
-OpenAI-compatible ``/chat/completions`` URL, defaulting to Ollama on
-``localhost``. That keeps it free, keeps it working offline, and keeps hand
-histories on the machine that recorded them -- opponent profiles are the sort
-of thing you should not be posting to a third party. Any other compatible
-endpoint works by changing ``VILLAIN_LLM_URL``.
+**It talks to any OpenAI-compatible ``/chat/completions`` endpoint.** A local
+Ollama is the default because it is free, offline, and keeps hand histories on
+the machine that recorded them. A hosted free tier works the same way by
+pointing ``VILLAIN_LLM_URL`` at it -- at the cost of sending opponent profiles
+to somebody else, which is worth knowing before you switch.
+
+**Credentials live outside the repository.** Settings are read from the
+environment, falling back to ``~/.villain/env``, which is deliberately *not* in
+the project directory: a key that never sits under the working tree cannot be
+committed by an absent-minded ``git add -A``. The file is a plain list of
+``NAME=value`` lines and should be readable only by its owner.
 
 **It may not invent numbers.** The model is given a fact sheet built from the
 computed profile and asked to explain it; the output is then checked, and any
@@ -36,10 +41,38 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_URL = "http://localhost:11434/v1/chat/completions"
 DEFAULT_MODEL = "llama3.2"
 TIMEOUT = 60
+
+#: Outside the project directory on purpose -- see the module docstring.
+CONFIG_PATH = Path.home() / ".villain" / "env"
+
+SETTINGS = ("VILLAIN_LLM_URL", "VILLAIN_LLM_MODEL", "VILLAIN_LLM_KEY")
+
+
+def _config() -> dict[str, str]:
+    """Settings from ``~/.villain/env``. The environment always wins."""
+    values: dict[str, str] = {}
+    try:
+        text = CONFIG_PATH.read_text()
+    except OSError:
+        return values
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        if name in SETTINGS:
+            values[name] = value.strip().strip("\'\"")
+    return values
+
+
+def setting(name: str, default: str | None = None) -> str | None:
+    return os.environ.get(name) or _config().get(name) or default
 
 SYSTEM = (
     "You are a poker coach briefing a player between hands. You are given facts "
@@ -68,7 +101,14 @@ class Unavailable(RuntimeError):
 
 def enabled() -> bool:
     """True when a narrator has been explicitly configured."""
-    return bool(os.environ.get("VILLAIN_LLM_MODEL") or os.environ.get("VILLAIN_LLM_URL"))
+    return bool(setting("VILLAIN_LLM_MODEL") or setting("VILLAIN_LLM_URL"))
+
+
+def describe_endpoint() -> str:
+    """Where calls go, for showing the user without leaking the key."""
+    url = setting("VILLAIN_LLM_URL", DEFAULT_URL)
+    host = url.split("/")[2] if "//" in url else url
+    return f"{setting('VILLAIN_LLM_MODEL', DEFAULT_MODEL)} at {host}"
 
 
 def fact_sheet(payload: dict) -> str:
@@ -103,8 +143,8 @@ def fact_sheet(payload: dict) -> str:
 def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
             timeout: int = TIMEOUT) -> Narration:
     """Ask the configured model to summarise a profile. Raises on any problem."""
-    url = url or os.environ.get("VILLAIN_LLM_URL") or DEFAULT_URL
-    model = model or os.environ.get("VILLAIN_LLM_MODEL") or DEFAULT_MODEL
+    url = url or setting("VILLAIN_LLM_URL", DEFAULT_URL)
+    model = model or setting("VILLAIN_LLM_MODEL", DEFAULT_MODEL)
     facts = fact_sheet(payload)
 
     body = json.dumps({
@@ -114,7 +154,7 @@ def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
                      {"role": "user", "content": facts}],
     }).encode()
     headers = {"Content-Type": "application/json"}
-    key = os.environ.get("VILLAIN_LLM_KEY")
+    key = setting("VILLAIN_LLM_KEY")
     if key:
         headers["Authorization"] = f"Bearer {key}"
 

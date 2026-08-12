@@ -646,15 +646,29 @@ PAGE = r"""<!doctype html>
   .muted { color: var(--muted); }
   .small { font-size: 12.5px; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-  .spread { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  /* Wraps, and the text side is allowed to shrink. Without min-width:0 a flex
+     child refuses to go narrower than its own content, so a long description
+     shoves whatever sits beside it straight out of the panel -- which is how
+     the reset button ended up overflowing. */
+  .spread {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 12px; flex-wrap: wrap;
+  }
+  .spread > * { min-width: 0; }
+  .spread > :first-child { flex: 1 1 auto; }
+  .leak-head > * { min-width: 0; }
   /* Buttons come in three shapes and no others: a pill for actions, a plain
      text link for inline affordances, and the icon square in the header.
      Anything needing a fourth is probably not a button. */
   button.act {
-    font: inherit; font-size: 13px; line-height: 1.2; padding: 7px 15px;
-    border-radius: 999px; border: 1px solid var(--line); background: transparent;
-    color: var(--ink); cursor: pointer; white-space: nowrap;
-    transition: border-color .12s, background .12s, color .12s;
+    /* Padding in em, so it tracks whatever font-size the variant sets and a
+       short label is never left rattling around inside a wide pill. flex:none
+       stops a flex parent from squeezing the button below its own text. */
+    font: inherit; font-size: 13px; line-height: 1.25;
+    padding: 0.46em 0.9em; border-radius: 7px;
+    border: 1px solid var(--line); background: transparent;
+    color: var(--ink); cursor: pointer; white-space: nowrap; flex: none;
+    transition: border-color .12s, background .12s, color .12s, opacity .12s;
   }
   button.act:hover:not(:disabled) { border-color: var(--accent); }
   button.act:active:not(:disabled) { transform: translateY(0.5px); }
@@ -663,7 +677,7 @@ PAGE = r"""<!doctype html>
     font-weight: 600;
   }
   button.act.primary:hover:not(:disabled) { opacity: .88; }
-  button.act.small { font-size: 12px; padding: 4px 11px; }
+  button.act.small { font-size: 11.5px; }
   button.act:disabled { opacity: .45; cursor: default; }
   button.act.danger { border-color: var(--danger); color: var(--danger); }
   button.act.danger:hover:not(:disabled) {
@@ -733,6 +747,10 @@ PAGE = r"""<!doctype html>
   details[open] > summary::before { content: "\25BE "; }
   details > summary:hover { color: var(--ink); }
   .headline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .narration { margin-top: 10px; max-width: 66ch; }
+  .narration blockquote {
+    margin: 0 0 6px; padding: 0 0 0 13px; border-left: 2px solid var(--line);
+  }
   .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
   .gamecard { border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 10px 0; }
   .gamecard.best { border-color: var(--accent); }
@@ -978,7 +996,8 @@ function rosterTable(players, opts) {
   return wrap;
 }
 
-function profileCard(p) {
+function profileCard(p, opts) {
+  opts = opts || {};
   const card = document.createElement("div");
   const leaks = p.leaks;
   const maxSeverity = Math.max(0.01, ...leaks.map(l => l.severity_bb100));
@@ -998,7 +1017,7 @@ function profileCard(p) {
       </div>
     </div>
     <p style="max-width:62ch">${esc(p.plan)}</p>
-    <div class="narrate"></div>
+    ${opts.narrate ? '<div class="narrate"></div>' : ""}
     <details class="mixbox"><summary>how sure, and what else it could be</summary>
       <div class="mix" style="margin-top:8px"></div></details>`;
   card.appendChild(head);
@@ -1008,29 +1027,7 @@ function profileCard(p) {
      generated for everyone: it costs a model call and it is a nicety on top
      of the playbook, not a replacement for it. */
   const narrateBox = $(".narrate", head);
-  const narrateBtn = document.createElement("button");
-  narrateBtn.className = "act small";
-  narrateBtn.textContent = "Generate detailed description";
-  const narrateOut = document.createElement("div");
-  narrateOut.style.cssText = "max-width:66ch;margin-top:10px";
-  narrateBtn.onclick = async () => {
-    narrateBtn.disabled = true;
-    narrateBtn.textContent = "writing\u2026";
-    try {
-      const result = await post("/api/narrate", {profile: p});
-      narrateOut.innerHTML = `<div style="border-left:2px solid var(--line);
-        padding-left:12px">${esc(result.text)}</div>
-        <div class="small muted" style="margin-top:6px">written by
-          ${esc(result.model)} from the numbers above \u2014 it cannot state a
-          figure the profile did not produce</div>`;
-      narrateBtn.textContent = "Rewrite";
-    } catch (err) {
-      narrateOut.innerHTML = `<div class="small err">${esc(err.message)}</div>`;
-      narrateBtn.textContent = "Generate detailed description";
-    }
-    narrateBtn.disabled = false;
-  };
-  narrateBox.append(narrateBtn, narrateOut);
+  if (narrateBox) buildNarrator(narrateBox, p);
 
   const tables = $(".tables", head);
   tables.appendChild(document.createTextNode(p.table_mix || p.regime_label));
@@ -1251,15 +1248,46 @@ function profileCard(p) {
   return card;
 }
 
+/* A written-to-order description of this specific player, on demand.
+   Only offered on a saved player: it costs a model call, and an unsaved
+   session has no stable identity to attach the result to. */
+function buildNarrator(box, profile) {
+  const button = document.createElement("button");
+  button.className = "act small";
+  button.textContent = "Generate detailed description";
+  const out = document.createElement("div");
+  out.className = "narration";
+  box.append(button, out);
+
+  button.onclick = async () => {
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = "writing\u2026";
+    out.innerHTML = "";
+    try {
+      const result = await post("/api/narrate", {profile: profile});
+      out.innerHTML = `<blockquote>${esc(result.text)}</blockquote>
+        <div class="small muted">written by ${esc(result.model)} from the
+          numbers on this page \u2014 it is given the computed profile and
+          cannot state a figure the profile did not produce</div>`;
+      button.textContent = "Rewrite";
+    } catch (err) {
+      out.innerHTML = `<div class="small err">${esc(err.message)}</div>`;
+      button.textContent = original;
+    }
+    button.disabled = false;
+  };
+}
+
 /* ---- a strip of player tabs over one profile at a time ---- */
-function playerTabs(profiles, container) {
+function playerTabs(profiles, container, opts) {
   container.innerHTML = "";
   if (!profiles.length) {
     container.innerHTML = `<div class="panel"><div class="empty">No profiles.</div></div>`;
     return;
   }
   if (profiles.length === 1) {          // a strip of one is just clutter
-    container.appendChild(profileCard(profiles[0]));
+    container.appendChild(profileCard(profiles[0], opts));
     return;
   }
   const strip = document.createElement("div");
@@ -1272,7 +1300,7 @@ function playerTabs(profiles, container) {
     current = i;
     [...strip.children].forEach((b, j) => b.classList.toggle("on", i === j));
     body.innerHTML = "";
-    body.appendChild(profileCard(profiles[i]));
+    body.appendChild(profileCard(profiles[i], opts));
   }
   profiles.forEach((p, i) => {
     const b = document.createElement("button");
@@ -1512,7 +1540,7 @@ async function viewPlayer(id) {
   $("#back").onclick = e => { e.preventDefault(); state.player = null; viewDatabase(); };
   const holder = document.createElement("div");
   view.appendChild(holder);
-  playerTabs(data.profiles, holder);
+  playerTabs(data.profiles, holder, {narrate: true});
 
   if (data.by_table && data.by_table.length > 1) {
     const panel = document.createElement("div");

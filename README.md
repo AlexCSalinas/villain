@@ -3,8 +3,15 @@
 Reads hand histories, works out what kind of player each opponent is, prices
 what their leaks are worth, and remembers them the next time they sit down.
 
-Built for the sample sizes real games actually give you — a couple hundred
-hands, not a couple hundred thousand.
+## Why this is hard
+
+A home game session is about 200 hands — 20 to 40 observations of any postflop
+statistic. A tracker will tell you the villain folds to 100% of turn bets
+because he folded the only three he faced, and betting every turn on that basis
+is how you donate to a normal player. The hard part is not computing statistics
+but knowing which of them mean anything yet, and everything below follows from
+that: this is built for a couple of hundred hands, not a couple of hundred
+thousand.
 
 ## Install
 
@@ -17,220 +24,135 @@ cd villain
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
+
+pytest                             # 167 tests
 ```
 
-That installs two commands, `villain` and `villain-ui`. To check it works:
+That installs two commands, `villain` and `villain-ui`. The parser suite checks
+that every hand balances to the cent, which is what proves the opcode decoding
+is right; several tests in `test_profiling.py` are regressions named for the
+modelling mistakes that produced them.
+
+## The interface
 
 ```bash
-pytest                             # 118 tests
+villain ui                         # http://127.0.0.1:8766
 ```
 
-## Use it
+Standard library HTTP server, one self-contained module. Three tabs, because
+there are three questions.
 
-### The interface
+* **Session** — who am I playing right now. Drop a hand history on the page and
+  the read comes back at once. **Nothing is written anywhere.**
+* **Database** — who is this, across every session ever imported. One profile
+  per player, and 800 hands read far more sharply than 80.
+* **Leaderboard** — every player you have recorded, ranked by skill score, with
+  the bb/100 you can attack them for alongside.
 
-```bash
-villain ui                         # opens http://127.0.0.1:8766
-```
-
-Two tabs.
-
-**Session** — drag a hand history onto the drop zone. You get the full read
-straight away: what kind of player each opponent is, what to do about them, and
-a skill rating. **Nothing is saved.** Close the tab and your database is exactly
-as it was. Use this to look at a game you just played without committing to
-anything.
-
-**Leaderboard** — which game to turn up to. Every table in the database ranked
-by what its field is worth to you in bb/100, weighted by how often each player
-actually occupies a seat: one whale who plays every hand makes a softer game
-than a whale who rotates through with three competent regulars, even though the
-whale's leaks are identical. Below it, every player ranked by how attackable
-they are.
-
-**Database** — everyone you have ever imported, accumulating across sessions.
-One row per player, one profile per player. Click through for the full read. A
-player you have 800 hands on reads far more sharply than one you have 80 on,
-which is the entire point of keeping the database.
-
-To move a session into the database, hit **Add to database** on the session tab.
-That is the only moment the tool asks you anything — see *Saving a session*
-below.
-
-Hover the **ⓘ** next to anything you do not recognise. Every statistic explains
-what it counts and what a high *and* a low value mean for you; every piece of
-vocabulary (`thin`, `usable`, `tentative`, `bb/100`, `breakeven`) explains
-itself.
-
-### The command line
-
-```bash
-villain scout ~/Downloads/poker-now-hands-*.json   # read a file, save nothing
-villain import ~/Downloads/poker-now-*.json        # read it and store it
-villain players                                    # who is in the database
-villain profile DavidMazour                        # the full read
-villain profile DavidMazour -v                     # plus deviations and timing
-villain profile DavidMazour --by-table             # split by table size instead
-villain profile DavidMazour --json                 # machine-readable
-villain link --suggest                             # find accounts that may be one person
-villain link 4 7                                   # merge player 7 into player 4
-villain note DavidMazour "tilts after losing a big pot"
-villain fit                                        # learn from your own database
-villain rebuild                                    # recompute everything from stored hands
-```
-
-Every command takes `--db PATH`; the default is `~/.villain/villain.db`.
-
-### Where to get hand histories
-
-**PokerNow** (currently the only supported format): open the game log and use
-the export button; you get a `poker-now-hands-game-*.json` file. Both the
-website and the CLI take it as-is.
-
-Other sites need a parser in `villain/parsers/`. The registry sniffs formats by
-file, so adding one touches nothing downstream.
+A profile shows one player at a time from a tab strip: the read, what to do
+about it, the score, six headline numbers, and the rest behind a disclosure,
+because a mid-session read that requires scrolling is one you will not use.
+Every shorthand carries an **ⓘ** giving what the statistic counts and what
+*high* and *low* each mean — both, since both are usually exploitable and call
+for opposite play. Definitions live in `glossary.py` as data, and a test fails
+if a statistic reaches the screen without one. **Reset** makes you type `delete
+everything`; exports are untouched, so statistics can be rebuilt, but the merge
+and rename decisions cannot.
 
 ### Saving a session
 
-Identity is where a profiler quietly destroys its own data — merge two people
-and both profiles become fiction — so saving is the one moment the tool asks
-questions instead of guessing:
+**Add to database** is the only moment the tool asks you anything. Identity is
+where a profiler destroys its own data — merge two people and both profiles
+become fiction, split one and half of what you know is gone — so it asks about
+every call it is unsure of rather than guessing.
 
-* **"Is *Dave (new laptop)* the same player as *DavidMazour2*?"** Same account
-  id, new display name. Defaults to **yes**: one id almost always means one
-  person who renamed themselves.
-* **"Are *Arnav* and *Arnav2* the same person?"** Two different account ids that
-  look alike. Defaults to **no** — merging two real players is the more
-  expensive mistake.
+* **One account id, a new display name.** The PokerNow case, almost always a
+  rename, so it defaults to *same player*. Answer no and they stay apart, keyed
+  `<account>#<name>` so neither loses its existing hands.
+* **Two account ids that look like one person** — `Arnav`, `Arnav2` — default
+  to *different people*: the merge is the more expensive mistake on the weaker
+  evidence.
 
-Players dealt into the same hand are never offered as a merge, whatever their
+Accounts dealt into the same hand are never offered as a merge, whatever their
 names look like.
 
-### Reading the output
+## The command line
 
-Each exploit answers four questions, the last of which matters most:
+Every command takes `--db PATH`; the default is `~/.villain/villain.db`.
 
-* **What they are doing** — described as behaviour, not as a statistic.
-* **Why it is exploitable** — the mechanism, tied to the breakeven arithmetic.
-* **Do this** — concrete actions with streets and sizes.
-* **Do not** — the counter-mistake. Nearly every way of losing money to a
-  correct read is an over-adjustment, so knowing somebody folds too much is
-  only half of it; the other half is knowing when to stop.
+| command | what it does |
+| --- | --- |
+| `villain scout FILE...` | read a file, save nothing (`--min-hands N`, default 20; `-v`) |
+| `villain import FILE...` | read it and store it (`--quiet`) |
+| `villain players` | who is in the database (`--min-hands N`) |
+| `villain profile NAME` | the full read (`-v` for deviations and timing, `--json`, `--narrate`) |
+| `villain profile NAME --by-table` | split by table size instead of pooling (`--regime hu\|3max\|6max\|full`) |
+| `villain link --suggest` | find accounts that may be one person |
+| `villain link KEEP ABSORB` | merge player `ABSORB` into player `KEEP` |
+| `villain note NAME "tilts after a big pot"` | attach a note to a player |
+| `villain fit` | learn priors, clusters and hand strength from your own database (`--min-players N`, default 8) |
+| `villain rebuild` | recompute every profile from stored hands |
+| `villain ui` | serve the web interface (`--port N`, default 8766; `--no-browser`) |
 
-Leaks that compound get called out together. A player who folds flops too often
-*and* never check-raises has removed both the reason to fear betting and the
-cost of being wrong, and the right adjustment against the pair is more
-aggressive than against either one alone.
-
-
-The number to act on is **bb/100** next to each exploit: roughly what that leak
-is worth to you per 100 hands if you attack it every time. Sorted by value, so
-the top line is where the money is.
-
-Each read is labelled `tentative`, `likely` or `strong`. Those are not decoration
-— they say how much of the read comes from their actual hands rather than from
-assumptions about players in general. A `tentative` read on 12 spots is worth
-knowing and not worth rebuilding your game around.
-
-If a player shows no leaks, that is usually "not enough hands yet" rather than
-"unexploitable". The tool says so rather than inventing something.
-
-### Checking a read
-
-Every exploit shows the hands behind it. "Folds too often to river bets" comes
-with a **see the 25 hands** button that lists each one — board, what they did,
-what it cost them, and whether it counted toward the read — and clicking any of
-them replays the hand street by street with their actions marked.
-
-Nothing extra is stored to make this work. Hands are already the source of
-truth and a statistic's definition already lives in exactly one place, so the
-contributing hands are found by replaying each hand through the same extraction
-the statistics use and asking which ones moved the counter. The evidence
-therefore cannot drift from the number: change a definition and both change
-together, because they are the same code.
-
-This is also the fastest way to find out the tool is wrong. Building it
-immediately surfaced a real bug — VPIP was being counted once per preflop
-*decision* rather than once per hand, so a player who limped and then called a
-raise was counted twice, inflating every sample that fed it.
+**PokerNow** is currently the only supported format: open the game log and use
+the export button, which gives a `poker-now-hands-game-*.json` file that both
+the website and the CLI take as-is. Other sites need a parser in
+`villain/parsers/`; the registry sniffs formats by file content, so adding one
+touches nothing downstream.
 
 ### Optional: a plain-English summary
 
-Everything above is deterministic — the same hands always give the same read,
-and no figure on screen came from anywhere but the arithmetic. One optional
-extra runs a local language model over the finished profile and writes a short
-briefing that joins the findings together.
+Everything else is deterministic: the same hands give the same read, and no
+figure on screen came from anywhere but the arithmetic. One optional extra runs
+a language model over the finished profile and writes a short briefing joining
+the findings together — off unless configured, and **local** by default, which
+keeps it free, offline, and keeps opponent profiles on your own machine. The
+same narrator sits behind the **generate detailed description** button on a
+player's profile in the web interface.
 
-It is off unless configured, and it runs against a **local** model by default,
-which keeps it free, keeps it working offline, and keeps opponent profiles on
-your own machine:
+Settings come from the environment, falling back to **`~/.villain/env`** — a
+plain `NAME=value` file that lives outside the project directory on purpose. A
+key that never sits under the working tree cannot be committed by an
+absent-minded `git add -A`. Make it readable by you alone:
 
 ```bash
-brew install ollama && ollama serve      # once
-ollama pull llama3.2                     # once
+mkdir -p ~/.villain && chmod 600 ~/.villain/env
+```
 
+| variable | meaning |
+| --- | --- |
+| `VILLAIN_LLM_MODEL` | model name (default `llama3.2`) |
+| `VILLAIN_LLM_URL` | any OpenAI-compatible `/chat/completions` endpoint (default Ollama on localhost) |
+| `VILLAIN_LLM_KEY` | bearer token, if the endpoint needs one |
+
+Local, with nothing leaving the machine:
+
+```bash
+brew install ollama && ollama serve
+ollama pull llama3.2
 VILLAIN_LLM_MODEL=llama3.2 villain profile DavidMazour --narrate
 ```
 
-Any OpenAI-compatible endpoint works instead — set `VILLAIN_LLM_URL` and, if it
-needs one, `VILLAIN_LLM_KEY`.
+Or a hosted free tier — faster and no install, at the cost of sending opponent
+profiles to somebody else. Gemini, in `~/.villain/env`:
 
-The model is given a fact sheet built from the computed profile and is not
-permitted to introduce figures of its own: the output is checked, and any number
-that does not appear in the facts causes the whole response to be discarded in
-favour of the written text. A model that rounds 51% to "about half" is fine; one
-that decides they fold 70% is not, and you cannot tell which happened by reading
-the prose — so the check is mechanical rather than a matter of trust.
+```
+VILLAIN_LLM_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+VILLAIN_LLM_MODEL=gemini-flash-latest
+VILLAIN_LLM_KEY=your-key-here
+```
 
-This is a nicety on top of the written playbook, never a replacement for it.
-With nothing configured the tool behaves exactly as it did before.
+Use a floating alias like `gemini-flash-latest` rather than a pinned version:
+pinned Gemini models retire and start returning 404 to a tool that was working
+last month.
 
-## The problem this is actually solving
+The model gets a fact sheet built from the computed profile and may not add
+figures of its own: any number not in the facts discards the whole response in
+favour of the written text. Rounding 51% to "about half" is fine, deciding they
+fold 70% is not, and the prose does not tell you which — so the check is
+mechanical rather than a matter of trust.
 
-A home game session is about 200 hands. That is 20 to 40 observations of any
-postflop statistic. A tracker will happily tell you the villain folds to 100%
-of turn bets because they folded the only three they faced, and betting every
-turn on that basis is how you donate to a player who is perfectly normal.
-
-So the hard part is not computing statistics. It is knowing which of them mean
-anything yet. Three decisions follow from that:
-
-**Every number is shrunk toward a population prior and carries its own
-uncertainty.** A frequency is a Beta posterior, not a fraction. Three
-observations barely move it; three hundred make the prior irrelevant. Nothing
-is ever reported as a bare percentage.
-
-**Table size is part of a player's identity, not a footnote.** 55% VPIP is a
-nit heads-up, a normal three-handed player and a maniac at a full ring.
-Statistics are therefore bucketed by table size when they are *collected*, so
-the same person's heads-up and three-handed hands never pool into an average
-describing neither game.
-
-That is a statistical necessity and a presentational disaster, so it is not
-what you see. Each player gets **one profile**, pooled across every table size
-they have played -- but pooled in the right space. A player's *style*, meaning
-how far they sit from normal for the game they are in, carries across table
-sizes even though their raw frequencies do not. So each table's counts are
-converted to a deviation from that table's own population, translated onto the
-scale of the table they play most, and only then added together, at a discount
-because related games are not the same game.
-
-Someone playing exactly the three-handed average translates to the heads-up
-average rather than to the same raw percentage. Someone much looser than their
-table stays looser after translation. The profile reads as one player measured
-against the game they mostly play, informed by everything else they have done,
-and the per-table split is still there behind a disclosure if you want to check
-that the pooling is not hiding a difference.
-
-**Reads have to be earned by data.** Some population frequencies already sit
-near the point where an exploit breaks even, so a rule that fires on the
-estimate alone would flag players nobody has ever observed. Every leak reports
-how far the evidence moved it away from the prior, and reads are graded
-`strong` / `likely` / `tentative` rather than silently dropped.
-
-## What comes out
-
-Real output, from a 215-hand PokerNow session:
+## Reading the output
 
 ```
 ------------------------------------------------------------------------------
@@ -250,197 +172,133 @@ EXPLOITS  (1 found)
       folding to the decision rather than to the price.
 
 SKILL: strong (69/100)   confidence 54%
-  Solid and hard to attack, with only narrow leaks to work on.
     showdown judgement         ##############....  77.3
     hand selection             ###############...  81.5
-    discipline vs bets         ###############...  82.8
     bet sizing                 ###############...  85.3
-    postflop aggression        #################.  94.9
     preflop aggression         ##################  97.6  raises 73% of hands played
     resistance to exploitation ##################  97.7  ~0.1 bb/100 available
   observed -1.0 bb/100, shrunk and all-in adjusted -0.2 bb/100
 ```
 
-Note what it does *not* claim. 183 heads-up hands support a bucket with 51%
-confidence and one tentative leak worth a tenth of a big blind per 100 -- that
-is what a session of this size actually contains, and a tool reporting more
-would be making it up. The numbers sharpen as sessions accumulate against the
-same player.
+Note what it does *not* claim: 183 hands buy a bucket at 51% confidence and one
+tentative leak worth a tenth of a big blind per 100, which is what a session
+this size contains.
 
-Plus `--json` for anything that wants to consume it programmatically.
+Each exploit answers four questions — what they are doing (as behaviour, not as
+a statistic), why it is exploitable (the breakeven arithmetic), what to do, and
+the counter-mistake, which matters most because nearly every way of losing
+money to a correct read is an over-adjustment. Leaks that compound are called
+out together: folding flops too often *and* never check-raising removes both
+the reason to fear betting and the cost of being wrong.
 
-## Buckets, and why they are defined the way they are
+Leaks are sorted by **bb/100**, what one is worth per 100 hands if you attack
+it every time, and labelled `tentative`, `likely` or `strong` by how much comes
+from this player's hands rather than from the prior. No leaks usually means not
+enough hands yet, and the tool says so rather than inventing something.
 
-Eight archetypes -- `nit`, `station`, `overfolder`, `maniac`, `lag`, `tag`,
-`limper`, `trapper`. Each is a *plan*, not a personality: "station" is the
+### Checking a read
+
+Every exploit carries a **see the N hands** button — board, what they did, what
+it cost, whether it counted — and any of them replays street by street. Nothing
+extra is stored: contributing hands are found by replaying each hand through
+the same extraction the statistics use, so the evidence cannot drift from the
+number, being the same code. It is also the fastest way to catch the tool being
+wrong; building it surfaced VPIP counting once per preflop *decision* instead
+of once per hand.
+
+## How it works
+
+**Everything is shrunk toward a population prior and carries its own
+uncertainty.** A frequency is a Beta posterior, not a fraction: three
+observations barely move it, three hundred make the prior irrelevant.
+
+**Table size is part of a player's identity.** 55% VPIP is a nit heads-up, a
+normal three-handed player and a maniac at a full ring, so statistics are
+bucketed by table size as they are *collected*. Reporting them that way is
+unreadable, so each player still gets **one** profile, pooled in log-odds: each
+table's counts become a deviation from that table's own population, translated
+onto the scale of the table they play most, then discounted, because related
+games are not the same game. `--by-table` shows the split.
+
+**Reads are earned by data.** Some population frequencies already sit near an
+exploit's breakeven point, so a rule firing on the estimate alone would flag
+players nobody has observed. Every leak reports how far the evidence moved it
+from the prior, and reads are graded rather than dropped.
+
+### Buckets
+
+Eight archetypes — `nit`, `station`, `overfolder`, `maniac`, `lag`, `tag`,
+`limper`, `trapper` — each a *plan* rather than a personality: "station" is the
 bucket whose plan is "value bet thin and stop bluffing".
 
-Prototypes are stored as deviations from the population **in log-odds**, which
-sounds fussy and is the difference between working and not. Frequencies are
-bounded, so adding percentage points to a 70% base is not the same size of
-change as adding them to a 24% base. In linear space the same prototype
-produces a six-handed nit who plays 2% of hands; in log-odds it produces 9.5%
-at six-handed and 44% heads-up, which is what "nit" meant in both cases.
+Prototypes are deviations from the population **in log-odds**, which is the
+difference between working and not: frequencies are bounded, so points on a 70%
+base are not the same change as points on 24%. In linear space the same "nit"
+prototype produced a six-handed player who plays 2% of hands; in log-odds it
+lands at 44% heads-up and 9.5% full ring, which is what "nit" meant in both.
 
-Matching is a likelihood, not a distance. Each archetype implies a frequency
-for every feature, and the raw counts are scored against it with an
-overdispersed Beta-Binomial. This matters because the obvious approach --
-shrink the stats, then measure distance to each prototype -- counts the
-uncertainty twice, and every thin sample collapses onto whichever prototype
-sits in the middle. Every archetype is scored over the same feature set, since
-a prototype scored only on the features it happens to mention wins by
-mentioning fewer.
+Matching is a likelihood, not a distance: raw counts are scored against each
+archetype's implied frequencies with an overdispersed Beta-Binomial. Shrinking
+first and then measuring distance counts the uncertainty twice, and thin
+samples collapse onto the prototype in the middle. All eight are scored over
+the *same* features — one scored only on the features it mentions wins by
+mentioning fewer — and the result is a posterior, because players sit between
+buckets.
 
-The output is a posterior over all eight. Players genuinely sit between
-buckets, and a forced label invites a plan the evidence cannot carry.
-
-## Leaks are priced from pot odds, not from the field
+### Leaks are priced from pot odds, not from the field
 
 A leak fires on an **absolute** threshold, because what makes a tendency
 exploitable is arithmetic, not fashion:
 
-* a bluff of size `f` breaks even at a fold frequency of `f / (1 + f)` -- 33%
-  at half pot, 40% at two thirds, 50% at pot;
-* below a third folds, even the cheapest bluff worth making loses money, so
-  the exploit inverts from pressure to thin value;
+* a bluff of size `f` breaks even at a fold frequency of `f / (1 + f)` — 33% at
+  half pot, 40% at two thirds, 50% at pot;
+* below a third folds, even the cheapest bluff worth making loses money, so the
+  exploit inverts from pressure to thin value;
 * a steal risking `r` to win `p` breaks even at `r / (r + p)`.
 
-Folding 55% to a two-thirds pot bet is exploitable whether or not everyone else
-in the pool folds 55% too. Population comparisons are for *identifying* a
-player, and appear in the report as context only.
+Folding 55% to a two-thirds pot bet is exploitable whether or not the rest of
+the pool folds 55% too; population comparisons only *identify* a player, and
+appear as context. Severity is the estimated bb/100 from taking the exploit,
+from that player's own pot sizes and how often the spot comes up, scaled by
+`CAPTURE` in `exploits.py` to the share of spots you can realistically convert
+— you cannot bluff a river you reached with the nuts. That constant is an
+assumption stated in the source rather than buried, so severities are best read
+as a ranking of what to attack first.
 
-Severity is the estimated big blinds per 100 hands from taking the exploit,
-computed from that player's own average pot sizes and how often the spot comes
-up. `CAPTURE` in `exploits.py` scales it to the share of spots you can
-realistically convert -- you cannot bluff a river you reached with the nuts.
-That constant is an assumption, stated in the source rather than buried, and
-severities are best read as a ranking of what to attack first.
+### Skill
 
-## Skill
+Rating a player by results is rating their luck, so results carry the smallest
+weight, and only after all-in pots are rescored by equity so a cooler and a
+punt stop looking alike. The rest is **fundamentals** — distance from competent
+play for that table size, penalised asymmetrically where the errors are — and
+**resistance to exploitation**, the bb/100 the exploit layer can find, weighted
+by sample size, because "no leaks found" and "no leaks yet findable" are the
+same number and only one is a compliment.
 
-Rating a player by results is rating their luck. Results carry the smallest
-weight here, and only after all-in pots are rescored by equity so a cooler and
-a punt stop looking alike. The rating is built from:
+### Remembering people
 
-* **fundamentals** -- distance from competent play for that table size, with
-  asymmetric penalties where the errors are asymmetric (playing too tight
-  leaves value behind; playing too loose bleeds money);
-* **resistance to exploitation** -- the total bb/100 the exploit layer can find
-  against them, weighted by sample size, because "no leaks found" and "no leaks
-  yet findable" are the same number and only one is a compliment.
-
-Every component reports its own score and weight, so a rating reads as a
-diagnosis rather than a verdict. Low confidence means "we do not know yet", and
-the score is pulled toward the middle to say so.
-
-## The interface
-
-```
-villain ui            # http://127.0.0.1:8766
-```
-
-Standard library HTTP server, one self-contained module, no new dependencies.
-Two tabs, because there are two questions.
-
-**Session** answers "who am I playing right now". Drop a file on it and you get
-the full read — archetypes, priced leaks, ratings — with **nothing written
-anywhere**. A session you never save leaves no trace on the database.
-
-**Database** answers "who is this, and what do I know about them" across every
-session ever imported.
-
-Saving a session is a separate, optional step, and it is the only moment the
-tool asks anything. Identity is where a profiler quietly destroys its own data:
-merge two people and both profiles become fiction; split one person and half of
-what you know is thrown away. So the save flow surfaces every identity call it
-is unsure about instead of guessing:
-
-* **One account id, a new display name.** The PokerNow case — same id, now
-  called something else. Almost always one person renaming themselves, so it
-  defaults to *same player*. Answer no and they are kept apart from then on,
-  with the account keyed as `<account>#<name>` so neither loses the hands
-  already attributed to them.
-* **Two account ids that look like one person.** `Arnav` and `Arnav2`. This
-  defaults to *different people* — merging two real players is the more
-  expensive mistake and the evidence for it is weaker.
-
-Accounts dealt into the same hand are never offered as a merge, in either
-direction.
-
-Every profile is one player at a time, chosen from a tab strip, rather than a
-page you scroll. Within a profile the default view is short — the read, what to
-do about it, the score, and six headline numbers. Everything else (the full
-statistic list, the skill breakdown, how the archetype evidence splits) sits
-behind a disclosure, because a mid-session read that requires scrolling is a
-read you will not use.
-
-Anything the tool says in shorthand carries an **ⓘ** on hover: what the
-statistic counts, and what a *high* and a *low* value each mean for you. Both
-directions are there deliberately — for most of these, high and low are both
-exploitable and they call for opposite play, and getting that backwards costs
-more than not knowing the number at all. The same applies to the vocabulary:
-`thin`, `usable`, `tentative`, `bb/100`, `breakeven` and `available` all
-explain themselves on hover. Definitions live in `glossary.py` as data, and a
-test fails if any statistic reaches the screen without one.
-
-**Reset** lives on the database tab and asks you to type `delete everything`.
-It removes hands, players, and every merge and rename decision. Export files
-are untouched, so the statistics can be rebuilt — the identity decisions cannot.
-
-### Charts
-
-Every read in this tool is the same shape — a frequency, an uncertainty, and a
-threshold that decides whether it matters — so the profile view uses one
-repeated mark: a wash for the 95% credible range, a dot for the estimate, a
-hairline tick for the field, and a warm tick for breakeven. When the dot sits
-past the warm tick, there is money there.
-
-The palette is monochrome, stepped by confidence, and both ramps were run
-through a contrast and colour-blindness validator rather than eyeballed. Two
-results worth recording: encoding exploit *kind* (pressure versus value) as a
-second hue failed CVD separation at these lightnesses, so kind is carried by a
-label instead; and the lightest step of the confidence ramp had to be darkened
-to clear the 2:1 floor against the panel surface.
-
-## Remembering people
-
-Hands are the source of truth; statistics are a disposable cache. Stat
+Hands are the source of truth and statistics are a disposable cache:
 definitions change, and `villain rebuild` recomputes every profile from stored
-hands rather than leaving old players wrong until they happen to sit down
-again.
+hands rather than leaving old players wrong until they sit down again.
 
-Identity is separate from account. The same human is `DavidMazour` at one table
-and `DavidMazour2` at the next, so site accounts are aliases pointing at an
-internal player. Candidate merges come from name similarity (after stripping
-case, punctuation and trailing digits) and from a Bayes factor over their
-statistics -- the probability both samples came from one player against the
-probability they came from two, which stops two tight players being merged just
-for both being tight.
+The same human is `DavidMazour` at one table and `DavidMazour2` at the next, so
+accounts are aliases pointing at an internal player. Candidate merges come from
+name similarity (case, punctuation and trailing digits stripped) and a Bayes
+factor over their statistics — one player against two — which stops two tight
+players being merged for nothing more than both being tight. Nothing merges
+automatically, and accounts dealt into the same hand can never be linked.
 
-One constraint overrides everything: accounts dealt into the same hand are
-different people, whatever their names look like. Those pairs are recorded at
-import and can never be linked. Nothing is merged automatically -- a wrong
-merge corrupts two profiles at once and costs far more than a missed one.
+### Learning from your own pool
 
-## Learning from your own pool
-
-`villain fit` runs three models and tells you which ones your data can support:
-
-* **priors** re-estimated from your own players by a Beta-Binomial moments fit,
-  so a home game stops being measured against an online population. The spread
-  between your players sets how much a new player's sample is trusted;
-* **clusters** -- a Gaussian mixture over profiles, component count chosen by
-  BIC, which finds the player types actually present in your game rather than
-  the ones a textbook expects. Needs 25+ profiles;
-* **hand strength** -- a gradient boosting model mapping a line (street,
-  action, sizing, position, board texture, time taken) to the strength of the
-  hand behind it, trained on revealed cards, with per-player residuals from
-  out-of-fold predictions. "Shows up 20 percentile points weaker than the field
-  on the lines they take" is directly actionable in a way that a betting
-  frequency is not. Needs 300+ revealed decisions.
-
-Each refuses rather than returning something that looks authoritative and is
-not.
+`villain fit` runs three models and says which ones your data can support:
+**priors** re-estimated from your own players by a Beta-Binomial moments fit,
+so a home game stops being measured against an online population and the spread
+between your players sets how much a new sample is trusted; **clusters**, a
+Gaussian mixture over profiles with component count by BIC, needing 25+
+profiles; and **hand strength**, gradient boosting from a line (street, action,
+sizing, position, board texture, time taken) to the strength behind it, trained
+on revealed cards, needing 300+ revealed decisions. Each refuses rather than
+returning something authoritative-looking and wrong.
 
 ## Known limitations
 
@@ -464,24 +322,14 @@ not.
 
 | module | what it owns |
 | --- | --- |
-| `model.py` | canonical hand representation, positions, serialisation |
-| `parsers/` | site formats; `pokernow.py` decodes the numeric opcode log |
+| `model.py`, `parsers/` | canonical hands; `pokernow.py` decodes the opcode log |
 | `cards.py`, `equity.py` | vectorised 7-card evaluator, all-in equity |
 | `stats.py`, `features.py` | additive sufficient statistics per hand |
 | `priors.py`, `profile.py` | shrinkage, per-regime and cross-regime priors |
 | `archetypes.py`, `exploits.py`, `skill.py` | buckets, priced leaks, rating |
+| `playbook.py`, `narrate.py` | written advice, optional LLM summary |
+| `evidence.py`, `replay.py` | the hands behind a number |
 | `cluster.py`, `reads.py` | models learned from your own database |
 | `db.py`, `identity.py` | persistence, aliases, merge safety |
-| `report.py`, `cli.py` | terminal output and commands |
-
-## Tests
-
-```
-pytest
-```
-
-97 tests. The parser suite checks that every hand balances to the cent, which
-is what proves the opcode decoding is right; the evaluator is verified against
-brute-force best-of-five on random deals; and several tests in
-`test_profiling.py` are regressions named for the modelling mistakes that
-produced them.
+| `analyze.py`, `glossary.py`, `report.py` | the payload the CLI and UI both render |
+| `cli.py`, `web.py` | commands, local web UI |
