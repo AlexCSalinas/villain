@@ -167,26 +167,100 @@ def enabled() -> bool:
                 or setting("VILLAIN_LLM_URL"))
 
 
+#: Numbers a sentence can contain without claiming anything about the player:
+#: counting words rendered as digits, and the streets of a hand.
+SAFE_NUMBERS = {"0", "1", "2", "3", "4", "5", "100"}
+
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_INJECTION = re.compile(
+    r"(?i)(system\s*:|assistant\s*:|ignore (all |any )?previous|you are now)")
+
+
+def _safe_label(name: str | None, fallback: str = "unknown") -> str:
+    """Strip control characters and role-break attempts from a screen name.
+
+    The fact sheet is the whole user message. A name containing a newline and
+    ``SYSTEM:`` is otherwise free to rewrite the instructions.
+    """
+    text = re.sub(r"[\x00-\x1f\x7f]", "", name or "").replace("\n", " ").strip()
+    if not text or _INJECTION.search(text):
+        return fallback
+    return text[:80]
+
+
+def _percent_forms(value: str) -> set[str]:
+    """Whole and rounded forms of a percentage figure."""
+    out = {value}
+    try:
+        number = float(value)
+    except ValueError:
+        return out
+    out.add(str(int(round(number))))
+    out.add(f"{number:.0f}")
+    if "." in value:
+        out.add(value.split(".", 1)[0])
+    return out
+
+
+def unsupported_numbers(text: str, facts: str) -> list[str]:
+    """Figures in ``text`` that do not appear in ``facts``.
+
+    Percentages are matched as percentages: a fact sheet that says "Seen 78
+    times" must not authorise "folds 78%". Bare counts still need to appear as
+    bare numbers. Deliberately strict — invented frequencies read like real
+    ones, so the only defence is refusing figures the arithmetic did not make.
+    """
+    known_pcts: set[str] = set()
+    for value in _PERCENT.findall(facts):
+        known_pcts |= _percent_forms(value)
+
+    invented: list[str] = []
+    for value in _PERCENT.findall(text):
+        if _percent_forms(value).isdisjoint(known_pcts):
+            invented.append(f"{value}%")
+
+    known_bare = set(_NUMBER.findall(facts))
+    for value in list(known_bare):
+        if "." in value:
+            known_bare.add(value.split(".", 1)[0])
+            try:
+                known_bare.add(str(round(float(value))))
+            except ValueError:
+                pass
+    # Digits that were already judged as percentages are not re-checked bare.
+    bare_text = _PERCENT.sub(" ", text)
+    for value in _NUMBER.findall(bare_text):
+        if value in known_bare or value in SAFE_NUMBERS:
+            continue
+        invented.append(value)
+    return sorted(set(invented))
+
+
 def describe_endpoint() -> str:
     """Where calls go, for showing the user without leaking the key."""
     url = setting("VILLAIN_LLM_URL", DEFAULT_URL)
     host = url.split("/")[2] if "//" in url else url
-    return f"{setting('VILLAIN_LLM_MODEL', DEFAULT_MODEL)} at {host}"
+    return f"{models()[0]} at {host}"
 
 
 def fact_sheet(payload: dict) -> str:
     """The only thing the model is allowed to know, built from the profile."""
     lines = [
-        f"Player: {payload.get('name', 'unknown')}",
+        f"Player: {_safe_label(payload.get('name'))}",
         f"Table size: {payload.get('table_mix') or payload.get('regime_label') or payload.get('regime', '')}",
         f"Hands observed: {payload.get('hands', 0)} "
         f"({payload.get('sample_quality', 'unknown')})",
         f"Player type: {payload.get('archetype', 'unknown')} "
         f"({round(100 * payload.get('archetype_confidence', 0))}% confident)",
-        f"Type description: {payload.get('summary', '')}",
-        f"Skill rating: {payload.get('skill', {}).get('score', 0)} out of 100 "
-        f"({payload.get('skill', {}).get('tier', 'unknown')})",
     ]
+    summary = (payload.get("summary") or "").strip()
+    if summary:
+        lines.append(f"Type description: {summary}")
+    lines.append(
+        f"Skill rating: {payload.get('skill', {}).get('score', 0)} out of 100 "
+        f"({payload.get('skill', {}).get('tier', 'unknown')})"
+    )
     for item in payload.get("strengths") or []:
         lines.append(f"Does competently (do not attack): {item}")
 
@@ -249,12 +323,6 @@ def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
     chain = [model] if model else models()
     facts = fact_sheet(payload)
 
-    body = json.dumps({
-        "model": model,
-        "temperature": 0.3,
-        "messages": [{"role": "system", "content": SYSTEM},
-                     {"role": "user", "content": facts}],
-    }).encode()
     headers = {"Content-Type": "application/json"}
     key = setting("VILLAIN_LLM_KEY")
     if key:
@@ -360,35 +428,3 @@ class _Retryable(Exception):
         super().__init__()
         self.wait = wait
         self.out_of_quota = out_of_quota
-
-
-#: Numbers a sentence can contain without claiming anything about the player:
-#: counting words rendered as digits, and the streets of a hand.
-SAFE_NUMBERS = {"0", "1", "2", "3", "4", "5", "100"}
-
-_NUMBER = re.compile(r"\d+(?:\.\d+)?")
-
-
-def unsupported_numbers(text: str, facts: str) -> list[str]:
-    """Figures in ``text`` that do not appear in ``facts``.
-
-    Deliberately strict. A model that invents a fold frequency produces prose
-    indistinguishable from a correct one, so the only defence is refusing to
-    show any figure the arithmetic did not produce.
-    """
-    known = set(_NUMBER.findall(facts))
-    # A percentage stated as "51" is supported by a fact sheet saying "51%",
-    # and rounding to a whole number is fine.
-    for value in list(known):
-        if "." in value:
-            known.add(value.split(".")[0])
-            try:
-                known.add(str(round(float(value))))
-            except ValueError:
-                pass
-    out = []
-    for value in _NUMBER.findall(text):
-        if value in known or value in SAFE_NUMBERS:
-            continue
-        out.append(value)
-    return sorted(set(out))

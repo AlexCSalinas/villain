@@ -194,12 +194,33 @@ def test_size_bucket_breakeven_matches_bucket_midpoint():
     assert breakeven_fold(0.85) == pytest.approx(0.85 / 1.85)
 
 
-def test_measured_bluff_size_prefers_player_sizing():
+def test_measured_bluff_size_prefers_faced_sizing():
+    """Bluffs at them are priced on the size they folded to, not their own bets."""
     book = StatBook(player_id="x", name="X", regime="hu", hands=50)
     profile = build_profile(book)
     profile.means["bet_size:flop"] = 0.4
-    assert measured_bluff_size(profile, "flop") == pytest.approx(0.4)
+    profile.means["faced_size:flop"] = 0.75
+    assert measured_bluff_size(profile, "flop") == pytest.approx(0.75)
     assert measured_bluff_size(profile, "flop", "big") == pytest.approx(0.85)
+
+
+def test_bluff_severity_is_absolute_bb_per_100():
+    """Regression: an extra /100 priced every leak in bb/hand while labelling
+    it bb/100. Pin an absolute number so that cannot silently return."""
+    from villain.exploits import CAPTURE, RULES, _severity
+    from villain.priors import shrink
+
+    book = StatBook(player_id="x", name="X", regime="hu", hands=100)
+    book.meters["table_size"].add(2, 1)
+    profile = build_profile(book)
+    profile.hands = 100
+    profile.stats["fold_vs_bet:flop"] = shrink(30, 50, 0.40, 20)
+    profile.means["pot_to_bluff:flop"] = 6.0
+    profile.means["faced_size:flop"] = 2.0 / 3.0
+    rule = next(r for r in RULES if r.id == "overfold_flop")
+    # pot=6, size=2/3, fold-be=0.20 → gain/spot = 6*0.2*(5/3)=2.0
+    # spots/100=50, capture=0.35 → 2.0 * 0.35 * 50 = 35.0
+    assert _severity(profile, rule, 0.60, 0.40) == pytest.approx(35.0)
 
 
 def test_overlapping_leaks_do_not_double_count_skill():

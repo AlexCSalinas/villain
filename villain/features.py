@@ -319,6 +319,13 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
             if first_face:
                 book.count(f"fold_vs_bet:{s}", folded)
                 book.count(f"fold_vs_bet:{s}:{bucket}", folded)
+                # Size and pot *they faced* — what bluffs at them must clear.
+                book.measure(f"faced_size:{s}", frac)
+                # pot_before already includes the bet; peel it off so severity
+                # prices against the pot before the bluff goes in.
+                pot_bb = a.pot_before / hand.big_blind
+                before_bet = pot_bb / (1.0 + frac) if frac > 0 else pot_bb
+                book.measure(f"pot_to_bluff:{s}", before_bet)
                 # HU vs multiway and IP vs OOP are different games; pooling
                 # them quietly biases short-handed home-game reads.
                 pot_kind = "hu" if d.players_in <= 2 else "mw"

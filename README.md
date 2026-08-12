@@ -25,7 +25,7 @@ python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
 
-pytest                             # 167 tests
+pytest                             # 198 tests
 ```
 
 That installs two commands, `villain` and `villain-ui`. The parser suite checks
@@ -236,9 +236,10 @@ from the prior, and reads are graded rather than dropped.
 
 ### Buckets
 
-Eight archetypes — `nit`, `station`, `overfolder`, `maniac`, `lag`, `tag`,
-`limper`, `trapper` — each a *plan* rather than a personality: "station" is the
-bucket whose plan is "value bet thin and stop bluffing".
+Ten archetypes — `nit`, `station`, `overfolder`, `maniac`, `lag`, `tag`,
+`tight passive`, `loose passive`, `limper`, `trapper` — each a *plan* rather
+than a personality: "station" is the bucket whose plan is "value bet thin and
+stop bluffing".
 
 Prototypes are deviations from the population **in log-odds**, which is the
 difference between working and not: frequencies are bounded, so points on a 70%
@@ -249,7 +250,7 @@ lands at 44% heads-up and 9.5% full ring, which is what "nit" meant in both.
 Matching is a likelihood, not a distance: raw counts are scored against each
 archetype's implied frequencies with an overdispersed Beta-Binomial. Shrinking
 first and then measuring distance counts the uncertainty twice, and thin
-samples collapse onto the prototype in the middle. All eight are scored over
+samples collapse onto the prototype in the middle. All ten are scored over
 the *same* features — one scored only on the features it mentions wins by
 mentioning fewer — and the result is a posterior, because players sit between
 buckets.

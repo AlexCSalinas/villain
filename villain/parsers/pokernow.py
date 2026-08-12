@@ -20,6 +20,7 @@ Code   Meaning
 10     pot award (``value``, plus showdown ``cards``/``combination``)
 11     fold
 12     show cards
+14     run-it-twice approval (ignored)
 15     end of betting / showdown marker
 16     uncalled bet returned (``value``)
 ===== ==========================================================
@@ -44,10 +45,12 @@ from .base import register
 CHECK, POST_BB, POST_SB = 0, 2, 3
 CALL, AGGRESS, BOARD, AWARD, FOLD = 7, 8, 9, 10, 11
 SHOW, SHOWDOWN, RETURN = 12, 15, 16
+#: Run-it-twice approval — no money or cards change hands.
+RUN_IT_TWICE = 14
 
 # Opcodes that carry no state we model. Anything outside this set and the ones
 # handled below is recorded on the hand as an ``unknown_event`` flag.
-IGNORED = {SHOWDOWN}
+IGNORED = {SHOWDOWN, RUN_IT_TWICE}
 
 _STREET_BY_TURN = {1: Street.FLOP, 2: Street.TURN, 3: Street.RIVER}
 
@@ -166,17 +169,21 @@ def _replay(hand: Hand, events: list[dict[str, Any]], by_seat: dict[int, Seat]) 
             continue
 
         if code == AWARD:
+            value = int(p.get("value") or 0)
+            awarded += value
+            # Awards occasionally name a seat that is not in the seating chart
+            # (busted players, late joins). Count the money either way; only
+            # attach it to a seat we know.
             if seat is not None and seat in by_seat:
-                by_seat[seat].won += int(p.get("value") or 0)
+                by_seat[seat].won += value
                 if seat not in hand.winners:
                     hand.winners.append(seat)
-            awarded += int(p.get("value") or 0)
-            shown = _cards(p.get("cards"))
-            if p.get("cards"):
-                by_seat[seat].showed = True
-                by_seat[seat].revealed = shown
-                if len(shown) == 2 and not by_seat[seat].hole_cards:
-                    by_seat[seat].hole_cards = shown
+                if p.get("cards"):
+                    shown = _cards(p.get("cards"))
+                    by_seat[seat].showed = True
+                    by_seat[seat].revealed = shown
+                    if len(shown) == 2 and not by_seat[seat].hole_cards:
+                        by_seat[seat].hole_cards = shown
             continue
 
         if code == SHOW:

@@ -105,6 +105,12 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at INTEGER NOT NULL,
     body TEXT NOT NULL
 );
+-- Bumped whenever feature extraction or displayed-stat definitions change so
+-- open() can rebuild stale caches instead of serving silent holes.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 DEFAULT_PATH = Path.home() / ".villain" / "villain.db"
@@ -114,6 +120,10 @@ DEFAULT_PATH = Path.home() / ".villain" / "villain.db"
 #: person. At or below it the merge is still offered, with the overlap stated,
 #: because refusing outright makes one glitched hand permanently unmergeable.
 SPURIOUS_OVERLAP = 2
+
+#: Feature / display-stat definition stamp. Bump when ``rebuild`` is required
+#: for existing databases to grow new counters or fix old ones.
+DEFINITIONS_VERSION = "2026-08-13.faced-size"
 
 
 def split_key(account: str, name: str) -> str:
@@ -152,10 +162,15 @@ class Store:
     def __init__(self, path: Path | str = DEFAULT_PATH):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
+        # WAL lets the CLI and UI read while the other writes; without it a
+        # concurrent open surfaces as a bare "database is locked" 500.
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(SCHEMA)
         self._migrate()
+        self._ensure_definitions()
         self.conn.commit()
 
     def _migrate(self) -> None:
@@ -168,6 +183,20 @@ class Store:
             self.conn.execute(
                 "ALTER TABLE distinct_pairs ADD COLUMN hands INTEGER NOT NULL DEFAULT 1")
         self._repair_distinct_pairs()
+
+    def _ensure_definitions(self) -> None:
+        """Rebuild cached books when feature definitions moved under them."""
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key = 'definitions_version'").fetchone()
+        current = row["value"] if row else None
+        if current == DEFINITIONS_VERSION:
+            return
+        n_hands = self.conn.execute("SELECT COUNT(*) AS c FROM hands").fetchone()["c"]
+        if n_hands:
+            self.rebuild()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('definitions_version', ?)",
+            (DEFINITIONS_VERSION,))
 
     def _repair_distinct_pairs(self) -> None:
         """Restore the ``a < b`` invariant that a past merge could break.
@@ -303,6 +332,45 @@ class Store:
         self.conn.execute("DELETE FROM distinct_pairs WHERE a = b")
         self.conn.commit()
         self.rebuild(only=[keep])
+
+    def unlink(self, player_id: int, site: str, account: str) -> int:
+        """Split one alias back onto its own player.
+
+        Merges used to be one-way; undoing a bad link meant deleting the
+        database. The hands stay put — only the alias pointer moves — then both
+        profiles are rebuilt from the stored hand log.
+        """
+        row = self.conn.execute(
+            "SELECT name FROM aliases WHERE site = ? AND account = ? AND player_id = ?",
+            (site, account, player_id)).fetchone()
+        if row is None:
+            raise LookupError(f"alias {site}/{account} is not on player {player_id}")
+        n_aliases = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM aliases WHERE player_id = ?",
+            (player_id,)).fetchone()["c"]
+        if n_aliases < 2:
+            raise ValueError("cannot unlink a player's only alias")
+        name = row["name"] or account
+        cur = self.conn.execute(
+            "INSERT INTO players (display_name, created_at) VALUES (?, ?)",
+            (name, int(time.time())))
+        new_id = int(cur.lastrowid)
+        self.conn.execute(
+            "UPDATE aliases SET player_id = ? WHERE site = ? AND account = ?",
+            (new_id, site, account))
+        # They were treated as one person; mark them distinct so a soft name
+        # match cannot silently re-merge them without asking.
+        lo, hi = sorted((player_id, new_id))
+        self.conn.execute(
+            "INSERT INTO distinct_pairs (a, b, hands) VALUES (?, ?, ?) "
+            "ON CONFLICT(a, b) DO UPDATE SET hands = excluded.hands",
+            (lo, hi, SPURIOUS_OVERLAP + 1))
+        for table in ("books", "ratios", "meters"):
+            self.conn.execute(f"DELETE FROM {table} WHERE player_id IN (?, ?)",
+                              (player_id, new_id))
+        self.conn.commit()
+        self.rebuild(only=[player_id, new_id])
+        return new_id
 
     def players(self) -> list[sqlite3.Row]:
         return self.conn.execute(

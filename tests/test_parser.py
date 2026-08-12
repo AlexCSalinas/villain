@@ -93,3 +93,71 @@ def test_dead_button_falls_forward():
     positional statistic well defined.
     """
     assert positions_for([2, 4, 6], 3) == {4: "BTN", 6: "SB", 2: "BB"}
+
+
+def _minimal_hand(**overrides):
+    """A tiny PokerNow hand dict for parser edge cases."""
+    base = {
+        "id": "h-test",
+        "startedAt": 1,
+        "bigBlind": 20,
+        "smallBlind": 10,
+        "ante": 0,
+        "gameType": "th",
+        "dealerSeat": 1,
+        "players": [
+            {"seat": 1, "id": "a", "name": "A", "stack": 1000},
+            {"seat": 2, "id": "b", "name": "B", "stack": 1000},
+        ],
+        "events": [
+            {"at": 1, "payload": {"type": 3, "seat": 1, "value": 10}},
+            {"at": 2, "payload": {"type": 2, "seat": 2, "value": 20}},
+            {"at": 3, "payload": {"type": 11, "seat": 1}},
+            {"at": 4, "payload": {"type": 10, "seat": 2, "value": 30}},
+            {"at": 5, "payload": {"type": 15}},
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_opcode_14_is_ignored_not_unknown():
+    from villain.parsers.pokernow import _parse_hand
+    raw = _minimal_hand()
+    raw["events"].insert(2, {"at": 2, "payload": {"type": 14, "seat": 1}})
+    hand = _parse_hand(raw, "table")
+    assert hand is not None
+    assert "unknown_event:14" not in hand.flags
+
+
+def test_award_to_unseated_player_does_not_crash():
+    from villain.parsers.pokernow import _parse_hand
+    raw = _minimal_hand()
+    raw["events"].append({"at": 6, "payload": {"type": 10, "seat": 99, "value": 5,
+                                                "cards": ["As", "Kd"]}})
+    hand = _parse_hand(raw, "table")
+    assert hand is not None
+    assert 99 not in {s.seat for s in hand.seats}
+
+
+def test_ante_seeds_committed_so_hand_balances():
+    from villain.parsers.pokernow import _parse_hand
+    raw = _minimal_hand(ante=2)
+    # Award must cover blinds + antes.
+    raw["events"] = [
+        {"at": 1, "payload": {"type": 3, "seat": 1, "value": 10}},
+        {"at": 2, "payload": {"type": 2, "seat": 2, "value": 20}},
+        {"at": 3, "payload": {"type": 11, "seat": 1}},
+        {"at": 4, "payload": {"type": 10, "seat": 2, "value": 34}},
+        {"at": 5, "payload": {"type": 15}},
+    ]
+    hand = _parse_hand(raw, "table")
+    assert hand.ante == 2
+    assert "pot_mismatch" not in hand.flags
+    assert sum(s.invested for s in hand.seats) == sum(s.won for s in hand.seats)
+
+
+def test_straddle_flag_is_recorded():
+    from villain.parsers.pokernow import _parse_hand
+    hand = _parse_hand(_minimal_hand(straddleSeat=2), "table")
+    assert "straddle" in hand.flags

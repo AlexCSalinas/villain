@@ -465,10 +465,18 @@ def apply_answers(session: dict, answers: dict) -> None:
     already combined them. One player split across two names halves both
     samples exactly when sample size is the scarce thing. New answers merge
     onto any auto-applied ones rather than replacing them.
+
+    Pairs that sat together more than a reconnect glitch are never pooled
+    here — ``commit_session`` would refuse the link, and showing a merged
+    profile the save step cannot keep is worse than leaving them apart.
     """
+    from .db import SPURIOUS_OVERLAP
+    from .identity import _incoming_co_occurrence
+
     merged_answers = dict(session.get("answers") or {})
     merged_answers.update(answers or {})
     session["answers"] = merged_answers
+    blocked = _incoming_co_occurrence(session.get("hands") or [])
     merges: dict[tuple[str, str], dict] = {}
     for question in session.get("questions", []):
         answer = merged_answers.get(question.id) or {}
@@ -477,6 +485,13 @@ def apply_answers(session: dict, answers: dict) -> None:
         keep_name = answer.get("name") or question.default_name
         sides = [side for side in (question.left, question.right) if side.get("account")]
         if not sides:
+            continue
+        keys = [(side["site"], side["account"]) for side in sides]
+        overlap = 0
+        for i, a in enumerate(keys):
+            for b in keys[i + 1:]:
+                overlap = max(overlap, blocked.get(frozenset((a, b)), 0))
+        if overlap > SPURIOUS_OVERLAP:
             continue
         # Everything folds onto the busiest account present in this session.
         target = max(sides, key=lambda side: side.get("hands", 0))
@@ -789,6 +804,10 @@ class Handler(BaseHTTPRequestHandler):
                 if route == "/api/link":
                     store.link(int(body["keep"]), int(body["absorb"]))
                     return self._send(200, {"ok": True})
+                if route == "/api/unlink":
+                    new_id = store.unlink(int(body["player_id"]),
+                                          str(body["site"]), str(body["account"]))
+                    return self._send(200, {"ok": True, "player_id": new_id})
                 if route == "/api/note":
                     store.add_note(int(body["player_id"]), str(body["body"]))
                     return self._send(200, {"ok": True})

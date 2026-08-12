@@ -102,6 +102,22 @@ def test_linking_pools_two_accounts(tmp_path, hands):
     assert ghost not in remaining
 
 
+def test_unlink_splits_an_alias_back_out(tmp_path, hands):
+    with Store(tmp_path / "v.db") as s:
+        s.add_hands(hands)
+        original = max(s.players(), key=lambda r: r["hands"] or 0)
+        pid = int(original["id"])
+        s.conn.execute(
+            "INSERT INTO aliases (site, account, name, player_id, hands) "
+            "VALUES ('pokernow', 'ghost-acct', 'Ghost', ?, 5)", (pid,))
+        s.conn.commit()
+        new_id = s.unlink(pid, "pokernow", "ghost-acct")
+        assert new_id != pid
+        names = {r["display_name"] for r in s.players()}
+        assert "Ghost" in names
+        assert s.are_distinct(pid, new_id)
+
+
 @pytest.mark.parametrize("a,b,expected", [
     ("Arnav", "Arnav2", 1.0),
     ("DavidMazour", "DavidMazour2", 1.0),

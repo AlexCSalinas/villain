@@ -5,6 +5,7 @@
     villain profile <name>           the full read on somebody
     villain scout <file>             profile a file without storing it
     villain link --suggest           find accounts that may be one person
+    villain unlink <id> <site> <acct> undo a merge for one alias
     villain ui                       open the local web interface
     villain fit                      re-estimate priors from your own games
     villain rebuild                  recompute every profile from stored hands
@@ -61,6 +62,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("keep", nargs="?", help="player id to keep")
     p.add_argument("absorb", nargs="?", help="player id to fold into it")
     p.add_argument("--suggest", action="store_true")
+
+    p = sub.add_parser("unlink", help="split one alias back onto its own player")
+    p.add_argument("player_id", type=int, help="player who currently owns the alias")
+    p.add_argument("site", help="site of the alias (e.g. pokernow)")
+    p.add_argument("account", help="site account id to split off")
 
     p = sub.add_parser("fit", help="learn from everything in the database")
     p.add_argument("--min-players", type=int, default=8)
@@ -222,6 +228,14 @@ def _cmd_link(args) -> int:
             return 0
         store.link(int(args.keep), int(args.absorb))
         print(f"Merged {args.absorb} into {args.keep} and rebuilt their profile.")
+    return 0
+
+
+def _cmd_unlink(args) -> int:
+    with Store(args.db) as store:
+        new_id = store.unlink(args.player_id, args.site, args.account)
+        print(f"Split {args.site}/{args.account} onto new player {new_id}; "
+              f"rebuilt {args.player_id} and {new_id}.")
     return 0
 
 
