@@ -42,12 +42,13 @@ from urllib.parse import parse_qs, urlparse
 from .analyze import as_dict, enrich
 from .archetypes import ARCHETYPE_BY_NAME, deviations
 from .db import DEFAULT_PATH, Store, split_key
-from .exploits import RULES
+from .exploits import RULES, find_watchlist
 from .features import record_hands
 from .evidence import find as find_evidence
 from .glossary import payload as glossary_payload
 from .model import hand_from_dict, hand_to_dict
 from .identity import session_questions, suggest_links
+from .skill import weaknesses
 from .narrate import Unavailable, enabled as narrator_enabled, narrate
 from .parsers import UnknownFormat, parse_file
 from .priors import population_mean
@@ -141,6 +142,27 @@ def roster_payload(store: Store) -> list[dict]:
         if profile is not None:
             enrich(profile)
             top = profile.tags[0] if profile.tags else None
+            # Fall back through what is known: a priced leak, then an
+            # unconfirmed one, then the weakest rated part of their game.
+            # "None clears the bar" is true and useless -- it leaves the
+            # weakest player on the table looking like the safest.
+            headline, status, note = None, None, ""
+            if top is not None:
+                headline, status = top.headline, "confirmed"
+                note = f"{top.severity:.2f} bb/100, {top.tier} read"
+            else:
+                watch = find_watchlist(profile)
+                if watch:
+                    headline, status = watch[0].headline, "watch"
+                    note = (f"{watch[0].confidence:.0%} sure over "
+                            f"{watch[0].opps:.0f} spots -- not confirmed")
+                else:
+                    weak = weaknesses(profile.skill)
+                    if weak:
+                        headline, status = weak[0].name, "rated"
+                        note = (f"scores {weak[0].score:.0f}/100 here"
+                                + (f" ({weak[0].note})" if weak[0].note else "")
+                                + " -- from the rating, not a measured frequency")
             rows.append({
                 "player_id": int(player["id"]),
                 "name": profile.name or player["display_name"],
@@ -156,7 +178,9 @@ def roster_payload(store: Store) -> list[dict]:
                 "skill_tier": profile.skill.tier,
                 "skill_confidence": profile.skill.confidence,
                 "exploitability": profile.skill.exploitability,
-                "top_leak": top.headline if top else None,
+                "top_leak": headline,
+                "top_leak_status": status,
+                "top_leak_note": note,
                 "top_leak_severity": round(top.severity, 2) if top else 0.0,
                 "leak_count": len(profile.tags),
                 "last_seen": profile.last_seen,
@@ -203,14 +227,53 @@ def parse_upload(filename: str, content: str):
         temp.unlink(missing_ok=True)
 
 
-def merged_hands(session: dict) -> list:
+def database_merges(store: Store, hands: list) -> dict:
+    """Accounts this session shares that the database already calls one player.
+
+    So a merge made anywhere shows up everywhere. Answering at upload and
+    merging later from the suggestions panel are the same decision, and a
+    session that ignored the second would contradict the database it was about
+    to be saved into.
+    """
+    alias = {(r["site"], r["account"]): (int(r["player_id"]), r["name"])
+             for r in store.conn.execute(
+                 "SELECT site, account, player_id, name FROM aliases")}
+    names = {int(r["id"]): r["display_name"] for r in store.players()}
+
+    seen: dict[tuple[str, str], int] = {}
+    counts: dict[tuple[str, str], int] = {}
+    for hand in hands:
+        for seat in hand.seats:
+            key = (hand.site, seat.player_id)
+            counts[key] = counts.get(key, 0) + 1
+            hit = alias.get(key) or alias.get((hand.site, split_key(seat.player_id, seat.name)))
+            if hit:
+                seen[key] = hit[0]
+
+    grouped: dict[int, list] = {}
+    for key, player_id in seen.items():
+        grouped.setdefault(player_id, []).append(key)
+
+    merges = {}
+    for player_id, keys in grouped.items():
+        if len(keys) < 2:
+            continue
+        target = max(keys, key=lambda k: counts.get(k, 0))
+        for key in keys:
+            merges[key] = {"account": target[1],
+                           "name": names.get(player_id, target[1])}
+    return merges
+
+
+def merged_hands(session: dict, extra: dict | None = None) -> list:
     """The session's hands with confirmed same-person accounts pooled.
 
     Applied to a copy. The stored hands must keep the account ids the site
     actually wrote, because identity is a decision layered on top of them and
     decisions get revised; the hands themselves are evidence and do not.
     """
-    merges = session.get("merges") or {}
+    merges = dict(session.get("merges") or {})
+    merges.update(extra or {})
     if not merges:
         return session["hands"]
     hands = [hand_from_dict(hand_to_dict(h)) for h in session["hands"]]
@@ -222,10 +285,11 @@ def merged_hands(session: dict) -> list:
     return hands
 
 
-def session_payload(token: str) -> dict:
-    """Profiles for an uploaded session, computed without touching the store."""
+def session_payload(token: str, store: Store | None = None) -> dict:
+    """Profiles for an uploaded session. Reads the store, never writes to it."""
     session = SESSIONS[token]
-    books = record_hands(merged_hands(session))
+    extra = database_merges(store, session["hands"]) if store is not None else None
+    books = record_hands(merged_hands(session, extra))
     profiles = [p for p in (build_unified(by_regime) for by_regime in books.values())
                 if p is not None]
     profiles.sort(key=lambda p: -p.hands)
@@ -448,7 +512,8 @@ class Handler(BaseHTTPRequestHandler):
                 token = path.rsplit("/", 1)[1]
                 if token not in SESSIONS:
                     return self._send(404, {"error": "session expired -- upload again"})
-                return self._send(200, session_payload(token))
+                with Store(self.db_path) as store:
+                    return self._send(200, session_payload(token, store))
             if path == "/api/leaderboard":
                 with Store(self.db_path) as store:
                     return self._send(200, leaderboard_payload(store))
@@ -527,7 +592,8 @@ class Handler(BaseHTTPRequestHandler):
                 if token not in SESSIONS:
                     return self._send(404, {"error": "session expired -- upload again"})
                 apply_answers(SESSIONS[token], body.get("answers") or {})
-                return self._send(200, session_payload(token))
+                with Store(self.db_path) as store:
+                    return self._send(200, session_payload(token, store))
             if route.startswith("/api/session/") and route.endswith("/plan"):
                 token = route.split("/")[3]
                 if token not in SESSIONS:
@@ -591,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
         # same as writing to it -- nothing is stored until you save.
         with Store(self.db_path) as store:
             SESSIONS[token]["questions"] = session_questions(store, unique)
-        payload = session_payload(token)
+            payload = session_payload(token, store)
         payload["rejected"] = rejected
         return self._send(200, payload)
 
@@ -837,6 +903,15 @@ PAGE = r"""<!doctype html>
   .footnote { font-size: 12.5px; display: flex; gap: 8px; flex-wrap: wrap;
               align-items: baseline; margin: 22px 2px; }
   .danger-link { color: var(--danger); text-decoration-color: var(--danger); }
+  /* Marks a claim the evidence does not fully support. Deliberately quiet:
+     it is a caveat, not an alarm. */
+  .flag {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; margin-left: 6px; border-radius: 50%;
+    border: 1px solid var(--red); color: var(--red);
+    font-size: 9.5px; font-weight: 700; cursor: help; vertical-align: 1px;
+  }
+  .flag:hover { background: var(--red); color: var(--panel); }
   .leak.watch { opacity: .82; }
   .leak.weakspots .metric { grid-template-columns: 1fr 150px 30px; }
   .narration { margin-top: 10px; max-width: 66ch; }
@@ -888,6 +963,13 @@ PAGE = r"""<!doctype html>
   }
   .choice input { margin-right: 6px; }
   .choice label:has(input:checked) { border-color: var(--accent); color: var(--ink); font-weight: 600; }
+  .choice.namechoice { align-items: baseline; }
+  .choice .namelabel { align-self: center; }
+  .choice.disabled { opacity: .4; }
+  .choice.disabled label { cursor: not-allowed; }
+  .choice.disabled label:has(input:checked) {
+    border-color: var(--line); color: var(--muted); font-weight: 400;
+  }
 </style>
 </head>
 <body>
@@ -1053,8 +1135,8 @@ function rosterTable(players, opts) {
             <div class="small muted">${fmtPct(p.confidence)} sure</div></td>
         <td class="num"></td>
         <td class="num">${p.exploitability ? p.exploitability.toFixed(1) + " bb" : "\u2014"}</td>
-        <td class="small">${p.top_leak ? esc(p.top_leak)
-          : '<span class="muted">none clears the bar</span>'}</td>`;
+        <td class="small leakcell">${p.top_leak ? esc(p.top_leak)
+          : '<span class="muted">nothing yet</span>'}</td>`;
       const holder = document.createElement("div");
       holder.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:flex-end";
       const label = document.createElement("span");
@@ -1062,6 +1144,20 @@ function rosterTable(players, opts) {
       holder.append(bar(p.skill, 100, "var(--mark-3)", 66), label);
       const q = $(".quality", tr);
       if (q) q.appendChild(info(termTip(p.sample_quality)));
+      /* An unconfirmed read still belongs in the column -- "none clears the
+         bar" left the weakest player at the table looking like the safest.
+         The marker says which kind of claim it is. */
+      if (p.top_leak && p.top_leak_status !== "confirmed") {
+        const flag = document.createElement("span");
+        flag.className = "flag";
+        flag.textContent = "!";
+        bindTip(flag, `<span class="hl">${p.top_leak_status === "watch"
+          ? "not confirmed" : "from the rating, not a frequency"}</span><br>
+          ${esc(p.top_leak_note)}`);
+        $(".leakcell", tr).appendChild(flag);
+      } else if (p.top_leak) {
+        $(".leakcell", tr).appendChild(info(esc(p.top_leak_note)));
+      }
       if (q && p.table_mix) {
         q.appendChild(document.createTextNode(" \u00b7 " + p.regime_label));
       }
@@ -1481,13 +1577,21 @@ async function askIdentity(token, questions, onDone) {
         <label><input type="radio" name="${esc(q.id)}" value="no"
           ${q.default ? "" : "checked"}>Different people</label>
       </div>
-      <div class="choice namechoice" ${q.default ? "" : 'hidden'}>${names}</div>`;
+      <div class="choice namechoice">
+        <span class="small muted namelabel">keep the name</span>${names}</div>`;
     box.appendChild(div);
-    // The name only matters if they are the same person.
+
+    // The name only means anything if they are one person, so it greys out
+    // rather than disappearing -- a control that vanishes leaves you wondering
+    // whether you missed something.
+    const setEnabled = same => {
+      const group = $(".namechoice", div);
+      group.classList.toggle("disabled", !same);
+      group.querySelectorAll("input").forEach(input => { input.disabled = !same; });
+    };
+    setEnabled(q.default);
     div.querySelectorAll(`input[name="${CSS.escape(q.id)}"]`).forEach(radio =>
-      radio.onchange = () => {
-        $(".namechoice", div).hidden = radio.value !== "yes";
-      });
+      radio.onchange = () => setEnabled(radio.value === "yes"));
   }
   $("#cancel").onclick = async () => {
     modal.innerHTML = "";
@@ -1588,6 +1692,13 @@ async function viewPlayers() {
       b.disabled = true; b.textContent = "merging\u2026";
       try {
         await post("/api/link", {keep: +b.dataset.keep, absorb: +b.dataset.absorb});
+        // A session on the other tab is about the same people; leaving it
+        // unmerged would contradict the database it is about to be saved into.
+        if (state.session && state.session.token) {
+          try {
+            state.session = await get(`/api/session/${state.session.token}`);
+          } catch (ignored) { /* session expired; nothing to refresh */ }
+        }
         viewPlayers();
       } catch (err) { b.textContent = "blocked"; b.classList.add("err"); }
     });

@@ -348,3 +348,66 @@ def test_questions_offer_a_name_to_keep(session, tmp_path):
         for q in session_questions(store, SESSIONS[session]["hands"]):
             assert q.names, f"{q.id} offers no name choice"
             assert q.default_name in q.names
+
+
+def test_roster_always_names_the_biggest_leak_it_can(tmp_path, hands):
+    """"None clears the bar" left the weakest player looking like the safest.
+
+    The column falls back through what is known -- priced leak, unconfirmed
+    read, weakest rated area -- and says which kind of claim it is making.
+    """
+    from villain.web import roster_payload
+    with Store(tmp_path / "v.db") as store:
+        store.add_hands(hands)
+        rows = roster_payload(store)
+    assert rows
+    for row in rows:
+        if row["top_leak"] is None:
+            continue
+        assert row["top_leak_status"] in {"confirmed", "watch", "rated"}
+        assert row["top_leak_note"], "an unconfirmed claim must explain itself"
+        if row["top_leak_status"] != "confirmed":
+            assert "not confirmed" in row["top_leak_note"] \
+                or "not a measured frequency" in row["top_leak_note"]
+
+
+def test_a_rated_weakness_is_never_presented_as_a_measured_leak(tmp_path, hands):
+    from villain.web import roster_payload
+    with Store(tmp_path / "v.db") as store:
+        store.add_hands(hands)
+        for row in roster_payload(store):
+            if row["top_leak_status"] == "confirmed":
+                assert row["top_leak_severity"] > 0
+            elif row["top_leak_status"] is not None:
+                assert row["top_leak_severity"] == 0.0
+
+
+def test_a_database_merge_shows_up_in_a_loaded_session(tmp_path, hands):
+    """The same people, so the same answer. A session that ignored a merge made
+    in the database would contradict the database it is about to be saved into.
+    """
+    import copy
+    from villain.web import SESSIONS, database_merges, session_payload
+    token = "dbmerge"
+    SESSIONS[token] = {"hands": copy.deepcopy(hands), "files": [], "created": 0.0}
+    try:
+        with Store(tmp_path / "v.db") as store:
+            store.add_hands(hands)
+            before = {r["name"]: r["hands"] for r in session_payload(token, store)["players"]}
+            # Merge two players who never share a hand.
+            store.conn.execute(
+                "INSERT INTO players (display_name, created_at) VALUES ('Ghost', 0)")
+            ghost = store.conn.execute("SELECT MAX(id) m FROM players").fetchone()["m"]
+            rows = store.conn.execute(
+                "SELECT site, account, player_id FROM aliases").fetchall()
+            a, b = rows[0], next(r for r in rows[1:]
+                                 if not store.are_distinct(int(rows[0]["player_id"]),
+                                                           int(r["player_id"])))
+            store.link(int(a["player_id"]), int(b["player_id"]))
+            merges = database_merges(store, SESSIONS[token]["hands"])
+            after = {r["name"]: r["hands"] for r in session_payload(token, store)["players"]}
+    finally:
+        SESSIONS.pop(token, None)
+    assert merges, "the merged accounts should be pooled in the session"
+    assert len(after) < len(before)
+    assert sum(after.values()) == sum(before.values()), "no hands lost"

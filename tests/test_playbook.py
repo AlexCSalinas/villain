@@ -346,3 +346,102 @@ def test_every_rated_component_is_explained():
     book.meters["open_bb"].add(2.5, 1)
     for component in rate(build_profile(book)).components:
         assert component_help(component.name), f"no explanation for {component.name!r}"
+
+
+# -- reliability of the optional model --------------------------------------
+
+class _FakeResponse:
+    def __init__(self, text):
+        self._text = text
+    def read(self):
+        import json as _json
+        return _json.dumps({"choices": [{"message": {"content": self._text}}]}).encode()
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        return False
+
+
+def _http_error(code):
+    import io
+    import urllib.error
+    return urllib.error.HTTPError("u", code, "boom", {},
+                                  io.BytesIO(b'{"error":{"message":"upstream"}}'))
+
+
+def _profile():
+    return {"name": "x", "hands": 200, "sample_quality": "usable",
+            "archetype": "tag", "archetype_confidence": 0.6, "summary": "",
+            "skill": {"score": 60, "tier": "competent"}, "leaks": []}
+
+
+def test_transient_failures_are_retried(monkeypatch):
+    """A free tier rate-limits and falls over briefly; neither says anything
+    about the request, so neither should reach the user as a failure."""
+    from villain import narrate as module
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise _http_error(503)
+        return _FakeResponse("They play a solid game.")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    monkeypatch.setenv("VILLAIN_LLM_MODEL", "test-model")
+    result = module.narrate(_profile())
+    assert result.text == "They play a solid game."
+    assert len(calls) == 3
+
+
+def test_permanent_failures_are_not_retried(monkeypatch):
+    """401 will not fix itself, and neither will a retired model id."""
+    from villain import narrate as module
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(1)
+        raise _http_error(401)
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    monkeypatch.setenv("VILLAIN_LLM_MODEL", "test-model")
+    with pytest.raises(module.Unavailable, match="401"):
+        module.narrate(_profile())
+    assert len(calls) == 1, "a permanent error should not be retried"
+
+
+def test_an_invented_number_is_retried_with_the_offending_figure_named(monkeypatch):
+    """Discarding a whole report over one invented percentage is a worse
+    outcome than asking again and saying which number was wrong."""
+    from villain import narrate as module
+    prompts = []
+
+    def fake_urlopen(request, timeout=None):
+        import json as _json
+        body = _json.loads(request.data)
+        prompts.append(body["messages"][-1]["content"])
+        if len(prompts) == 1:
+            return _FakeResponse("They fold 91% of rivers.")
+        return _FakeResponse("They fold most rivers.")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    monkeypatch.setenv("VILLAIN_LLM_MODEL", "test-model")
+    result = module.narrate(_profile())
+    assert result.text == "They fold most rivers."
+    assert "91" in prompts[1], "the retry should name the rejected figure"
+
+
+def test_a_model_that_keeps_inventing_numbers_is_refused(monkeypatch):
+    from villain import narrate as module
+
+    def fake_urlopen(request, timeout=None):
+        return _FakeResponse("They fold 91% of rivers and 77% of turns.")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    monkeypatch.setenv("VILLAIN_LLM_MODEL", "test-model")
+    with pytest.raises(module.Unavailable, match="not in the data"):
+        module.narrate(_profile())

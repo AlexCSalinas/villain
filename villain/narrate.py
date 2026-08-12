@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -45,12 +46,38 @@ from pathlib import Path
 
 DEFAULT_URL = "http://localhost:11434/v1/chat/completions"
 DEFAULT_MODEL = "llama3.2"
-TIMEOUT = 60
+
+#: A 450-word report is a slow generation. The old 60s was tight enough that a
+#: busy endpoint looked like a broken one.
+TIMEOUT = 120
+
+#: Hosted endpoints rate-limit and fall over briefly; a free tier does both
+#: more often. These are the statuses worth trying again, and the ones that
+#: never are: 401 will not fix itself, and neither will 404 on a retired model.
+RETRY_STATUS = {408, 429, 500, 502, 503, 504}
+ATTEMPTS = 3
+BACKOFF = 2.0
+MAX_BACKOFF = 30.0
+
+
+def _retry_after(exc) -> float | None:
+    """The server's own Retry-After, in seconds, if it sent one."""
+    try:
+        value = exc.headers.get("Retry-After")
+    except Exception:
+        return None
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 #: Outside the project directory on purpose -- see the module docstring.
 CONFIG_PATH = Path.home() / ".villain" / "env"
 
-SETTINGS = ("VILLAIN_LLM_URL", "VILLAIN_LLM_MODEL", "VILLAIN_LLM_KEY")
+SETTINGS = ("VILLAIN_LLM_URL", "VILLAIN_LLM_MODEL", "VILLAIN_LLM_MODELS",
+            "VILLAIN_LLM_KEY")
 
 
 def _config() -> dict[str, str]:
@@ -115,9 +142,23 @@ class Unavailable(RuntimeError):
     """No model configured, or it could not be reached."""
 
 
+def models() -> list[str]:
+    """The models to try, best first.
+
+    Free tiers meter each model separately, so a second name is worth more
+    than a longer sleep: when one is out of quota another usually answers
+    immediately. ``VILLAIN_LLM_MODELS`` is a comma-separated fallback chain.
+    """
+    listed = setting("VILLAIN_LLM_MODELS")
+    if listed:
+        return [name.strip() for name in listed.split(",") if name.strip()]
+    return [setting("VILLAIN_LLM_MODEL", DEFAULT_MODEL)]
+
+
 def enabled() -> bool:
     """True when a narrator has been explicitly configured."""
-    return bool(setting("VILLAIN_LLM_MODEL") or setting("VILLAIN_LLM_URL"))
+    return bool(setting("VILLAIN_LLM_MODEL") or setting("VILLAIN_LLM_MODELS")
+                or setting("VILLAIN_LLM_URL"))
 
 
 def describe_endpoint() -> str:
@@ -171,10 +212,21 @@ def fact_sheet(payload: dict) -> str:
 
 
 def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
-            timeout: int = TIMEOUT) -> Narration:
-    """Ask the configured model to summarise a profile. Raises on any problem."""
+            timeout: int = TIMEOUT, attempts: int = ATTEMPTS) -> Narration:
+    """Ask the configured model to summarise a profile.
+
+    Retries the failures that are worth retrying: rate limits, gateway errors
+    and timeouts, which a free tier produces regularly and which mean nothing
+    about the request. Authentication and unknown-model errors are raised at
+    once, because trying those again just adds delay to the same answer.
+
+    A response that states figures the profile did not produce is also retried,
+    once, with the offending numbers named. Models mostly comply when told
+    exactly what they got wrong, and discarding a whole report over one invented
+    percentage is a worse outcome than asking again.
+    """
     url = url or setting("VILLAIN_LLM_URL", DEFAULT_URL)
-    model = model or setting("VILLAIN_LLM_MODEL", DEFAULT_MODEL)
+    chain = [model] if model else models()
     facts = fact_sheet(payload)
 
     body = json.dumps({
@@ -188,6 +240,51 @@ def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
     if key:
         headers["Authorization"] = f"Bearer {key}"
 
+    last: Exception | None = None
+    correction = ""
+    for index, model in enumerate(chain):
+        exhausted = False
+        wait = 0.0
+        for attempt in range(max(1, attempts)):
+            if attempt:
+                time.sleep(wait or BACKOFF ** attempt)
+            try:
+                text = _one_call(url, model, headers, facts + correction, timeout)
+            except _Retryable as exc:
+                last = exc.__cause__ or exc
+                wait = min(exc.wait or 0.0, MAX_BACKOFF)
+                # A spent quota will not clear inside a backoff, but the next
+                # model in the chain is metered separately and usually answers.
+                if exc.out_of_quota:
+                    exhausted = True
+                    break
+                continue
+
+            invented = unsupported_numbers(text, facts)
+            if not invented:
+                return Narration(text=text, model=model, endpoint=url)
+            # Name the offending figures and ask again. Discarding a whole
+            # report over one invented percentage is the worse outcome.
+            last = Unavailable("model stated figures that are not in the data "
+                               f"({', '.join(invented)}); discarded")
+            correction = (
+                "\n\nIMPORTANT: a previous attempt was rejected for stating "
+                f"these numbers, which are not in the facts above: "
+                f"{', '.join(invented)}. Use only figures given above, or "
+                "describe them in words.")
+        if exhausted and index + 1 < len(chain):
+            continue
+    raise last if last else Unavailable("no response")
+
+
+def _one_call(url: str, model: str, headers: dict, facts: str, timeout: int) -> str:
+    """A single request. Raises ``_Retryable`` for failures worth another go."""
+    body = json.dumps({
+        "model": model,
+        "temperature": 0.3,
+        "messages": [{"role": "system", "content": SYSTEM},
+                     {"role": "user", "content": facts}],
+    }).encode()
     request = urllib.request.Request(url, data=body, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -197,14 +294,20 @@ def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
         # than anything guessed here.
         detail = ""
         try:
-            detail = json.load(exc).get("error", {}).get("message", "")
+            payload = json.load(exc)
+            if isinstance(payload, list) and payload:
+                payload = payload[0]
+            detail = (payload or {}).get("error", {}).get("message", "")
         except Exception:
             pass
-        raise Unavailable(
-            f"{model} returned {exc.code}"
-            + (f": {detail}" if detail else f" ({exc.reason})")
-            + (". This is usually temporary -- try again." if exc.code >= 500 else "")
-        ) from exc
+        failure = Unavailable(
+            f"{model} returned {exc.code}" + (f": {detail}" if detail else f" ({exc.reason})"))
+        if exc.code in RETRY_STATUS:
+            # A spent quota is not a busy server: waiting will not fix it
+            # before the window resets, but another model usually answers.
+            spent = exc.code == 429 and "quota" in detail.lower()
+            raise _Retryable(_retry_after(exc), out_of_quota=spent) from failure
+        raise failure from exc
     except urllib.error.URLError as exc:
         # Nothing answered at all. Only suggest starting a local model when the
         # endpoint actually is local; telling somebody to "ollama pull" a
@@ -214,21 +317,29 @@ def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
                 if local else
                 "Check the endpoint and your network, or set VILLAIN_LLM_URL "
                 "to another OpenAI-compatible endpoint.")
-        raise Unavailable(f"could not reach {url}: {exc.reason}. {hint}") from exc
+        raise _Retryable() from Unavailable(
+            f"could not reach {url}: {exc.reason}. {hint}")
     except (TimeoutError, OSError) as exc:
-        raise Unavailable(f"model at {url} did not respond: {exc}") from exc
+        raise _Retryable() from Unavailable(f"{model} did not respond in {timeout}s")
 
     try:
-        text = data["choices"][0]["message"]["content"].strip()
+        return data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError) as exc:
         raise Unavailable(f"unexpected response from {url}") from exc
 
-    invented = unsupported_numbers(text, facts)
-    if invented:
-        raise Unavailable(
-            f"model stated figures that are not in the data ({', '.join(invented)}); "
-            "discarded")
-    return Narration(text=text, model=model, endpoint=url)
+
+class _Retryable(Exception):
+    """Internal marker: this failure is worth another attempt.
+
+    ``wait`` carries the server's own ``Retry-After`` when it sent one. A free
+    tier's limits are usually per minute, and guessing a two second backoff
+    against a sixty second window just burns the retries.
+    """
+
+    def __init__(self, wait: float | None = None, out_of_quota: bool = False):
+        super().__init__()
+        self.wait = wait
+        self.out_of_quota = out_of_quota
 
 
 #: Numbers a sentence can contain without claiming anything about the player:
