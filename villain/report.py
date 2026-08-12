@@ -77,6 +77,29 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
             out.append(f"              {line}")
         out.append("")
 
+    from .exploits import find_watchlist
+    from .skill import weaknesses
+
+    watch = find_watchlist(profile)
+    if watch:
+        out.append("  NOT CONFIRMED YET")
+        for leak in watch:
+            out.append(f"    {leak.headline}  ({leak.confidence:.0%} sure, "
+                       f"n={leak.opps:.0f})")
+            for line in _wrap(leak.in_words, WIDTH - 6):
+                out.append(f"      {line}")
+        out.append("")
+
+    weak = weaknesses(profile.skill)
+    if weak and not leaks:
+        out.append("  WEAKEST PARTS OF THEIR GAME")
+        out.append("  (no frequency clears the evidence bar, but this is where")
+        out.append("   the rating says their game is thinnest)")
+        for c in weak:
+            note = f" -- {c.note}" if c.note else ""
+            out.append(f"    {c.name} {c.score:.0f}/100{note}")
+        out.append("")
+
     combos = combinations_for(l.id for l in leaks)
     if combos:
         out.append("  THESE COMPOUND")

@@ -114,15 +114,37 @@ POPULATION[THREE].pop("aggression__flop", None)
 POPULATION[FULL] = dict(POPULATION[SHORT], vpip=0.20, pfr=0.15, rfi=0.20,
                         three_bet=0.06, steal=0.30, wtsd=0.25)
 
-# How many pseudo-opportunities the prior is worth. Rare events need a heavier
-# prior: one observed 4-bet out of two chances should move the estimate very
-# little, while 40 VPIP decisions genuinely tell you something.
+# How many pseudo-opportunities the prior is worth -- derived, not chosen.
+#
+# A prior should be trusted in proportion to how much it actually says. Where
+# players cluster tightly around the population mean, that mean is a good guess
+# for a newcomer and should dominate a small sample. Where players are spread
+# out, the mean describes nobody and the data should win sooner. That is the
+# Beta-Binomial moments relationship, and ``SPREAD`` already measures the
+# spread, so the strength follows from it rather than from a table of guesses.
+#
+# The stat this matters most for is ``limp``. Its population is bimodal:
+# competent players limp essentially never, limpers limp a third of the time,
+# and the 5% average is a value almost nobody holds. Shrinking a limper toward
+# it hid the most obvious leak in poker behind a number no player has.
+STRENGTH_SCALE = 6.25          # calibrated so a mid-spread stat lands near 25
+MIN_STRENGTH, MAX_STRENGTH = 8.0, 40.0
+
+#: Overrides, for stats whose spread does not tell the whole story. Rare
+#: events need a heavier prior than their spread implies, because a single
+#: observation out of two chances should barely move anything.
 STRENGTH: dict[str, float] = {
-    "vpip": 20, "pfr": 22, "rfi": 22, "three_bet": 30, "fold_to_three_bet": 25,
-    "four_bet": 35, "fold_to_four_bet": 30, "check_raise:flop": 30,
-    "wtsd": 25, "wsd": 30, "wwsf": 30, "river_bet_bluff": 25,
+    "four_bet": 35, "fold_to_four_bet": 30, "five_bet": 35, "cold_four_bet": 35,
 }
 DEFAULT_STRENGTH = 25.0
+
+
+def strength_for(stat: str) -> float:
+    """Prior weight in pseudo-opportunities, from the between-player spread."""
+    if stat in STRENGTH:
+        return STRENGTH[stat]
+    spread = spread_of(stat)
+    return min(MAX_STRENGTH, max(MIN_STRENGTH, STRENGTH_SCALE / (spread * spread)))
 
 # Continuous stats: (prior mean, prior strength in observations).
 CONTINUOUS: dict[str, dict[str, tuple[float, float]]] = {
@@ -268,7 +290,7 @@ def prior_for(stat: str, table_regime: str) -> tuple[float, float]:
         # Size-split fold stats inherit the street's overall fold frequency.
         base = stat.rsplit(":", 1)[0]
         mean = table.get(base, 0.5)
-    return mean, STRENGTH.get(stat, DEFAULT_STRENGTH)
+    return mean, strength_for(stat)
 
 
 def fit_empirical(samples: dict[str, list[tuple[float, float]]],

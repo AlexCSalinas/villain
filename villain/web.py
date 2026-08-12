@@ -837,6 +837,8 @@ PAGE = r"""<!doctype html>
   .footnote { font-size: 12.5px; display: flex; gap: 8px; flex-wrap: wrap;
               align-items: baseline; margin: 22px 2px; }
   .danger-link { color: var(--danger); text-decoration-color: var(--danger); }
+  .leak.watch { opacity: .82; }
+  .leak.weakspots .metric { grid-template-columns: 1fr 150px 30px; }
   .narration { margin-top: 10px; max-width: 66ch; }
   .narration blockquote {
     margin: 0 0 6px; padding: 0 0 0 13px; border-left: 2px solid var(--red);
@@ -898,7 +900,7 @@ PAGE = r"""<!doctype html>
   </header>
   <nav>
     <button data-tab="session" class="on">Session</button>
-    <button data-tab="players">Players</button>
+    <button data-tab="players">Database</button>
   </nav>
   <div id="view"></div>
 </div>
@@ -1137,8 +1139,13 @@ function profileCard(p, opts) {
 
   const leakBox = $(".leaks", doBox);
   if (!leaks.length) {
-    leakBox.innerHTML = `<div class="empty">Nothing stands out yet. Play them
-      straight and collect more hands.</div>`;
+    const nothing = (p.watchlist || []).length || (p.weak_spots || []).length
+      ? `<div class="empty">No frequency clears the evidence bar yet, so
+         nothing here has a price on it. What follows is what the numbers so
+         far point at.</div>`
+      : `<div class="empty">Nothing stands out yet. Play them straight and
+         collect more hands.</div>`;
+    leakBox.innerHTML = nothing;
   }
   for (const l of leaks) {
     const div = document.createElement("div");
@@ -1183,6 +1190,48 @@ function profileCard(p, opts) {
       how.appendChild(block);
     }
     leakBox.appendChild(div);
+  }
+
+  /* Below the reporting bar. Shown because silence is its own claim: a player
+     the rating calls weak with nothing listed against them reads as "no
+     information" when the truth is "not confirmed yet". Never priced. */
+  for (const w of (p.watchlist || [])) {
+    const div = document.createElement("div");
+    div.className = "leak watch";
+    div.innerHTML = `
+      <div class="leak-head">
+        <div class="headline"><b>${esc(w.headline)}</b>
+          <span class="tag tier">watch</span></div>
+        <div class="num small muted">${fmtPct(w.confidence)} sure</div></div>
+      <div class="small muted numbers">${esc(w.in_words)}</div>`;
+    $(".tier", div).after(info(termTip("watch")));
+    leakBox.appendChild(div);
+  }
+
+  /* What the rating is built on. Always available, because a component score
+     is a description of their play rather than a claim that needs a test. */
+  if ((p.weak_spots || []).length) {
+    const weak = document.createElement("div");
+    weak.className = "leak weakspots";
+    weak.innerHTML = `<div class="headline"><b>Weakest parts of their game</b>
+        <span class="tag">from the rating</span></div>
+      <div class="small muted" style="margin:4px 0 8px">
+        Not frequencies you can attack for a known price \u2014 this is where
+        their game is thinnest, and why the rating is what it is.</div>`;
+    for (const spot of p.weak_spots) {
+      const row = document.createElement("div");
+      row.className = "metric";
+      const label = document.createElement("span");
+      label.className = "small";
+      label.textContent = spot.name + (spot.note ? ` \u2014 ${spot.note}` : "");
+      const val = document.createElement("span");
+      val.className = "small muted"; val.style.textAlign = "right";
+      val.textContent = spot.score.toFixed(0);
+      row.append(label, bar(spot.score, 100, "var(--mark-2)", 150), val);
+      if (spot.meaning) bindTip(row, `<b>${esc(spot.name)}</b><br>${esc(spot.meaning)}`);
+      weak.appendChild(row);
+    }
+    leakBox.appendChild(weak);
   }
 
   for (const c of (p.combinations || [])) {
@@ -1512,7 +1561,7 @@ async function viewPlayers() {
   /* One table, sorted however you like. A separate leaderboard tab was the
      same rows in a different order. */
   view.innerHTML = `<div class="panel">
-      <div class="spread"><h2>players</h2>
+      <div class="spread"><h2>database</h2>
         <span class="small muted">click a column to re-rank</span></div>
       <div id="db-roster"></div></div>
     <div id="suggest-panel" class="panel" hidden>

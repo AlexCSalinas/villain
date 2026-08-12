@@ -277,6 +277,26 @@ def _tier(score: float) -> tuple[str, str]:
     return TIERS[-1][1], TIERS[-1][2]
 
 
+#: A component this far below the middle is worth naming even when no
+#: statistical test clears. It is not a read, it is a description of where
+#: their game is thinnest, and it is what the rating is already built on.
+WEAK_COMPONENT = 78.0
+
+
+def weaknesses(skill: Skill, limit: int = 3) -> list[Component]:
+    """The weakest parts of a player's game, weakest first.
+
+    Separate from leaks on purpose. A leak is a frequency you can attack for a
+    known price; this is where somebody is simply worse, which may or may not
+    be exploitable but is always the reason their rating is what it is. Without
+    it a player rated 68 with no leaks listed looks identical to one rated 90.
+    """
+    rated = [c for c in skill.components
+             if c.weight > 0 and c.name != "resistance to exploitation"]
+    weak = [c for c in sorted(rated, key=lambda c: c.score) if c.score < WEAK_COMPONENT]
+    return weak[:limit]
+
+
 def leaderboard(profiles: list[Profile]) -> list[Profile]:
     """Players sorted by rating, with the least certain ratings last."""
     for p in profiles:

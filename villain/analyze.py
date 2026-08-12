@@ -9,10 +9,11 @@ later cannot disagree about what a player is.
 from __future__ import annotations
 
 from .archetypes import ARCHETYPE_BY_NAME, match
-from .exploits import find_leaks
+from .exploits import find_leaks, find_watchlist
+from .glossary import component_help
 from .playbook import combinations_for
 from .profile import Profile
-from .skill import rate
+from .skill import rate, weaknesses
 
 #: Internal counters. They exist so aggression frequencies can be derived from
 #: raw action mixes; as standalone frequencies they mean nothing, so they are
@@ -92,6 +93,23 @@ def as_dict(profile: Profile) -> dict:
              "size": l.size, "priority": l.priority, "pressure": l.pressure,
              "in_words": l.in_words}
             for l in profile.tags
+        ],
+        # Deviations that are probably real but not yet worth acting on.
+        # Never priced: not confident enough to say what they are worth.
+        "watchlist": [
+            {"id": l.id, "headline": l.headline, "value": round(l.value, 4),
+             "breakeven": round(l.threshold, 4), "sample": l.opps,
+             "confidence": round(l.confidence, 3), "in_words": l.in_words,
+             "do": l.do, "stat": l.stat}
+            for l in find_watchlist(profile)
+        ],
+        # Where their game is thinnest. This is what the rating is built on,
+        # so a player rated poorly always has something to show even when no
+        # frequency clears a statistical test.
+        "weak_spots": [
+            {"name": c.name, "score": round(c.score, 1), "note": c.note,
+             "meaning": component_help(c.name) or ""}
+            for c in weaknesses(profile.skill)
         ],
         # Leaks that compound. Two tendencies pointing the same way call for a
         # more aggressive adjustment than either would on its own.

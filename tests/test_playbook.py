@@ -285,3 +285,64 @@ def test_fact_sheet_tolerates_the_ui_profile_shape():
     assert "x" in sheet
     assert "10" in sheet
     assert fact_sheet({}), "an empty payload should still produce a sheet"
+
+
+# -- saying something useful when nothing clears the bar --------------------
+
+def test_watchlist_holds_near_misses_only(synth_profile):
+    """A watch item is below the reporting bar but above coincidence, and must
+    never duplicate something already confirmed."""
+    from villain.exploits import MIN_CONFIDENCE, WATCH_CONFIDENCE, find_leaks, find_watchlist
+    profile = synth_profile("overfolder", regime="hu", opps=40)
+    confirmed = {l.id for l in find_leaks(profile)}
+    for item in find_watchlist(profile):
+        assert item.id not in confirmed
+        assert WATCH_CONFIDENCE <= item.confidence < MIN_CONFIDENCE
+        assert item.tier == "watch"
+
+
+def test_watch_items_are_not_priced_as_reads(synth_profile):
+    """No price on an unconfirmed read: the tool cannot say what it is worth."""
+    from villain.analyze import as_dict
+    from villain.exploits import find_watchlist
+    profile = synth_profile("limper", regime="3max", opps=30)
+    payload = as_dict(profile)
+    for item in payload["watchlist"]:
+        assert "severity_bb100" not in item
+
+
+def test_a_weak_player_always_has_something_to_show(synth_profile):
+    """Silence is its own claim. A player the rating calls weak, with nothing
+    listed against them, reads as 'no information'."""
+    from villain.analyze import as_dict
+    for archetype in ("limper", "station", "nit", "overfolder"):
+        payload = as_dict(synth_profile(archetype, regime="6max", opps=25))
+        assert payload["leaks"] or payload["watchlist"] or payload["weak_spots"], \
+            f"{archetype} rated {payload['skill']['score']} with nothing to show"
+
+
+def test_weak_spots_explain_the_rating(synth_profile):
+    from villain.skill import WEAK_COMPONENT, rate, weaknesses
+    profile = synth_profile("limper", regime="3max", opps=60)
+    weak = weaknesses(rate(profile))
+    assert weak, "a limper should have a visibly weak component"
+    assert weak == sorted(weak, key=lambda c: c.score)
+    assert all(c.score < WEAK_COMPONENT for c in weak)
+    assert all(c.name != "resistance to exploitation" for c in weak)
+
+
+def test_every_rated_component_is_explained():
+    """A weakness nobody can interpret is not worth showing."""
+    from villain.glossary import component_help
+    from villain.skill import rate
+    from villain.stats import StatBook
+    from villain.profile import build_profile, PROFILE_FEATURES
+    from villain.archetypes import ARCHETYPE_BY_NAME, target_frequency
+    book = StatBook(player_id="x", regime="6max", hands=300)
+    for f in PROFILE_FEATURES:
+        book.ratios[f].hits = target_frequency(ARCHETYPE_BY_NAME["tag"], f, "6max") * 60
+        book.ratios[f].opps = 60
+    book.meters["table_size"].add(6, 1)
+    book.meters["open_bb"].add(2.5, 1)
+    for component in rate(build_profile(book)).components:
+        assert component_help(component.name), f"no explanation for {component.name!r}"

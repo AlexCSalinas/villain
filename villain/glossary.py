@@ -174,6 +174,10 @@ TERMS: dict[str, str] = {
     "usable": "150 to 500 hands. Preflop reads are reliable and the bigger "
               "postflop leaks will show.",
     "solid": "Over 500 hands. Trust it, including the finer postflop numbers.",
+    "watch": "Seen, but not confirmed. Probably real and not yet worth acting "
+             "on -- no price is given because the tool is not confident enough "
+             "to tell you what it is worth. Keep playing them and it will "
+             "either firm up or disappear.",
     "tentative": "The evidence leans this way but could still be luck. Worth "
                  "knowing, not worth changing your whole game for.",
     "likely": "Probably real. Act on it, and keep watching.",
@@ -195,6 +199,38 @@ TERMS: dict[str, str] = {
     "confidence": "How much of this read comes from their actual hands rather "
                   "than from assumptions about players in general.",
 }
+
+#: What a low score in each rated area means for you. The rating knows these
+#: things whether or not a statistical test clears, and saying nothing about
+#: them makes a weak player look unreadable.
+COMPONENTS: dict[str, str] = {
+    "hand selection": "They play the wrong hands -- too many, too few, or "
+                      "entering pots by calling. Punish it before the flop by "
+                      "raising more of your own hands against them.",
+    "preflop aggression": "They call where they should raise. Their calling "
+                          "range is capped, so bet at them after the flop and "
+                          "believe them when they finally raise.",
+    "postflop aggression": "Their betting after the flop is off -- too passive "
+                           "to protect their good hands, or too busy to have "
+                           "them. Either way their bets and checks say more "
+                           "than they should.",
+    "discipline vs bets": "They fold at the wrong frequencies when facing "
+                          "bets. Whichever way they err, the answer is to "
+                          "bet more or bluff less accordingly.",
+    "showdown judgement": "They arrive at showdown with the wrong hands -- "
+                          "paying off too often, or folding hands that were "
+                          "good. Value bet thinner against them.",
+    "bet sizing": "Their sizes are readable or badly chosen. One size for "
+                  "every situation means the size tells you nothing they meant "
+                  "it to, and often a lot they did not.",
+    "resistance to exploitation": "How much money the leaks found against them "
+                                  "are worth in total.",
+}
+
+
+def component_help(name: str) -> str | None:
+    return COMPONENTS.get(name)
+
 
 #: How the table-size split is explained.
 REGIMES: dict[str, str] = {
