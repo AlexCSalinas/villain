@@ -133,26 +133,20 @@ def test_replay_is_serialisable(hands):
         json.dumps(replay(hand))
 
 
-# -- the game picker --------------------------------------------------------
+# -- the leaderboard --------------------------------------------------------
 
-def test_games_lists_each_table_once(stored, hands):
-    games = stored.games()
-    assert len(games) == len({h.table_id for h in hands})
-    assert sum(g["hands"] for g in games) == len(hands)
-
-
-def test_game_seat_counts_match_the_hands(stored, hands):
-    game = stored.games()[0]
-    dealt = sum(len(h.seats) for h in hands if h.table_id == game["table_id"])
-    assert sum(game["seats"].values()) == dealt
-
-
-def test_leaderboard_ranks_by_what_is_available(stored):
+def test_leaderboard_ranks_by_skill(stored):
     from villain.web import leaderboard_payload
     payload = leaderboard_payload(stored)
     assert payload["players"]
-    worth = [p["exploitability"] for p in payload["players"]]
-    assert worth == sorted(worth, reverse=True)
-    for game in payload["games"]:
-        assert 0 <= game["field_skill"] <= 100
-        assert abs(sum(f["share"] for f in game["field"]) - 1.0) < 0.02
+    assert "games" not in payload, "the per-game picker was removed"
+    scores = [p["skill"] for p in payload["players"]]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_leaderboard_carries_both_orderings(stored):
+    """Skill and attackability are different questions; the table sorts on either."""
+    from villain.web import leaderboard_payload
+    for row in leaderboard_payload(stored)["players"]:
+        assert "skill" in row and "exploitability" in row
+        assert 0 <= row["skill"] <= 100

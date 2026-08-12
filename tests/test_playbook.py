@@ -226,3 +226,14 @@ def test_table_mix_is_stated_plainly(hands):
                        for word in ("heads-up", "3-handed", "short-handed", "full ring"))
             return
     pytest.fail("no multi-table player in the fixture")
+
+
+def test_fact_sheet_tolerates_the_ui_profile_shape():
+    """The browser posts back the profile it was given, which carries extra
+    keys and may be missing others; the narrator must not crash on it."""
+    from villain.narrate import fact_sheet
+    minimal = {"name": "x", "hands": 10, "archetype": "tag", "skill": {}}
+    sheet = fact_sheet(minimal)
+    assert "x" in sheet
+    assert "10" in sheet
+    assert fact_sheet({}), "an empty payload should still produce a sheet"

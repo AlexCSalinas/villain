@@ -74,16 +74,17 @@ def enabled() -> bool:
 def fact_sheet(payload: dict) -> str:
     """The only thing the model is allowed to know, built from the profile."""
     lines = [
-        f"Player: {payload['name']}",
-        f"Table size: {payload.get('regime_label', payload['regime'])}",
-        f"Hands observed: {payload['hands']} ({payload['sample_quality']})",
-        f"Player type: {payload['archetype']} "
-        f"({round(100 * payload['archetype_confidence'])}% confident)",
+        f"Player: {payload.get('name', 'unknown')}",
+        f"Table size: {payload.get('table_mix') or payload.get('regime_label') or payload.get('regime', '')}",
+        f"Hands observed: {payload.get('hands', 0)} "
+        f"({payload.get('sample_quality', 'unknown')})",
+        f"Player type: {payload.get('archetype', 'unknown')} "
+        f"({round(100 * payload.get('archetype_confidence', 0))}% confident)",
         f"Type description: {payload.get('summary', '')}",
-        f"Skill rating: {payload['skill']['score']} out of 100 "
-        f"({payload['skill']['tier']})",
+        f"Skill rating: {payload.get('skill', {}).get('score', 0)} out of 100 "
+        f"({payload.get('skill', {}).get('tier', 'unknown')})",
     ]
-    if payload["leaks"]:
+    if payload.get("leaks"):
         lines.append("Leaks found, most valuable first:")
         for leak in payload["leaks"]:
             lines.append(

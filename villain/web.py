@@ -311,45 +311,16 @@ def _player_id_of(store: Store, side: dict) -> int | None:
 
 
 def leaderboard_payload(store: Store) -> dict:
-    """Players ranked by what they are worth to you, and games ranked by field.
+    """Every known player, ranked.
 
-    The game ranking is the question a player with several regular games
-    actually has: which one is worth turning up to. It is a weighted average
-    rather than a total -- a table where one whale plays every hand is softer
-    than one where four decent players and a whale rotate, even though the
-    whale's leaks are the same size in both.
+    Two orderings matter and they are not the same question. Skill answers
+    "who is dangerous"; attackable bb/100 answers "who is worth sitting with".
+    A competent player with one exploitable habit can be worth more to you than
+    a weak player you have barely seen, so both are shown and the table sorts
+    on either.
     """
     ranked = roster_payload(store)
-    by_id = {row["player_id"]: row for row in ranked}
-
-    games = []
-    for game in store.games():
-        seats = {pid: n for pid, n in game["seats"].items() if pid in by_id}
-        total = sum(seats.values())
-        if not total:
-            continue
-        field = []
-        soft, skill = 0.0, 0.0
-        for pid, count in sorted(seats.items(), key=lambda kv: -kv[1]):
-            row = by_id[pid]
-            share = count / total
-            soft += share * row["exploitability"]
-            skill += share * row["skill"]
-            field.append({"player_id": pid, "name": row["name"], "hands": count,
-                          "share": round(share, 3), "skill": row["skill"],
-                          "exploitability": row["exploitability"],
-                          "archetype": row["archetype"]})
-        games.append({
-            "site": game["site"], "table_id": game["table_id"],
-            "hands": game["hands"], "first_seen": game["first_seen"],
-            "last_seen": game["last_seen"], "players": len(seats),
-            "softness": round(soft, 2), "field_skill": round(skill, 1),
-            "field": field,
-            "softest": max(field, key=lambda f: f["exploitability"])["name"] if field else None,
-        })
-    games.sort(key=lambda g: -g["softness"])
-    return {"players": sorted(ranked, key=lambda r: -r["exploitability"]),
-            "games": games}
+    return {"players": sorted(ranked, key=lambda r: -r["skill"])}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -603,7 +574,7 @@ PAGE = r"""<!doctype html>
       color-scheme: dark;
       --bg: #0d0d0d; --panel: #17181a; --ink: #f2f1ee; --muted: #98968f;
       --line: #2a2b2d; --accent: #f2f1ee; --accent-soft: #202123;
-      --warn: #e08a5f;
+      --warn: #e08a5f; --danger: #e5645a;
       --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
       --band: #26272a;
       --grid: #232427; --axis: #3a3b3e; --tick: #898781;
@@ -613,7 +584,7 @@ PAGE = r"""<!doctype html>
     color-scheme: dark;
     --bg: #0d0d0d; --panel: #17181a; --ink: #f2f1ee; --muted: #98968f;
     --line: #2a2b2d; --accent: #f2f1ee; --accent-soft: #202123;
-    --warn: #e08a5f;
+    --warn: #e08a5f; --danger: #e5645a;
     --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
     --band: #26272a;
     --grid: #232427; --axis: #3a3b3e; --tick: #898781;
@@ -676,14 +647,36 @@ PAGE = r"""<!doctype html>
   .small { font-size: 12.5px; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .spread { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  /* Buttons come in three shapes and no others: a pill for actions, a plain
+     text link for inline affordances, and the icon square in the header.
+     Anything needing a fourth is probably not a button. */
   button.act {
-    font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 999px;
-    border: 1px solid var(--line); background: transparent; color: var(--ink);
-    cursor: pointer;
+    font: inherit; font-size: 13px; line-height: 1.2; padding: 7px 15px;
+    border-radius: 999px; border: 1px solid var(--line); background: transparent;
+    color: var(--ink); cursor: pointer; white-space: nowrap;
+    transition: border-color .12s, background .12s, color .12s;
   }
-  button.act:hover { border-color: var(--accent); }
-  button.act.primary { background: var(--accent); color: var(--panel); border-color: var(--accent); }
-  button.act:disabled { opacity: .5; cursor: default; }
+  button.act:hover:not(:disabled) { border-color: var(--accent); }
+  button.act:active:not(:disabled) { transform: translateY(0.5px); }
+  button.act.primary {
+    background: var(--accent); color: var(--panel); border-color: var(--accent);
+    font-weight: 600;
+  }
+  button.act.primary:hover:not(:disabled) { opacity: .88; }
+  button.act.small { font-size: 12px; padding: 4px 11px; }
+  button.act:disabled { opacity: .45; cursor: default; }
+  button.act.danger { border-color: var(--danger); color: var(--danger); }
+  button.act.danger:hover:not(:disabled) {
+    background: var(--danger); color: var(--panel); border-color: var(--danger);
+  }
+  /* Inline affordance: reads as part of the sentence it sits in, because a
+     pill dropped mid-paragraph breaks the line it is trying to annotate. */
+  button.linkbtn {
+    font: inherit; font-size: inherit; padding: 0; border: 0; background: none;
+    color: var(--ink); cursor: pointer; text-decoration: underline;
+    text-underline-offset: 2px; text-decoration-color: var(--axis);
+  }
+  button.linkbtn:hover { text-decoration-color: var(--accent); }
   .hero { font-size: 38px; line-height: 1.05; letter-spacing: -0.03em; }
   .drop {
     border: 1.5px dashed var(--line); border-radius: 12px; padding: 34px 20px;
@@ -739,8 +732,6 @@ PAGE = r"""<!doctype html>
   details > summary::before { content: "\25B8 "; }
   details[open] > summary::before { content: "\25BE "; }
   details > summary:hover { color: var(--ink); }
-  button.danger { border-color: #c0392b; color: #c0392b; }
-  button.danger:hover { background: #c0392b; color: #fff; border-color: #c0392b; }
   .headline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
   .gamecard { border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 10px 0; }
@@ -1007,9 +998,39 @@ function profileCard(p) {
       </div>
     </div>
     <p style="max-width:62ch">${esc(p.plan)}</p>
+    <div class="narrate"></div>
     <details class="mixbox"><summary>how sure, and what else it could be</summary>
       <div class="mix" style="margin-top:8px"></div></details>`;
   card.appendChild(head);
+
+  /* A written-to-order summary of this specific player. Everything else on
+     the page is deterministic, so this is opt-in per player rather than
+     generated for everyone: it costs a model call and it is a nicety on top
+     of the playbook, not a replacement for it. */
+  const narrateBox = $(".narrate", head);
+  const narrateBtn = document.createElement("button");
+  narrateBtn.className = "act small";
+  narrateBtn.textContent = "Generate detailed description";
+  const narrateOut = document.createElement("div");
+  narrateOut.style.cssText = "max-width:66ch;margin-top:10px";
+  narrateBtn.onclick = async () => {
+    narrateBtn.disabled = true;
+    narrateBtn.textContent = "writing\u2026";
+    try {
+      const result = await post("/api/narrate", {profile: p});
+      narrateOut.innerHTML = `<div style="border-left:2px solid var(--line);
+        padding-left:12px">${esc(result.text)}</div>
+        <div class="small muted" style="margin-top:6px">written by
+          ${esc(result.model)} from the numbers above \u2014 it cannot state a
+          figure the profile did not produce</div>`;
+      narrateBtn.textContent = "Rewrite";
+    } catch (err) {
+      narrateOut.innerHTML = `<div class="small err">${esc(err.message)}</div>`;
+      narrateBtn.textContent = "Generate detailed description";
+    }
+    narrateBtn.disabled = false;
+  };
+  narrateBox.append(narrateBtn, narrateOut);
 
   const tables = $(".tables", head);
   tables.appendChild(document.createTextNode(p.table_mix || p.regime_label));
@@ -1079,13 +1100,13 @@ function profileCard(p) {
     /* The sentence is split so the sample count can be clicked: a read you
        cannot check is a read you have to take on faith, and this tool is not
        worth that much faith. */
-    const claim = l.in_words.replace(/ -- seen about .*$/, " -- ");
+    const claim = l.in_words.replace(/seen about .*$/, "");
     numbers.appendChild(document.createTextNode(claim));
     if (p.player_id != null) {
       const link = document.createElement("button");
-      link.className = "act";
-      link.style.cssText = "padding:1px 9px;font-size:12px";
-      link.textContent = `see the ${Math.round(l.sample)} hands`;
+      link.className = "linkbtn";
+      link.textContent = `seen about ${Math.round(l.sample)} times`;
+      link.title = "show the hands behind this";
       link.onclick = () => showEvidence(p.player_id, l.stat, l.headline);
       numbers.appendChild(link);
     } else {
@@ -1468,7 +1489,7 @@ async function viewDatabase() {
         <div><b>${esc(s.absorb_name)}</b> may be <b>${esc(s.keep_name)}</b>
           <div class="small muted">${esc(s.reason)}</div></div>
         <div class="row"><span class="tag">${fmtPct(s.confidence)}</span>
-          <button class="act" data-keep="${s.keep}" data-absorb="${s.absorb}">merge</button></div>
+          <button class="act small" data-keep="${s.keep}" data-absorb="${s.absorb}">merge</button></div>
       </div></div>`).join("");
     $("#suggestions").querySelectorAll("button").forEach(b => b.onclick = async () => {
       b.disabled = true; b.textContent = "merging\u2026";
@@ -1553,12 +1574,12 @@ function confirmReset(data) {
   };
 }
 
-/* ---- tab 3: leaderboard and softest-game picker ---- */
+/* ---- tab 3: player leaderboard ---- */
 async function viewLeaderboard() {
   const view = $("#view");
   view.innerHTML = `<div class="panel"><div class="empty">loading\u2026</div></div>`;
   const data = await get("/api/leaderboard");
-  $("#meta").textContent = `${data.games.length} game(s) \u00b7 ${data.players.length} players`;
+  $("#meta").textContent = `${data.players.length} players`;
   if (!data.players.length) {
     view.innerHTML = `<div class="panel"><h2>nothing to rank yet</h2>
       <p class="muted">Add a session to the database first.</p></div>`;
@@ -1566,75 +1587,66 @@ async function viewLeaderboard() {
   }
   view.innerHTML = `
     <div class="panel">
-      <div class="spread"><h2>which game to play</h2>
-        <span class="small muted">ranked by what the field is worth to you</span></div>
-      <div id="games"></div>
-    </div>
-    <div class="panel">
-      <div class="spread"><h2>players</h2>
-        <span class="small muted worthinfo"></span></div>
-      <div class="scroller"><table><thead><tr>
-        <th></th><th>player</th><th class="num">hands</th><th>read</th>
-        <th class="num">skill</th><th class="num">worth to you</th>
-      </tr></thead><tbody id="ranked"></tbody></table></div>
+      <div class="spread"><h2>players by skill</h2>
+        <span class="small muted colhelp"></span></div>
+      <div class="scroller"><table id="ranked"><thead><tr>
+        <th class="rank"></th>
+        <th data-k="name">player</th>
+        <th data-k="hands" class="num">hands</th>
+        <th data-k="archetype">read</th>
+        <th data-k="skill" class="num">skill</th>
+        <th data-k="exploitability" class="num">worth to you</th>
+      </tr></thead><tbody></tbody></table></div>
     </div>`;
-  const worth = $(".worthinfo");
-  worth.appendChild(document.createTextNode("most attackable first"));
-  worth.appendChild(info(termTip("available")));
+  const help = $(".colhelp");
+  help.appendChild(document.createTextNode("click a column to re-rank"));
+  help.appendChild(info(`<span class="hl">two different questions</span><br>
+    Skill is who is dangerous. Worth to you is who is exploitable \u2014 and a
+    competent player with one bad habit can be worth more than a weak player
+    you have barely seen.`));
 
-  const games = $("#games");
-  data.games.forEach((g, i) => {
-    const card = document.createElement("div");
-    card.className = "gamecard" + (i === 0 && data.games.length > 1 ? " best" : "");
-    const when = g.last_seen ? new Date(g.last_seen).toLocaleDateString() : "";
-    card.innerHTML = `
-      <div class="spread">
-        <div><b>${esc(g.table_id.slice(0, 14))}</b>
-          <span class="small muted">\u00b7 ${g.hands} hands \u00b7 ${g.players} players
-            \u00b7 last played ${esc(when)}</span></div>
-        <div style="text-align:right">
-          <div style="font-size:20px;font-weight:700">${g.softness.toFixed(2)}</div>
-          <div class="small muted">bb/100 available</div>
-        </div>
-      </div>
-      <div class="small muted" style="margin:6px 0 8px">
-        Field skill ${g.field_skill.toFixed(0)}/100.
-        ${g.softest ? "Softest seat: " + esc(g.softest) + "." : ""}</div>
-      <div class="field"></div>`;
-    const field = $(".field", card);
-    for (const f of g.field) {
-      const line = document.createElement("div");
-      line.style.cssText = "display:grid;grid-template-columns:130px 1fr 92px 60px;gap:10px;align-items:center;margin:3px 0";
-      const name = document.createElement("span");
-      name.className = "small"; name.textContent = f.name;
-      const share = document.createElement("span");
-      share.className = "small muted"; share.textContent = `${Math.round(100 * f.share)}% of seats`;
-      const val = document.createElement("span");
-      val.className = "small muted"; val.style.textAlign = "right";
-      val.textContent = `${f.exploitability.toFixed(2)} bb`;
-      line.append(name, bar(f.exploitability, Math.max(0.01,
-        ...g.field.map(x => x.exploitability)), "var(--mark-3)", 150), share, val);
-      bindTip(line, `<b>${esc(f.name)}</b> \u2014 ${esc(f.archetype)}<br>
-        skill ${f.skill.toFixed(0)}/100 \u00b7 ${f.hands} hands at this table<br>
-        <span class="muted">worth ${f.exploitability.toFixed(2)} bb/100 to you</span>`);
-      field.appendChild(line);
-    }
-    games.appendChild(card);
+  let sort = {key: "skill", dir: -1};
+  const body = $("#ranked tbody");
+  function draw() {
+    const rows = [...data.players].sort((a, b) => {
+      const x = a[sort.key], y = b[sort.key];
+      const cmp = (typeof x === "number" && typeof y === "number")
+        ? x - y : String(x).localeCompare(String(y));
+      return cmp * sort.dir;
+    });
+    body.innerHTML = "";
+    rows.forEach((p, i) => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.onclick = () => { state.player = p.player_id; switchTab("database"); };
+      tr.innerHTML = `<td class="rank">${i + 1}</td>
+        <td><span class="name">${esc(p.name)}</span>
+          <div class="small muted">${p.sample_quality}</div></td>
+        <td class="num">${p.hands}</td>
+        <td>${esc(p.archetype)}
+          <div class="small muted">${fmtPct(p.confidence)} sure</div></td>
+        <td class="num"></td>
+        <td class="num">${p.exploitability ? p.exploitability.toFixed(2) + " bb" : "\u2014"}</td>`;
+      const holder = document.createElement("div");
+      holder.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:flex-end";
+      const label = document.createElement("span");
+      label.textContent = p.skill.toFixed(0);
+      holder.append(bar(p.skill, 100, "var(--mark-3)", 60), label);
+      tr.children[4].appendChild(holder);
+      bindTip(holder, `<b>${esc(p.skill_tier)}</b> ${p.skill.toFixed(0)}/100<br>
+        <span class="muted">confidence ${fmtPct(p.skill_confidence)}</span>`);
+      body.appendChild(tr);
+    });
+    view.querySelectorAll("#ranked th").forEach(th =>
+      th.classList.toggle("sorted", th.dataset.k === sort.key));
+  }
+  view.querySelectorAll("#ranked th").forEach(th => th.onclick = () => {
+    if (!th.dataset.k) return;
+    const k = th.dataset.k;
+    sort = {key: k, dir: sort.key === k ? -sort.dir : (k === "name" ? 1 : -1)};
+    draw();
   });
-
-  const body = $("#ranked");
-  data.players.forEach((p, i) => {
-    const tr = document.createElement("tr");
-    tr.className = "clickable";
-    tr.onclick = () => { state.player = p.player_id; switchTab("database"); };
-    tr.innerHTML = `<td class="rank">${i + 1}</td>
-      <td><span class="name">${esc(p.name)}</span></td>
-      <td class="num">${p.hands}</td>
-      <td>${esc(p.archetype)}</td>
-      <td class="num">${p.skill.toFixed(0)}</td>
-      <td class="num">${p.exploitability ? p.exploitability.toFixed(2) : "\u2014"}</td>`;
-    body.appendChild(tr);
-  });
+  draw();
 }
 
 /* ---- evidence: the hands behind a number ---- */
