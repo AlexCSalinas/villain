@@ -453,7 +453,7 @@ class Store:
         }
 
     def profiles(self, player_id: int, min_hands: int = 1) -> list:
-        """Profiles for a player, built with whatever priors are available."""
+        """One profile per table size. The detailed view, not the default."""
         from .profile import build_profiles
         books = self.books(player_id)
         if not books:
@@ -461,6 +461,19 @@ class Store:
         regime = max(books.values(), key=lambda b: b.hands).regime
         return build_profiles(books, min_hands=min_hands,
                               priors=self.fitted_priors(regime) or None)
+
+    def profile(self, player_id: int):
+        """The single profile for a player, pooled across table sizes.
+
+        This is the default everywhere. Splitting by table size is how the
+        statistics stay meaningful, not how anybody wants to read them.
+        """
+        from .profile import build_unified, primary_regime
+        books = self.books(player_id)
+        if not books:
+            return None
+        return build_unified(books,
+                             priors=self.fitted_priors(primary_regime(books)) or None)
 
     def reset(self) -> dict[str, int]:
         """Empty the database, keeping the file and its schema.

@@ -22,7 +22,7 @@ from .db import DEFAULT_PATH, ImportReport, Store
 from .features import record_hands
 from .identity import suggest_links
 from .parsers import parse_paths
-from .profile import build_profiles
+from .profile import build_unified
 from .report import profile_card, roster
 from .skill import leaderboard
 
@@ -43,7 +43,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("profile", help="the full read on a player")
     p.add_argument("name")
-    p.add_argument("--regime", help="hu, 3max, 6max or full")
+    p.add_argument("--by-table", action="store_true",
+                   help="split the profile by table size instead of pooling it")
+    p.add_argument("--regime", help="with --by-table: hu, 3max, 6max or full")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--narrate", action="store_true",
@@ -121,9 +123,13 @@ def _cmd_profile(args) -> int:
                 print(f"  {row['id']}  {row['display_name']}", file=sys.stderr)
             return 1
         player_id = int(matches[0]["id"])
-        profiles = store.profiles(player_id)
-        if args.regime:
-            profiles = [p for p in profiles if p.regime == args.regime]
+        if args.by_table or args.regime:
+            profiles = store.profiles(player_id)
+            if args.regime:
+                profiles = [p for p in profiles if p.regime == args.regime]
+        else:
+            unified = store.profile(player_id)
+            profiles = [unified] if unified else []
         if not profiles:
             print("No hands recorded for that player and table size.", file=sys.stderr)
             return 1
@@ -168,12 +174,12 @@ def _cmd_scout(args) -> int:
         print("No file matched a known format.", file=sys.stderr)
         return 1
     books = record_hands(hands)
-    profiles = [p for by_regime in books.values()
-                for p in build_profiles(by_regime, min_hands=args.min_hands)]
+    profiles = [p for p in (build_unified(by) for by in books.values())
+                if p is not None and p.hands >= args.min_hands]
     if not profiles:
         print(f"No player reached {args.min_hands} hands.", file=sys.stderr)
         return 1
-    print(f"{len(hands)} hands, {len(profiles)} profiles\n")
+    print(f"{len(hands)} hands, {len(profiles)} players\n")
     print(roster(leaderboard(profiles)))
     if args.verbose:
         for profile in profiles:

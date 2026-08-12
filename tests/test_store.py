@@ -137,7 +137,7 @@ def test_cli_scout_needs_no_database(tmp_path, capsys):
     assert main(["--db", str(tmp_path / "unused.db"), "scout", str(FIXTURE),
                  "--min-hands", "5"]) == 0
     out = capsys.readouterr().out
-    assert "profiles" in out
+    assert "players" in out
 
 
 def test_cli_rejects_unknown_files(tmp_path, capsys):

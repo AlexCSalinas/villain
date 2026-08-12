@@ -31,8 +31,13 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
 
     out: list[str] = []
     out.append(RULE)
-    out.append(f"{profile.name}  --  {profile.regime_label}, {profile.hands} hands "
-               f"({profile.sample_quality})")
+    out.append(f"{profile.name}  --  {profile.hands} hands ({profile.sample_quality})")
+    if profile.contributions and len(profile.contributions) > 1:
+        # Pooled from several table sizes, so say which and on whose terms.
+        out.append(f"  {profile.table_mix}")
+        out.append(f"  measured against {profile.regime_label} norms")
+    else:
+        out.append(f"  {profile.regime_label}")
     out.append(RULE)
 
     # 1. The plan.

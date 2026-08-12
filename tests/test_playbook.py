@@ -148,3 +148,81 @@ def test_narrate_reports_why_it_could_not_run(monkeypatch):
                         "archetype_confidence": 0.5, "summary": "",
                         "skill": {"score": 50, "tier": "competent"}, "leaks": []},
                        timeout=2)
+
+
+# -- one player, one profile ------------------------------------------------
+
+def test_unified_profile_pools_every_table_size(hands):
+    """A player seen at two table sizes gets one profile, not two."""
+    from villain.features import record_hands
+    from villain.profile import build_profiles, build_unified
+    books = record_hands(hands)
+    multi = [by for by in books.values() if len([b for b in by.values() if b.hands]) > 1]
+    assert multi, "fixture should have a player at more than one table size"
+    for by_regime in multi:
+        unified = build_unified(by_regime)
+        assert unified is not None
+        assert len(unified.contributions) > 1
+        assert unified.hands == sum(b.hands for b in by_regime.values() if b.hands)
+        assert unified.regime == max(by_regime.items(),
+                                     key=lambda kv: kv[1].hands)[0]
+
+
+def test_pooling_measures_style_not_raw_frequency():
+    """A player who is normal for their table must not look loose elsewhere.
+
+    Someone playing exactly the 3-max average translates to the heads-up
+    average, not to the same raw percentage -- that is the whole point of
+    pooling in log-odds against each table's own population.
+    """
+    from villain.priors import population_mean
+    from villain.profile import _translate_rate
+    from villain.stats import Ratio
+
+    average_3max = Ratio(hits=55, opps=100)      # exactly the 3-max norm
+    assert population_mean("vpip", "3max") == pytest.approx(0.55)
+    translated = _translate_rate("vpip", average_3max, "3max", "hu")
+    assert translated == pytest.approx(population_mean("vpip", "hu"), abs=0.03)
+
+
+def test_pooling_carries_a_real_deviation_across_tables():
+    """Someone much looser than their table stays looser after translation."""
+    from villain.priors import population_mean
+    from villain.profile import _translate_rate
+    from villain.stats import Ratio
+    loose = Ratio(hits=85, opps=100)             # well above the 3-max norm
+    translated = _translate_rate("vpip", loose, "3max", "hu")
+    assert translated > population_mean("vpip", "hu")
+
+
+def test_other_tables_are_discounted_not_ignored(hands):
+    """Related games, not the same game: they move the estimate, but less."""
+    from villain.features import record_hands
+    from villain.profile import CROSS_REGIME_DISCOUNT, unified_book
+    books = record_hands(hands)
+    by_regime = max(books.values(), key=lambda by: sum(b.hands for b in by.values()))
+    merged, contributions = unified_book(by_regime)
+    home = max(contributions, key=contributions.get)
+    for stat, ratio in by_regime[home].ratios.items():
+        other = sum(b.ratios[stat].opps for r, b in by_regime.items()
+                    if r != home and stat in b.ratios)
+        if not other:
+            continue
+        expected = ratio.opps + CROSS_REGIME_DISCOUNT * other
+        assert merged.ratios[stat].opps == pytest.approx(expected)
+        break
+    assert CROSS_REGIME_DISCOUNT < 1.0
+
+
+def test_table_mix_is_stated_plainly(hands):
+    from villain.features import record_hands
+    from villain.profile import build_unified
+    books = record_hands(hands)
+    for by_regime in books.values():
+        profile = build_unified(by_regime)
+        if profile and len(profile.contributions) > 1:
+            assert "hands" not in profile.table_mix
+            assert any(word in profile.table_mix
+                       for word in ("heads-up", "3-handed", "short-handed", "full ring"))
+            return
+    pytest.fail("no multi-table player in the fixture")

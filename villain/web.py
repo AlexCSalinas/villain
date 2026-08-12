@@ -48,7 +48,7 @@ from .identity import session_questions, suggest_links
 from .narrate import Unavailable, enabled as narrator_enabled, narrate
 from .parsers import UnknownFormat, parse_file
 from .priors import population_mean
-from .profile import build_profiles
+from .profile import build_profiles, build_unified
 
 # Stats worth a row in the profile view, in reading order.
 DISPLAY_STATS = [
@@ -127,12 +127,11 @@ MIN_ROSTER_HANDS = 5
 
 
 def roster_payload(store: Store) -> list[dict]:
+    """One row per player. Table sizes are pooled, not listed separately."""
     rows = []
     for player in store.players():
-        profiles = store.profiles(int(player["id"]), min_hands=MIN_ROSTER_HANDS)
-        if not profiles:      # everything they have is tiny; show the largest
-            profiles = store.profiles(int(player["id"]), min_hands=1)[:1]
-        for profile in profiles:
+        profile = store.profile(int(player["id"]))
+        if profile is not None:
             enrich(profile)
             top = profile.tags[0] if profile.tags else None
             rows.append({
@@ -141,6 +140,7 @@ def roster_payload(store: Store) -> list[dict]:
                 "aliases": player["aliases"],
                 "regime": profile.regime,
                 "regime_label": profile.regime_label,
+                "table_mix": profile.table_mix,
                 "hands": profile.hands,
                 "sample_quality": profile.sample_quality,
                 "archetype": profile.archetype,
@@ -200,13 +200,8 @@ def session_payload(token: str) -> dict:
     """Profiles for an uploaded session, computed without touching the store."""
     session = SESSIONS[token]
     books = record_hands(session["hands"])
-    profiles = []
-    for by_regime in books.values():
-        for profile in build_profiles(by_regime, min_hands=MIN_ROSTER_HANDS):
-            profiles.append(profile)
-    if not profiles:
-        for by_regime in books.values():
-            profiles.extend(build_profiles(by_regime, min_hands=1)[:1])
+    profiles = [p for p in (build_unified(by_regime) for by_regime in books.values())
+                if p is not None]
     profiles.sort(key=lambda p: -p.hands)
 
     rows = []
@@ -216,6 +211,7 @@ def session_payload(token: str) -> dict:
         rows.append({
             "player_id": None, "name": profile.name,
             "regime": profile.regime, "regime_label": profile.regime_label,
+            "table_mix": profile.table_mix,
             "hands": profile.hands, "sample_quality": profile.sample_quality,
             "archetype": profile.archetype, "confidence": profile.archetype_confidence,
             "skill": profile.skill.score, "skill_tier": profile.skill.tier,
@@ -343,10 +339,13 @@ class Handler(BaseHTTPRequestHandler):
                         (player_id,)).fetchone()
                     if row is None:
                         return self._send(404, {"error": "no such player"})
-                    books = store.profiles(player_id, min_hands=MIN_ROSTER_HANDS)
-                    if not books:
-                        books = store.profiles(player_id, min_hands=1)[:1]
-                    profiles = [profile_payload(p) for p in books]
+                    unified = store.profile(player_id)
+                    profiles = [profile_payload(unified)] if unified else []
+                    # The per-table breakdown stays available for anyone who
+                    # wants to check that the pooling is not hiding something.
+                    by_table = [profile_payload(p)
+                                for p in store.profiles(player_id,
+                                                        min_hands=MIN_ROSTER_HANDS)]
                     aliases = [dict(r) for r in store.conn.execute(
                         "SELECT site, account, name, hands FROM aliases WHERE player_id = ?",
                         (player_id,))]
@@ -355,6 +354,7 @@ class Handler(BaseHTTPRequestHandler):
                         "display_name": row["display_name"],
                         "aliases": aliases,
                         "profiles": profiles,
+                        "by_table": by_table if len(by_table) > 1 else [],
                         "notes": [dict(n) for n in store.notes(player_id)],
                     })
             if path.startswith("/api/session/"):
@@ -840,7 +840,7 @@ function rosterTable(players, opts) {
       tr.innerHTML = `
         <td><span class="name">${esc(p.name)}</span>
             <div class="small muted quality">${esc(p.sample_quality)}</div></td>
-        <td>${esc(p.regime_label)}</td>
+        <td class="tables">${esc(p.regime_label)}</td>
         <td class="num">${p.hands}</td>
         <td><span class="tag ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
             <div class="small muted">${fmtPct(p.confidence)} sure</div></td>
@@ -855,6 +855,12 @@ function rosterTable(players, opts) {
       holder.append(bar(p.skill, 100, "var(--mark-3)", 66), label);
       const q = $(".quality", tr);
       if (q) q.appendChild(info(termTip(p.sample_quality)));
+      const tables = $(".tables", tr);
+      if (tables && p.table_mix && p.table_mix !== p.regime_label) {
+        tables.appendChild(info(`<span class="hl">where these hands came from</span><br>
+          ${esc(p.table_mix)}<br><br>Pooled into one read, measured against
+          ${esc(p.regime_label)} norms because that is where they play most.`));
+      }
       tr.children[4].appendChild(holder);
       bindTip(holder, `<b>${esc(p.skill_tier)}</b> ${p.skill.toFixed(0)}/100<br>
         <span class="muted">confidence ${fmtPct(p.skill_confidence)}</span>`);
@@ -884,7 +890,8 @@ function profileCard(p) {
       <div><div class="hero">${esc(p.archetype)}</div>
            <div class="muted">${esc(p.summary)}</div></div>
       <div style="text-align:right" class="small muted">
-        <div>${esc(p.name)} \u00b7 ${esc(p.regime_label)}</div>
+        <div>${esc(p.name)}</div>
+        <div class="tables"></div>
         <div class="quality"></div>
         <div class="conf" style="margin-top:6px"></div>
       </div>
@@ -894,6 +901,15 @@ function profileCard(p) {
       <div class="mix" style="margin-top:8px"></div></details>`;
   card.appendChild(head);
 
+  const tables = $(".tables", head);
+  tables.appendChild(document.createTextNode(p.table_mix || p.regime_label));
+  if (p.contributions && Object.keys(p.contributions).length > 1) {
+    tables.appendChild(info(`<span class="hl">one read, several table sizes</span><br>
+      They play different games at different table sizes, so each table's hands
+      are measured against that table's own norms and then pooled. The numbers
+      shown are on ${esc(p.regime_label)} terms, since that is where most of
+      these hands were played.`));
+  }
   const quality = $(".quality", head);
   quality.appendChild(document.createTextNode(`${p.hands} hands \u00b7 ${p.sample_quality}`));
   quality.appendChild(info(termTip(p.sample_quality)));
@@ -1094,6 +1110,10 @@ function playerTabs(profiles, container) {
   container.innerHTML = "";
   if (!profiles.length) {
     container.innerHTML = `<div class="panel"><div class="empty">No profiles.</div></div>`;
+    return;
+  }
+  if (profiles.length === 1) {          // a strip of one is just clutter
+    container.appendChild(profileCard(profiles[0]));
     return;
   }
   const strip = document.createElement("div");
@@ -1347,6 +1367,31 @@ async function viewPlayer(id) {
   const holder = document.createElement("div");
   view.appendChild(holder);
   playerTabs(data.profiles, holder);
+
+  if (data.by_table && data.by_table.length > 1) {
+    const panel = document.createElement("div");
+    panel.className = "panel";
+    panel.innerHTML = `<details><summary>split by table size</summary>
+      <div class="small muted" style="margin:6px 0 12px">
+        The read above pools these together. They are shown separately here so
+        you can check the pooling is not hiding a difference.</div>
+      <div class="scroller"><table><thead><tr>
+        <th>table</th><th class="num">hands</th><th>read</th>
+        <th class="num">skill</th><th>biggest leak</th>
+      </tr></thead><tbody></tbody></table></div></details>`;
+    const body = $("tbody", panel);
+    for (const t of data.by_table) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${esc(t.regime_label)}</td>
+        <td class="num">${t.hands}</td>
+        <td>${esc(t.archetype)} <span class="small muted">${fmtPct(t.archetype_confidence)}</span></td>
+        <td class="num">${t.skill.score.toFixed(0)}</td>
+        <td class="small">${t.leaks.length ? esc(t.leaks[0].headline)
+          : '<span class="muted">none</span>'}</td>`;
+      body.appendChild(tr);
+    }
+    view.appendChild(panel);
+  }
 }
 
 /* Destructive and irreversible, so it asks for the words rather than a click:

@@ -139,6 +139,45 @@ CONTINUOUS[SHORT] = dict(CONTINUOUS[HEADS_UP], open_bb=(2.5, 12))
 CONTINUOUS[FULL] = dict(CONTINUOUS[SHORT])
 
 
+#: Between-player spread of each stat in log-odds, the unit deviations are
+#: measured in. Wider means the population genuinely disagrees about that
+#: statistic -- everyone limps at roughly no rate at all until somebody limps
+#: constantly, so ``limp`` spreads far more than ``wsd`` does.
+SPREAD = {
+    "vpip": 0.50, "pfr": 0.55, "three_bet": 0.55, "fold_to_three_bet": 0.45,
+    "cbet:flop": 0.50, "cbet:turn": 0.50, "cbet:river": 0.52,
+    "fold_to_cbet:flop": 0.45, "fold_to_cbet:turn": 0.48,
+    "fold_vs_bet:flop": 0.45, "fold_vs_bet:turn": 0.48, "fold_vs_bet:river": 0.50,
+    "check_raise:flop": 0.70, "donk:flop": 0.70,
+    "wwsf": 0.32, "wtsd": 0.42, "wsd": 0.32,
+    "aggression:flop": 0.50, "aggression:turn": 0.52, "aggression:river": 0.52,
+    "limp": 1.00, "bb_defend": 0.45,
+}
+DEFAULT_SPREAD = 0.50
+
+#: Frequencies are clamped away from certainty before taking log-odds; a
+#: measured 0% is "rarely", not "never".
+EPSILON = 0.005
+
+
+def logit(p: float) -> float:
+    p = min(1.0 - EPSILON, max(EPSILON, p))
+    return math.log(p / (1.0 - p))
+
+
+def sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def spread_of(feature: str, table_regime: str = "") -> float:
+    """Between-player spread of a stat, in log-odds."""
+    return SPREAD.get(feature, DEFAULT_SPREAD)
+
+
+
+
+
+
 @dataclass(frozen=True)
 class Estimate:
     """A shrunk frequency with the interval that honesty requires.

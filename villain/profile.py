@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .priors import (CONTINUOUS, NEIGHBOURS, REGIME_LABELS, Estimate, prior_for,
-                     regime, shrink)
-from .stats import StatBook
+from .priors import (CONTINUOUS, NEIGHBOURS, REGIME_LABELS, SHORT, Estimate, logit,
+                     population_mean, prior_for, regime, shrink, sigmoid)
+from .stats import Meter, Ratio, StatBook
 
 # The features that define a player, in the order clustering expects.
 PROFILE_FEATURES = [
@@ -64,6 +64,17 @@ class Profile:
     first_seen: int | None = None
     last_seen: int | None = None
     borrowed_from: list[str] = field(default_factory=list)
+    #: hands played at each table size, busiest first. Empty for a profile
+    #: built from a single regime.
+    contributions: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def table_mix(self) -> str:
+        """Plain description of where these hands came from."""
+        if not self.contributions:
+            return self.regime_label
+        parts = [f"{n} {REGIME_LABELS.get(r, r)}" for r, n in self.contributions.items()]
+        return ", ".join(parts)
 
     def get(self, stat: str) -> float | None:
         e = self.stats.get(stat)
@@ -182,3 +193,117 @@ def feature_vector(profile: Profile) -> list[float | None]:
 def evidence(profile: Profile) -> list[float]:
     """How much real data backs each feature, 0-1. Clustering weights by this."""
     return [profile.stats[f].weight if f in profile.stats else 0.0 for f in PROFILE_FEATURES]
+
+
+# ---------------------------------------------------------------------------
+# one player, one profile
+# ---------------------------------------------------------------------------
+# Splitting statistics by table size is a statistical necessity and a
+# presentational disaster. It is necessary because 55% VPIP is tight heads-up
+# and reckless at a full ring, so pooling the raw counts produces a number that
+# describes neither game. It is a disaster because the person reading it wants
+# to know what this opponent is like, not to hold four partial reads in their
+# head and reconcile them.
+#
+# The fix is to pool in the right space. A player's *style* -- how far they sit
+# from normal for the game they are in -- carries across table sizes even
+# though their raw frequencies do not. So each table's counts are converted to
+# a deviation from that table's own population, translated onto the primary
+# table's scale, and only then added together.
+#
+# Concretely, for each statistic:
+#
+#   1. shrink the other table's rate toward that table's population, so a
+#      3-of-4 sample does not arrive as 75%;
+#   2. measure the deviation in log-odds, which is the regime-invariant part;
+#   3. re-express that deviation against the primary table's population;
+#   4. add it in as pseudo-counts, discounted, because related games are not
+#      the same game.
+#
+# The result reads as a single profile measured against the game they play
+# most, informed by everything else they have done.
+
+def primary_regime(by_regime: dict[str, StatBook]) -> str:
+    """The table size this player is mostly seen at."""
+    live = {r: b for r, b in by_regime.items() if b.hands > 0}
+    if not live:
+        return SHORT
+    return max(live.items(), key=lambda kv: kv[1].hands)[0]
+
+
+def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, int]]:
+    """Fold every table size into one book on the primary table's scale."""
+    live = {r: b for r, b in by_regime.items() if b.hands > 0}
+    if not live:
+        return StatBook(), {}
+
+    home = primary_regime(live)
+    source = live[home]
+    merged = StatBook(player_id=source.player_id, name=source.name, regime=home)
+    merged.hands = sum(b.hands for b in live.values())
+    merged.first_seen = min((b.first_seen for b in live.values()
+                             if b.first_seen is not None), default=None)
+    merged.last_seen = max((b.last_seen for b in live.values()
+                            if b.last_seen is not None), default=None)
+
+    for stat, ratio in source.ratios.items():
+        merged.ratios[stat].hits = ratio.hits
+        merged.ratios[stat].opps = ratio.opps
+    for stat, meter in source.meters.items():
+        merged.meters[stat].merge(meter)
+
+    for regime, book in live.items():
+        if regime == home:
+            continue
+        for stat, ratio in book.ratios.items():
+            if ratio.opps <= 0:
+                continue
+            translated = _translate_rate(stat, ratio, regime, home)
+            weight = CROSS_REGIME_DISCOUNT * ratio.opps
+            merged.ratios[stat].hits += translated * weight
+            merged.ratios[stat].opps += weight
+        for stat, meter in book.meters.items():
+            if meter.n <= 0 or stat == "table_size":
+                continue
+            share = CROSS_REGIME_DISCOUNT
+            merged.meters[stat].n += meter.n * share
+            merged.meters[stat].total += meter.total * share
+            merged.meters[stat].sumsq += meter.sumsq * share
+
+    # table_size stays honest: the mean of every hand actually played, so the
+    # profile can say what mix it came from.
+    merged.meters["table_size"] = Meter()
+    for book in live.values():
+        merged.meters["table_size"].merge(book.meters.get("table_size", Meter()))
+
+    contributions = {r: b.hands for r, b in sorted(
+        live.items(), key=lambda kv: -kv[1].hands)}
+    return merged, contributions
+
+
+def _translate_rate(stat: str, ratio: Ratio, source: str, target: str) -> float:
+    """Re-express a rate measured in one regime on another regime's scale.
+
+    Shrunk first, because an unshrunk 0% or 100% has no finite log-odds and a
+    tiny sample would translate into an extreme claim.
+    """
+    mean, strength = prior_for(stat, source)
+    shrunk = shrink(ratio.hits, ratio.opps, mean, strength).value
+    source_pop = population_mean(stat, source)
+    target_pop = population_mean(stat, target)
+    if source_pop == target_pop:
+        return shrunk
+    deviation = logit(shrunk) - logit(source_pop)
+    return sigmoid(logit(target_pop) + deviation)
+
+
+def build_unified(by_regime: dict[str, StatBook],
+                  priors: dict[str, tuple[float, float]] | None = None) -> Profile | None:
+    """One profile per player, informed by every table size they have played."""
+    book, contributions = unified_book(by_regime)
+    if not contributions:
+        return None
+    profile = build_profile(book, priors=priors)
+    profile.contributions = contributions
+    profile.borrowed_from = [r for r in contributions if r != profile.regime]
+    return profile

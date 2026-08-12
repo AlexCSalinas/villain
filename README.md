@@ -42,9 +42,9 @@ as it was. Use this to look at a game you just played without committing to
 anything.
 
 **Database** — everyone you have ever imported, accumulating across sessions.
-Click a player for their profile. A player you have 800 hands on reads far more
-sharply than one you have 80 on, which is the entire point of keeping the
-database.
+One row per player, one profile per player. Click through for the full read. A
+player you have 800 hands on reads far more sharply than one you have 80 on,
+which is the entire point of keeping the database.
 
 To move a session into the database, hit **Add to database** on the session tab.
 That is the only moment the tool asks you anything — see *Saving a session*
@@ -63,6 +63,7 @@ villain import ~/Downloads/poker-now-*.json        # read it and store it
 villain players                                    # who is in the database
 villain profile DavidMazour                        # the full read
 villain profile DavidMazour -v                     # plus deviations and timing
+villain profile DavidMazour --by-table             # split by table size instead
 villain profile DavidMazour --json                 # machine-readable
 villain link --suggest                             # find accounts that may be one person
 villain link 4 7                                   # merge player 7 into player 4
@@ -175,11 +176,25 @@ is ever reported as a bare percentage.
 
 **Table size is part of a player's identity, not a footnote.** 55% VPIP is a
 nit heads-up, a normal three-handed player and a maniac at a full ring.
-Statistics are bucketed by table size when they are *collected*, so the same
-person's heads-up and three-handed play never pool into an average describing
-neither. Where a player is thin in one format, their play in the others is used
-as a personal prior -- discounted, because those are related games, not the
-same one.
+Statistics are therefore bucketed by table size when they are *collected*, so
+the same person's heads-up and three-handed hands never pool into an average
+describing neither game.
+
+That is a statistical necessity and a presentational disaster, so it is not
+what you see. Each player gets **one profile**, pooled across every table size
+they have played -- but pooled in the right space. A player's *style*, meaning
+how far they sit from normal for the game they are in, carries across table
+sizes even though their raw frequencies do not. So each table's counts are
+converted to a deviation from that table's own population, translated onto the
+scale of the table they play most, and only then added together, at a discount
+because related games are not the same game.
+
+Someone playing exactly the three-handed average translates to the heads-up
+average rather than to the same raw percentage. Someone much looser than their
+table stays looser after translation. The profile reads as one player measured
+against the game they mostly play, informed by everything else they have done,
+and the per-table split is still there behind a disclosure if you want to check
+that the pooling is not hiding a difference.
 
 **Reads have to be earned by data.** Some population frequencies already sit
 near the point where an exploit breaks even, so a rule that fires on the

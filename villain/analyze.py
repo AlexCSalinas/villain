@@ -46,6 +46,8 @@ def as_dict(profile: Profile) -> dict:
         "player_id": profile.player_id,
         "name": profile.name,
         "regime": profile.regime,
+        "table_mix": profile.table_mix,
+        "contributions": profile.contributions,
         "hands": profile.hands,
         "sample_quality": profile.sample_quality,
         "first_seen": profile.first_seen,
