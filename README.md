@@ -100,28 +100,25 @@ the website and the CLI take as-is. Other sites need a parser in
 `villain/parsers/`; the registry sniffs formats by file content, so adding one
 touches nothing downstream.
 
-### Optional: a plain-English summary
+### Optional: model-suggested exploits
 
-Everything else is deterministic: the same hands give the same read, and no
-figure on screen came from anywhere but the arithmetic. One optional extra runs
-a language model over the finished profile and writes a short briefing joining
-the findings together — off unless configured, and **local** by default, which
-keeps it free, offline, and keeps opponent profiles on your own machine. The
-same narrator sits behind the **generate detailed description** button on a
-player's profile in the web interface.
+Everything else is deterministic -- the same hands always give the same read,
+and no figure on screen came from anywhere but the arithmetic. One optional
+extra sends the finished profile to a language model and asks for exploits the
+rule engine missed: the rules only fire on patterns somebody thought to encode,
+while a model reading the same numbers can combine them and reach spots no
+single rule covers. It is the **generate additional exploits** button on a
+player's page, and it returns bullets, not prose.
 
-Settings come from the environment, falling back to **`~/.villain/env`** — a
-plain `NAME=value` file that lives outside the project directory on purpose. A
-key that never sits under the working tree cannot be committed by an
-absent-minded `git add -A`. Make it readable by you alone:
-
-```bash
-mkdir -p ~/.villain && chmod 600 ~/.villain/env
-```
+Off unless configured. Settings come from the environment, falling back to
+**`~/.villain/env`** -- a plain `NAME=value` file, deliberately outside the
+project directory, because a key that never sits under the working tree cannot
+be committed by an absent-minded `git add -A`.
 
 | variable | meaning |
 | --- | --- |
-| `VILLAIN_LLM_MODEL` | model name (default `llama3.2`) |
+| `VILLAIN_LLM_MODELS` | comma-separated fallback chain, best first |
+| `VILLAIN_LLM_MODEL` | a single model, if you do not want a chain |
 | `VILLAIN_LLM_URL` | any OpenAI-compatible `/chat/completions` endpoint (default Ollama on localhost) |
 | `VILLAIN_LLM_KEY` | bearer token, if the endpoint needs one |
 
@@ -133,24 +130,36 @@ ollama pull llama3.2
 VILLAIN_LLM_MODEL=llama3.2 villain profile DavidMazour --narrate
 ```
 
-Or a hosted free tier — faster and no install, at the cost of sending opponent
-profiles to somebody else. Gemini, in `~/.villain/env`:
+Or a hosted free tier, in `~/.villain/env`:
 
 ```
 VILLAIN_LLM_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-VILLAIN_LLM_MODEL=gemini-flash-latest
+VILLAIN_LLM_MODELS=gemini-flash-lite-latest,gemini-3.5-flash-lite,gemini-flash-latest
 VILLAIN_LLM_KEY=your-key-here
 ```
 
-Use a floating alias like `gemini-flash-latest` rather than a pinned version:
-pinned Gemini models retire and start returning 404 to a tool that was working
+**Why a chain, lightest first.** Free tiers meter each model separately, so
+when one is out of quota another usually answers at once -- a second name
+recovers faster than any retry, because a spent quota does not clear inside a
+backoff. Small models are enough for short bullets built from a fact sheet, and
+they carry the roomier quotas, which is what decides whether the button works
+when you press it. Transient failures (429, 5xx, timeouts) retry with backoff
+and honour `Retry-After`; 401 and 404 raise at once, since retrying those only
+delays the same answer. Use floating aliases like `gemini-flash-lite-latest`:
+pinned Gemini versions retire and start returning 404 to a tool that worked
 last month.
 
-The model gets a fact sheet built from the computed profile and may not add
-figures of its own: any number not in the facts discards the whole response in
-favour of the written text. Rounding 51% to "about half" is fine, deciding they
-fold 70% is not, and the prose does not tell you which — so the check is
-mechanical rather than a matter of trust.
+**Two guards on what it can say.** It may not state a figure the profile did
+not produce -- the output is checked, and an invented number is sent back once
+with the offending figure named before the response is refused. And every
+statistic reaches it spelled out ("having bet the flop, how often they fire
+again on the turn: 41%") rather than as an internal key, because a correctly
+quoted number used to mean the wrong thing is a mistake no guard on invented
+figures can catch. Any statistic the glossary cannot describe unambiguously is
+withheld rather than handed over.
+
+Suggestions are labelled as suggestions. They are not measured reads, and the
+evidence view exists to check them against the hands.
 
 ## Reading the output
 
