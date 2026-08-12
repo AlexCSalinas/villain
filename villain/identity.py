@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from .archetypes import _log_beta_binomial
+from .db import SPURIOUS_OVERLAP
 from .priors import prior_for
 from .profile import PROFILE_FEATURES
 from .stats import StatBook
@@ -236,14 +237,21 @@ def _account_index(hands) -> dict[tuple[str, str], dict]:
     return out
 
 
-def _incoming_co_occurrence(hands) -> set[frozenset]:
-    """Account pairs dealt into the same hand -- provably different people."""
-    pairs = set()
+def _incoming_co_occurrence(hands) -> dict[frozenset, int]:
+    """How many hands each pair of accounts was dealt into together.
+
+    A count rather than a flag. Sitting at a table together is normally proof
+    of two different people, but a reconnect can leave a stale seat for a hand
+    or two, and treating that as proof makes a legitimate merge permanently
+    impossible.
+    """
+    pairs: dict[frozenset, int] = {}
     for hand in hands:
         accounts = [(hand.site, s.player_id) for s in hand.seats]
         for i, a in enumerate(accounts):
             for b in accounts[i + 1:]:
-                pairs.add(frozenset((a, b)))
+                key = frozenset((a, b))
+                pairs[key] = pairs.get(key, 0) + 1
     return pairs
 
 
@@ -295,8 +303,15 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
     for row in store.conn.execute("SELECT player_id, name FROM aliases"):
         db_aliases.setdefault(int(row["player_id"]), []).append(row["name"])
 
-    def add_alias_question(qid, score, left, right, log_bf=None):
+    def add_alias_question(qid, score, left, right, log_bf=None, overlap=0):
         confidence, reason = _combine(score, log_bf)
+        if overlap:
+            # State it rather than hiding it: the user is being asked to
+            # overrule the strongest signal the tool has.
+            reason += (f". Note they were seated together in {overlap} hand"
+                       f"{'s' if overlap > 1 else ''} -- usually a reconnect "
+                       "leaving a stale seat, but check before merging")
+            confidence *= 0.5
         # Default to the busier account's name -- the one they are better known
         # by -- but offer both, because merging leaves a second question open:
         # what to call the result.
@@ -318,7 +333,8 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
     for i, (key, entry) in enumerate(items):
         # incoming vs incoming
         for other_key, other in items[i + 1:]:
-            if frozenset((key, other_key)) in blocked:
+            overlap = blocked.get(frozenset((key, other_key)), 0)
+            if overlap > SPURIOUS_OVERLAP:
                 continue
             if already_one_player(key, other_key):
                 continue
@@ -330,7 +346,8 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
                 {"name": entry["name"], "hands": entry["hands"], "site": key[0],
                  "account": key[1], "where": "in this session"},
                 {"name": other["name"], "hands": other["hands"], "site": other_key[0],
-                 "account": other_key[1], "where": "in this session"})
+                 "account": other_key[1], "where": "in this session"},
+                overlap=overlap)
 
         # incoming vs the database
         if key in stored:

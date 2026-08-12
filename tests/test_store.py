@@ -51,13 +51,38 @@ def test_hands_are_the_source_of_truth(store):
     assert before == after
 
 
-def test_players_in_the_same_hand_can_never_be_merged(store, hands):
-    seats = hands[0].seats
-    a = store.player_for(hands[0].site, seats[0].player_id, seats[0].name)
-    b = store.player_for(hands[0].site, seats[1].player_id, seats[1].name)
+def test_regular_opponents_can_never_be_merged(store, hands):
+    """Two people who play each other constantly are two people."""
+    from collections import Counter
+    pairs = Counter()
+    for hand in hands:
+        ids = sorted({store.player_for(hand.site, s.player_id, s.name)
+                      for s in hand.seats})
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                pairs[(a, b)] += 1
+    (a, b), shared = pairs.most_common(1)[0]
+    assert shared > 2, "fixture should contain two regular opponents"
+    assert store.shared_hands(a, b) == shared
     assert store.are_distinct(a, b)
-    with pytest.raises(ValueError, match="same hand"):
+    with pytest.raises(ValueError, match="hands together"):
         store.link(a, b)
+
+
+def test_a_one_hand_overlap_does_not_block_a_merge(tmp_path, hands):
+    """A reconnect can leave a stale seat for a hand. Treating that as proof
+    makes a legitimate merge permanently impossible, which is worse than
+    asking."""
+    from villain.db import SPURIOUS_OVERLAP
+    with Store(tmp_path / "v.db") as store:
+        a = store.player_for("test", "acct-a", "Dave")
+        b = store.player_for("test", "acct-b", "Dvae")
+        store.mark_distinct([a, b])
+        assert store.shared_hands(a, b) == 1
+        assert not store.are_distinct(a, b)
+        for _ in range(SPURIOUS_OVERLAP):
+            store.mark_distinct([a, b])
+        assert store.are_distinct(a, b), "a real overlap still blocks"
 
 
 def test_linking_pools_two_accounts(tmp_path, hands):

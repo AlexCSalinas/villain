@@ -90,16 +90,24 @@ def test_similar_names_raise_an_alias_question(session, tmp_path):
     assert all(q.default is False for q in alias), "merging must never be the default"
 
 
-def test_players_in_the_same_hand_are_never_offered_as_one(session, tmp_path):
+def test_regular_opponents_are_never_offered_as_one(session, tmp_path):
+    """A pair that shares more than a glitch's worth of hands is two people.
+
+    A single shared hand is tolerated on purpose -- a reconnect can leave a
+    stale seat -- but the question then says so, so the user is never asked to
+    overrule the evidence without being shown it.
+    """
+    from villain.db import SPURIOUS_OVERLAP
     hands = SESSIONS[session]["hands"]
     with Store(tmp_path / "v.db") as store:
         for q in session_questions(store, hands):
             if q.kind != "alias":
                 continue
             names = {q.left["name"], q.right["name"]}
-            for hand in hands:
-                seated = {s.name for s in hand.seats}
-                assert not names <= seated
+            shared = sum(1 for h in hands if names <= {s.name for s in h.seats})
+            assert shared <= SPURIOUS_OVERLAP
+            if shared:
+                assert "seated together" in q.detail
 
 
 def test_same_account_new_name_raises_a_rename_question(session, tmp_path):

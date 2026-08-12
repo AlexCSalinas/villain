@@ -1150,7 +1150,7 @@ function profileCard(p, opts) {
           <span class="tag tier">${esc(l.tier)}</span></div></div>
       <div class="small muted numbers"></div>
       <div class="leak-advice">${esc(l.do)}</div>
-      <details class="how"><summary>why, and what not to do</summary>
+      <details class="how" open><summary>why, and what not to do</summary>
         <div class="how-body"></div></details>`;
     $(".tier", div).after(info(`${termTip(l.tier)}<br><br>${esc(l.priority)}`));
 
@@ -1197,7 +1197,7 @@ function profileCard(p, opts) {
   /* The evidence, folded away. */
   const detail = document.createElement("div");
   detail.className = "panel";
-  detail.innerHTML = `<details><summary>the numbers behind this</summary>
+  detail.innerHTML = `<details open><summary>the numbers behind this</summary>
     <div class="detail-body"></div></details>`;
   card.appendChild(detail);
   const body = $(".detail-body", detail);
@@ -1562,7 +1562,7 @@ async function viewPlayer(id) {
   if (data.by_table && data.by_table.length > 1) {
     const panel = document.createElement("div");
     panel.className = "panel";
-    panel.innerHTML = `<details><summary>split by table size</summary>
+    panel.innerHTML = `<details open><summary>split by table size</summary>
       <div class="small muted" style="margin:6px 0 12px">
         The read above pools these. Shown separately so you can check the
         pooling is not hiding a difference.</div>

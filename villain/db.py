@@ -55,9 +55,13 @@ CREATE TABLE IF NOT EXISTS aliases (
 );
 CREATE INDEX IF NOT EXISTS aliases_player ON aliases(player_id);
 
--- Provably different people: dealt into the same hand at the same time.
+-- Accounts dealt into the same hand. Normally proof of two different people,
+-- but the count matters: a reconnect can leave a stale seat for a hand or two,
+-- so a single overlap across hundreds of hands is usually an artifact rather
+-- than evidence. See SPURIOUS_OVERLAP.
 CREATE TABLE IF NOT EXISTS distinct_pairs (
     a INTEGER NOT NULL, b INTEGER NOT NULL,
+    hands INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (a, b)
 );
 
@@ -105,6 +109,12 @@ CREATE TABLE IF NOT EXISTS notes (
 
 DEFAULT_PATH = Path.home() / ".villain" / "villain.db"
 
+#: Shared hands that can be waved away as a reconnect leaving a stale seat.
+#: Above this, two accounts really were at the table together and cannot be one
+#: person. At or below it the merge is still offered, with the overlap stated,
+#: because refusing outright makes one glitched hand permanently unmergeable.
+SPURIOUS_OVERLAP = 2
+
 
 def split_key(account: str, name: str) -> str:
     """Alias key for an account id the user has split between two people."""
@@ -139,7 +149,18 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Idempotent schema catch-up for databases made by earlier versions."""
+        columns = {r["name"] for r in
+                   self.conn.execute("PRAGMA table_info(distinct_pairs)")}
+        if "hands" not in columns:
+            # Old rows recorded only that a pair had met, not how often. One is
+            # the honest floor: it is the least the overlap can have been.
+            self.conn.execute(
+                "ALTER TABLE distinct_pairs ADD COLUMN hands INTEGER NOT NULL DEFAULT 1")
 
     def close(self) -> None:
         self.conn.close()
@@ -179,27 +200,34 @@ class Store:
         return player_id
 
     def mark_distinct(self, player_ids: Iterable[int]) -> None:
-        """Record that these players sat in one hand, so they are not one person."""
+        """Count a hand in which these players were seated together."""
         ids = sorted(set(player_ids))
         pairs = [(a, b) for i, a in enumerate(ids) for b in ids[i + 1:]]
         if pairs:
             self.conn.executemany(
-                "INSERT OR IGNORE INTO distinct_pairs (a, b) VALUES (?, ?)", pairs)
+                "INSERT INTO distinct_pairs (a, b, hands) VALUES (?, ?, 1) "
+                "ON CONFLICT(a, b) DO UPDATE SET hands = hands + 1", pairs)
+
+    def shared_hands(self, a: int, b: int) -> int:
+        """How many hands these two were dealt into together."""
+        lo, hi = sorted((a, b))
+        row = self.conn.execute(
+            "SELECT hands FROM distinct_pairs WHERE a = ? AND b = ?", (lo, hi)).fetchone()
+        return int(row["hands"]) if row else 0
 
     def are_distinct(self, a: int, b: int) -> bool:
-        lo, hi = sorted((a, b))
-        return self.conn.execute(
-            "SELECT 1 FROM distinct_pairs WHERE a = ? AND b = ?", (lo, hi)
-        ).fetchone() is not None
+        """True when the overlap is too large to be a glitch."""
+        return self.shared_hands(a, b) > SPURIOUS_OVERLAP
 
     def link(self, keep: int, absorb: int) -> None:
         """Declare two players the same human, folding ``absorb`` into ``keep``."""
         if keep == absorb:
             return
-        if self.are_distinct(keep, absorb):
+        overlap = self.shared_hands(keep, absorb)
+        if overlap > SPURIOUS_OVERLAP:
             raise ValueError(
-                f"players {keep} and {absorb} were dealt into the same hand and "
-                "cannot be the same person")
+                f"players {keep} and {absorb} were dealt into {overlap} hands "
+                "together and cannot be the same person")
         self.conn.execute("UPDATE aliases SET player_id = ? WHERE player_id = ?",
                           (keep, absorb))
         self.conn.execute("UPDATE notes SET player_id = ? WHERE player_id = ?",
