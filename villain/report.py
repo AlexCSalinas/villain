@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from .analyze import enrich
 from .archetypes import ARCHETYPE_BY_NAME, deviations
+from .playbook import combinations_for
 from .profile import Profile
 
 WIDTH = 78
@@ -53,11 +54,32 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
         out.append("  Nothing clears the evidence bar yet. Play them straight and")
         out.append("  collect more hands.")
     for leak in leaks:
-        out.append(f"  [{leak.tier:9s}] {leak.headline}  ~{leak.severity:.1f} bb/100")
-        out.append(f"      {100 * leak.value:.0f}% vs {100 * leak.threshold:.0f}% breakeven"
-                   f"  (field {100 * leak.population:.0f}%, n={leak.opps:.0f})")
-        for line in _wrap(leak.advice, WIDTH - 6):
+        out.append(f"  {leak.headline}   ~{leak.severity:.2f} bb/100 "
+                   f"[{leak.size}, {leak.tier}]")
+        for line in _wrap(leak.in_words, WIDTH - 6):
             out.append(f"      {line}")
+        out.append("")
+        for label, text in (("WHAT", leak.behaviour), ("WHY", leak.why),
+                            ("DO", leak.do), ("DON'T", leak.dont)):
+            if not text:
+                continue
+            wrapped = _wrap(text, WIDTH - 14)
+            out.append(f"      {label:6s}  {wrapped[0]}")
+            for line in wrapped[1:]:
+                out.append(f"              {line}")
+        out.append(f"      {'SIZE':6s}  " + _wrap(leak.priority, WIDTH - 14)[0])
+        for line in _wrap(leak.priority, WIDTH - 14)[1:]:
+            out.append(f"              {line}")
+        out.append("")
+
+    combos = combinations_for(l.id for l in leaks)
+    if combos:
+        out.append("  THESE COMPOUND")
+        for combo in combos:
+            out.append(f"    {combo.headline}")
+            for line in _wrap(combo.body, WIDTH - 6):
+                out.append(f"      {line}")
+            out.append("")
     out.append("")
 
     # 3. The rating and how it was reached.

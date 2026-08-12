@@ -45,6 +45,7 @@ from .exploits import RULES
 from .features import record_hands
 from .glossary import payload as glossary_payload
 from .identity import session_questions, suggest_links
+from .narrate import Unavailable, enabled as narrator_enabled, narrate
 from .parsers import UnknownFormat, parse_file
 from .priors import population_mean
 from .profile import build_profiles
@@ -361,6 +362,8 @@ class Handler(BaseHTTPRequestHandler):
                 if token not in SESSIONS:
                     return self._send(404, {"error": "session expired -- upload again"})
                 return self._send(200, session_payload(token))
+            if path == "/api/meta":
+                return self._send(200, {"narrator": narrator_enabled()})
             if path == "/api/glossary":
                 return self._send(200, glossary_payload())
             if path == "/api/suggestions":
@@ -384,6 +387,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route == "/api/upload":
                 return self._upload(body)
+            if route == "/api/narrate":
+                try:
+                    result = narrate(body.get("profile") or {})
+                except Unavailable as exc:
+                    return self._send(503, {"error": str(exc)})
+                return self._send(200, {"text": result.text, "model": result.model})
             if route == "/api/reset":
                 if body.get("confirm") != "delete everything":
                     return self._send(400, {"error": "reset not confirmed"})
@@ -935,21 +944,60 @@ function profileCard(p) {
           <span class="tag tier">${esc(l.tier)}</span></div>
         <div class="num small muted">${l.severity_bb100.toFixed(2)} bb/100</div></div>
       <div class="small muted numbers" style="margin:4px 0"></div>
-      <div class="leak-advice">${esc(l.advice)}</div>`;
-    // Tier gets its own explanation: "likely" and "strong" are not decoration.
+      <div class="small priority" style="margin:2px 0"></div>
+      <details class="how"><summary>how to play it</summary>
+        <div class="how-body"></div></details>`;
     $(".tier", div).after(info(termTip(l.tier)));
+
     const numbers = $(".numbers", div);
-    numbers.appendChild(document.createTextNode(
-      `they do this ${fmtPct(l.value)} of the time \u00b7 it pays above ${fmtPct(l.breakeven)} \u00b7 seen ${l.sample} times`));
+    numbers.appendChild(document.createTextNode(l.in_words));
     numbers.appendChild(info(
       `${statTip(l.stat, l.headline)}<hr style="border:0;border-top:1px solid var(--line);margin:7px 0">
        <span class="hl">breakeven ${fmtPct(l.breakeven)}</span><br>${esc((state.glossary || {terms:{}}).terms["breakeven"] || "")}`));
+
+    /* The size of the edge, in words. A number in big blinds per hundred
+       hands tells most people nothing on its own. */
+    $(".priority", div).textContent = l.priority;
+
+    /* Depth on request: what they are doing, why it costs them, what to do,
+       and -- the part that saves the most money -- what not to do. */
+    const how = $(".how-body", div);
+    for (const [label, text] of [["What they are doing", l.behaviour],
+                                 ["Why it is exploitable", l.why],
+                                 ["Do this", l.do],
+                                 ["Do not", l.dont],
+                                 ["How hard to lean on it", l.pressure]]) {
+      if (!text) continue;
+      const block = document.createElement("div");
+      block.style.margin = "10px 0";
+      block.innerHTML = `<div class="small muted" style="text-transform:uppercase;
+        letter-spacing:0.05em;font-size:10.5px;margin-bottom:2px">${esc(label)}</div>
+        <div style="max-width:66ch">${esc(text)}</div>`;
+      how.appendChild(block);
+    }
+
     const b = bar(l.severity_bb100, maxSeverity, TIER_COLOR[l.tier] || "var(--mark-2)", 200);
     b.style.margin = "6px 0";
     div.insertBefore(b, div.children[1]);
     bindTip(b, `<b>${esc(l.headline)}</b><br>~${l.severity_bb100.toFixed(2)} bb/100
-      <br><span class="muted">${esc(l.tier)} read from ${l.sample} spots</span>`);
+      \u2014 ${esc(l.size)}<br><span class="muted">${esc(l.priority)}</span>`);
     leakBox.appendChild(div);
+  }
+
+  /* Leaks that compound. Worth its own block because the combined adjustment
+     is more aggressive than either leak alone justifies. */
+  if (p.combinations && p.combinations.length) {
+    const combo = document.createElement("div");
+    combo.className = "panel";
+    combo.innerHTML = `<h2>these compound</h2>`;
+    for (const c of p.combinations) {
+      const block = document.createElement("div");
+      block.className = "leak";
+      block.innerHTML = `<b>${esc(c.headline)}</b>
+        <div class="leak-advice" style="margin-top:4px">${esc(c.body)}</div>`;
+      combo.appendChild(block);
+    }
+    card.appendChild(combo);
   }
 
   /* ---- 3. skill: the score up front, the breakdown on request ---- */

@@ -125,8 +125,12 @@ ARCHETYPES: list[Archetype] = [
     Archetype(
         "nit",
         "Far tighter than the table demands and folds rather than defends.",
-        "Open every pot and steal relentlessly; they surrender their blinds. "
-        "When they finally raise, believe it and fold anything marginal.",
+        "Steal their blinds every orbit -- they fold far more than the "
+        "price of a raise requires, so it prints regardless of your cards. "
+        "Then get out of the way. When they raise, or call two streets, "
+        "they have it, and the pots they contest are the ones to keep "
+        "small. Your profit here is a lot of tiny uncontested pots, not one "
+        "big one.",
         {"vpip": -2.2, "pfr": -1.8, "three_bet": -1.2, "fold_to_three_bet": +1.5,
          "fold_vs_bet:flop": +1.2, "fold_vs_bet:turn": +1.2, "wtsd": -1.2,
          "aggression:flop": -1.0, "bb_defend": -1.5},
@@ -134,8 +138,12 @@ ARCHETYPES: list[Archetype] = [
     Archetype(
         "station",
         "Calls far too much and folds far too little; will not release a pair.",
-        "Value bet thin and relentlessly -- three streets with any made hand, "
-        "and size up, they are paying regardless. Never bluff them.",
+        "Bet every hand that is ahead, on all three streets, and size up as "
+        "you go -- they are not folding to a price, so charge them "
+        "properly. Top pair with a bad kicker is a three-street value hand "
+        "here. The discipline is the other half: never bluff, not on a "
+        "scare card and not with a busted draw. Checking back your air is "
+        "where most of the edge against them comes from.",
         {"vpip": +1.2, "pfr": -1.2, "three_bet": -1.0,
          "fold_to_cbet:flop": -2.0, "fold_vs_bet:flop": -2.0, "fold_vs_bet:turn": -2.2,
          "fold_vs_bet:river": -1.8, "wtsd": +1.6, "wsd": -0.8,
@@ -144,8 +152,13 @@ ARCHETYPES: list[Archetype] = [
     Archetype(
         "overfolder",
         "Plays plenty of pots and surrenders them the moment there is pressure.",
-        "Barrel every street with any two cards; small sizings are enough. "
-        "Give up only when they raise -- those raises are real hands.",
+        "Bet at them constantly and keep the sizes small -- they are "
+        "folding to the fact of the bet, not to its price, so there is no "
+        "reason to risk more. Flop, then turn, and take the river too when "
+        "the board misses the obvious draws. The one rule: stop the moment "
+        "they do anything other than fold. Their raises and their multi-"
+        "street calls are genuine, because everything weak left the hand "
+        "already.",
         {"vpip": +0.3, "fold_to_cbet:flop": +1.3, "fold_to_cbet:turn": +1.4,
          "fold_vs_bet:flop": +1.3, "fold_vs_bet:turn": +1.5, "fold_vs_bet:river": +1.3,
          "wtsd": -1.3, "check_raise:flop": -0.8, "wwsf": -0.8},
@@ -153,8 +166,12 @@ ARCHETYPES: list[Archetype] = [
     Archetype(
         "maniac",
         "Relentless aggression at a frequency no range can support.",
-        "Stop bluffing entirely and let them bet your good hands for you. "
-        "Call down light, trap with strength, and raise only for value.",
+        "Play patient and passive, and let them do the betting. Call down "
+        "far lighter than feels comfortable -- middle pair is a real hand "
+        "against a range this wide -- and flat rather than raise your "
+        "strong hands so they keep firing into them. Never bluff and never "
+        "raise as a bluff: that is the one part of their game already "
+        "working. Expect variance; the money arrives in lumps.",
         {"vpip": +1.6, "pfr": +1.8, "three_bet": +1.8, "cbet:flop": +1.3,
          "cbet:turn": +1.3, "aggression:flop": +1.7, "aggression:turn": +1.7,
          "aggression:river": +1.5, "wtsd": +0.4},
@@ -162,8 +179,13 @@ ARCHETYPES: list[Archetype] = [
     Archetype(
         "lag",
         "Wide, aggressive and competent -- applies pressure with a real plan.",
-        "Widen your calling ranges and let them barrel into you. Three-bet "
-        "their steals; do not try to out-bluff them on later streets.",
+        "Tighten what you open but widen everything you continue with -- "
+        "against this player the money is made after the flop, not before "
+        "it. Re-raise their late-position opens, and call down more on "
+        "turns and rivers rather than folding to pressure. Do not start a "
+        "bluffing war on the later streets; they are competent, and that "
+        "part of their game works. Position matters more here than against "
+        "anyone else.",
         {"vpip": +1.0, "pfr": +1.2, "three_bet": +1.0, "cbet:flop": +0.7,
          "aggression:flop": +0.9, "aggression:turn": +0.8, "wwsf": +0.5,
          "fold_vs_bet:turn": -0.3},
@@ -171,8 +193,12 @@ ARCHETYPES: list[Archetype] = [
     Archetype(
         "tag",
         "Solid and hard to exploit; frequencies sit close to the field.",
-        "No large leak to attack. Play position, take the small edges, and "
-        "look for the money at another seat.",
+        "There is no cheap edge here, so stop looking for one -- the "
+        "mistake against a solid player is inventing a read and over-"
+        "adjusting to it. Play a straightforward positional game, keep pots "
+        "small out of position, and take thin value where it exists. If "
+        "there is a weaker player at the table, your attention belongs on "
+        "them; against this one, breaking even is a fine result.",
         {"vpip": 0.0, "pfr": +0.2, "three_bet": +0.1, "fold_to_three_bet": 0.0,
          "cbet:flop": +0.1, "fold_to_cbet:flop": 0.0, "fold_vs_bet:turn": 0.0,
          "aggression:flop": +0.2, "aggression:turn": +0.2, "wtsd": 0.0, "wsd": +0.4},
@@ -180,16 +206,24 @@ ARCHETYPES: list[Archetype] = [
     Archetype(
         "limper",
         "Passive preflop -- limps in, calls raises, then plays fit-or-fold.",
-        "Isolate their limps with a wide raising range and take it on the flop. "
-        "They fold everything they miss and never raise without the goods.",
+        "Raise over every limp with a wide range, around four big blinds "
+        "plus one per limper, and bet the flop whether or not you "
+        "connected. Their limping range is capped and built for seeing "
+        "cheap flops, so they miss constantly and give up when they do. "
+        "Slow down when they call the flop -- that call means something "
+        "real -- and fold to their raises without hesitation.",
         {"vpip": +0.8, "pfr": -1.8, "limp": +2.5, "three_bet": -1.2,
          "fold_to_cbet:flop": +0.8, "aggression:flop": -1.2},
     ),
     Archetype(
         "trapper",
         "Tight and passive with a slow-play habit: checks strength, then raises.",
-        "Value bet thinly but respect every check-raise. Keep pots small "
-        "without a strong hand -- their passive lines are hiding made hands.",
+        "Bet your good hands for value but stay alert: this player checks "
+        "strong hands rather than betting them, so a check is not the "
+        "invitation it is against most opponents. Keep pots small with "
+        "marginal holdings and treat every check-raise as the real thing -- "
+        "they do not have a bluffing range there. The edge comes from not "
+        "paying them off in the big pots they engineer.",
         {"vpip": -0.8, "pfr": -0.6, "check_raise:flop": +2.0, "donk:flop": -0.5,
          "cbet:flop": -1.2, "aggression:flop": -0.8, "wtsd": +0.6, "wsd": +1.0},
     ),

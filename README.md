@@ -100,6 +100,21 @@ names look like.
 
 ### Reading the output
 
+Each exploit answers four questions, the last of which matters most:
+
+* **What they are doing** — described as behaviour, not as a statistic.
+* **Why it is exploitable** — the mechanism, tied to the breakeven arithmetic.
+* **Do this** — concrete actions with streets and sizes.
+* **Do not** — the counter-mistake. Nearly every way of losing money to a
+  correct read is an over-adjustment, so knowing somebody folds too much is
+  only half of it; the other half is knowing when to stop.
+
+Leaks that compound get called out together. A player who folds flops too often
+*and* never check-raises has removed both the reason to fear betting and the
+cost of being wrong, and the right adjustment against the pair is more
+aggressive than against either one alone.
+
+
 The number to act on is **bb/100** next to each exploit: roughly what that leak
 is worth to you per 100 hands if you attack it every time. Sorted by value, so
 the top line is where the money is.
@@ -111,6 +126,37 @@ knowing and not worth rebuilding your game around.
 
 If a player shows no leaks, that is usually "not enough hands yet" rather than
 "unexploitable". The tool says so rather than inventing something.
+
+### Optional: a plain-English summary
+
+Everything above is deterministic — the same hands always give the same read,
+and no figure on screen came from anywhere but the arithmetic. One optional
+extra runs a local language model over the finished profile and writes a short
+briefing that joins the findings together.
+
+It is off unless configured, and it runs against a **local** model by default,
+which keeps it free, keeps it working offline, and keeps opponent profiles on
+your own machine:
+
+```bash
+brew install ollama && ollama serve      # once
+ollama pull llama3.2                     # once
+
+VILLAIN_LLM_MODEL=llama3.2 villain profile DavidMazour --narrate
+```
+
+Any OpenAI-compatible endpoint works instead — set `VILLAIN_LLM_URL` and, if it
+needs one, `VILLAIN_LLM_KEY`.
+
+The model is given a fact sheet built from the computed profile and is not
+permitted to introduce figures of its own: the output is checked, and any number
+that does not appear in the facts causes the whole response to be discarded in
+favour of the written text. A model that rounds 51% to "about half" is fine; one
+that decides they fold 70% is not, and you cannot tell which happened by reading
+the prose — so the check is mechanical rather than a matter of trust.
+
+This is a nicety on top of the written playbook, never a replacement for it.
+With nothing configured the tool behaves exactly as it did before.
 
 ## The problem this is actually solving
 

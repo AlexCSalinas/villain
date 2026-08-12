@@ -1,0 +1,174 @@
+"""Optional plain-English summary from a local language model.
+
+Everything else in this project is deterministic, and that is a feature: the
+same hands always produce the same read, and no number on screen came from
+anywhere but the arithmetic. This module is the one exception, so it is fenced
+in accordingly.
+
+**It is off unless asked for.** No key, no model, no network call, no import of
+anything outside the standard library. With nothing configured the tool behaves
+exactly as it did before.
+
+**It runs against a local model by default.** The endpoint is an
+OpenAI-compatible ``/chat/completions`` URL, defaulting to Ollama on
+``localhost``. That keeps it free, keeps it working offline, and keeps hand
+histories on the machine that recorded them -- opponent profiles are the sort
+of thing you should not be posting to a third party. Any other compatible
+endpoint works by changing ``VILLAIN_LLM_URL``.
+
+**It may not invent numbers.** The model is given a fact sheet built from the
+computed profile and asked to explain it; the output is then checked, and any
+figure that does not appear in the facts causes the whole response to be
+discarded in favour of the static text. A model that rounds 51% to "about half"
+is fine; a model that decides they fold 70% is not, and there is no way to tell
+which happened by reading the prose. So the check is mechanical.
+
+The value this adds over :mod:`villain.playbook` is synthesis: joining several
+findings into one paragraph about this specific player. It is a nicety on top
+of the written playbook, never a replacement for it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+
+DEFAULT_URL = "http://localhost:11434/v1/chat/completions"
+DEFAULT_MODEL = "llama3.2"
+TIMEOUT = 60
+
+SYSTEM = (
+    "You are a poker coach briefing a player between hands. You are given facts "
+    "about one opponent, already computed. Write a short, plain briefing: what "
+    "this opponent is like, the single most important adjustment, and the "
+    "mistake to avoid making against them.\n\n"
+    "Rules you must follow:\n"
+    "- Use only the numbers given. Never state a figure that is not in the facts.\n"
+    "- Prefer words to numbers. 'folds most rivers' beats '51%'.\n"
+    "- Four sentences at most. No bullet points, no headings, no preamble.\n"
+    "- Plain English. No jargon the facts do not already use.\n"
+    "- If the sample is small, say the read is provisional."
+)
+
+
+@dataclass
+class Narration:
+    text: str
+    model: str
+    endpoint: str
+
+
+class Unavailable(RuntimeError):
+    """No model configured, or it could not be reached."""
+
+
+def enabled() -> bool:
+    """True when a narrator has been explicitly configured."""
+    return bool(os.environ.get("VILLAIN_LLM_MODEL") or os.environ.get("VILLAIN_LLM_URL"))
+
+
+def fact_sheet(payload: dict) -> str:
+    """The only thing the model is allowed to know, built from the profile."""
+    lines = [
+        f"Player: {payload['name']}",
+        f"Table size: {payload.get('regime_label', payload['regime'])}",
+        f"Hands observed: {payload['hands']} ({payload['sample_quality']})",
+        f"Player type: {payload['archetype']} "
+        f"({round(100 * payload['archetype_confidence'])}% confident)",
+        f"Type description: {payload.get('summary', '')}",
+        f"Skill rating: {payload['skill']['score']} out of 100 "
+        f"({payload['skill']['tier']})",
+    ]
+    if payload["leaks"]:
+        lines.append("Leaks found, most valuable first:")
+        for leak in payload["leaks"]:
+            lines.append(
+                f"- {leak['headline']}. {leak['in_words']} "
+                f"Worth about {leak['severity_bb100']} big blinds per 100 hands "
+                f"({leak['size']}, {leak['tier']} read). "
+                f"What they are doing: {leak['behaviour']} "
+                f"Do: {leak['do']} Do not: {leak['dont']}")
+    else:
+        lines.append("No leak has enough evidence behind it yet.")
+    for combo in payload.get("combinations", []):
+        lines.append(f"Compounding: {combo['headline']}. {combo['body']}")
+    return "\n".join(lines)
+
+
+def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
+            timeout: int = TIMEOUT) -> Narration:
+    """Ask the configured model to summarise a profile. Raises on any problem."""
+    url = url or os.environ.get("VILLAIN_LLM_URL") or DEFAULT_URL
+    model = model or os.environ.get("VILLAIN_LLM_MODEL") or DEFAULT_MODEL
+    facts = fact_sheet(payload)
+
+    body = json.dumps({
+        "model": model,
+        "temperature": 0.3,
+        "messages": [{"role": "system", "content": SYSTEM},
+                     {"role": "user", "content": facts}],
+    }).encode()
+    headers = {"Content-Type": "application/json"}
+    key = os.environ.get("VILLAIN_LLM_KEY")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    request = urllib.request.Request(url, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.load(response)
+    except urllib.error.URLError as exc:
+        raise Unavailable(
+            f"could not reach {url}: {exc}. Start a local model with "
+            f"'ollama serve' and 'ollama pull {model}', or point "
+            f"VILLAIN_LLM_URL at another OpenAI-compatible endpoint.") from exc
+    except (TimeoutError, OSError) as exc:
+        raise Unavailable(f"model at {url} did not respond: {exc}") from exc
+
+    try:
+        text = data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError) as exc:
+        raise Unavailable(f"unexpected response from {url}") from exc
+
+    invented = unsupported_numbers(text, facts)
+    if invented:
+        raise Unavailable(
+            f"model stated figures that are not in the data ({', '.join(invented)}); "
+            "discarded")
+    return Narration(text=text, model=model, endpoint=url)
+
+
+#: Numbers a sentence can contain without claiming anything about the player:
+#: counting words rendered as digits, and the streets of a hand.
+SAFE_NUMBERS = {"0", "1", "2", "3", "4", "5", "100"}
+
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def unsupported_numbers(text: str, facts: str) -> list[str]:
+    """Figures in ``text`` that do not appear in ``facts``.
+
+    Deliberately strict. A model that invents a fold frequency produces prose
+    indistinguishable from a correct one, so the only defence is refusing to
+    show any figure the arithmetic did not produce.
+    """
+    known = set(_NUMBER.findall(facts))
+    # A percentage stated as "51" is supported by a fact sheet saying "51%",
+    # and rounding to a whole number is fine.
+    for value in list(known):
+        if "." in value:
+            known.add(value.split(".")[0])
+            try:
+                known.add(str(round(float(value))))
+            except ValueError:
+                pass
+    out = []
+    for value in _NUMBER.findall(text):
+        if value in known or value in SAFE_NUMBERS:
+            continue
+        out.append(value)
+    return sorted(set(out))

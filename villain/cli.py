@@ -46,6 +46,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--regime", help="hu, 3max, 6max or full")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--narrate", action="store_true",
+                   help="add a plain-English summary from a local model "
+                        "(needs VILLAIN_LLM_MODEL; see README)")
 
     p = sub.add_parser("scout", help="profile a file without storing it")
     p.add_argument("paths", nargs="+", type=Path)
@@ -129,9 +132,33 @@ def _cmd_profile(args) -> int:
             return 0
         for profile in profiles:
             print(profile_card(profile, verbose=args.verbose))
+            if args.narrate:
+                print(_narration(profile))
         for note in store.notes(player_id):
             print(f"note: {note['body']}")
     return 0
+
+
+def _narration(profile) -> str:
+    """Plain-English summary, or the reason there isn't one.
+
+    Failures are reported rather than swallowed: the usual cause is that no
+    model is running, and saying so is more useful than silently printing
+    nothing.
+    """
+    from .analyze import as_dict
+    from .narrate import Unavailable, narrate
+    try:
+        result = narrate(as_dict(profile))
+    except Unavailable as exc:
+        return f"IN SHORT: unavailable -- {exc}\n"
+    body = "\n".join(f"  {line}" for line in _wrap_plain(result.text, 74))
+    return f"IN SHORT  ({result.model})\n{body}\n"
+
+
+def _wrap_plain(text: str, width: int) -> list[str]:
+    import textwrap
+    return textwrap.wrap(text, width=width) or [""]
 
 
 def _cmd_scout(args) -> int:

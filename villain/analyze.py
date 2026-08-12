@@ -8,8 +8,9 @@ later cannot disagree about what a player is.
 
 from __future__ import annotations
 
-from .archetypes import match
+from .archetypes import ARCHETYPE_BY_NAME, match
 from .exploits import find_leaks
+from .playbook import combinations_for
 from .profile import Profile
 from .skill import rate
 
@@ -74,7 +75,20 @@ def as_dict(profile: Profile) -> dict:
             {"id": l.id, "headline": l.headline, "severity_bb100": round(l.severity, 3),
              "confidence": round(l.confidence, 3), "tier": l.tier,
              "value": round(l.value, 4), "breakeven": round(l.threshold, 4),
-             "sample": l.opps, "advice": l.advice}
+             "sample": l.opps, "advice": l.advice, "stat": l.stat,
+             "direction": l.direction,
+             # the plain-language layer
+             "behaviour": l.behaviour, "why": l.why, "do": l.do, "dont": l.dont,
+             "size": l.size, "priority": l.priority, "pressure": l.pressure,
+             "in_words": l.in_words}
             for l in profile.tags
         ],
+        # Leaks that compound. Two tendencies pointing the same way call for a
+        # more aggressive adjustment than either would on its own.
+        "combinations": [
+            {"headline": c.headline, "body": c.body, "leaks": sorted(c.leaks)}
+            for c in combinations_for(l.id for l in profile.tags)
+        ],
+        "plan": (ARCHETYPE_BY_NAME[profile.archetype].plan
+                 if profile.archetype in ARCHETYPE_BY_NAME else ""),
     }
