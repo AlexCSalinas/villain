@@ -262,3 +262,81 @@ def test_database_is_reusable_after_reset(tmp_path, hands):
         report = store.add_hands(hands)
         assert report.hands_new == len(hands), "reset must clear the dedupe index too"
         assert store.players()
+
+
+# -- identity settled at upload --------------------------------------------
+
+def test_merge_answers_pool_the_session_before_it_is_saved(session, tmp_path):
+    """The point of asking at upload: the session you read is already pooled."""
+    from villain.identity import session_questions
+    from villain.web import SESSIONS, apply_answers, session_payload
+    with Store(tmp_path / "v.db") as store:
+        questions = session_questions(store, SESSIONS[session]["hands"])
+    alias = [q for q in questions if q.kind == "alias"]
+    if not alias:
+        pytest.skip("fixture has no same-person candidates")
+    SESSIONS[session]["questions"] = questions
+
+    before = {r["name"]: r["hands"] for r in session_payload(session)["players"]}
+    q = alias[0]
+    apply_answers(SESSIONS[session], {q.id: {"same": True, "name": q.names[0]}})
+    after = {r["name"]: r["hands"] for r in session_payload(session)["players"]}
+
+    assert len(after) < len(before), "the two accounts should now be one player"
+    assert q.names[0] in after, "the chosen name should be the one kept"
+    assert sum(after.values()) == sum(before.values()), "no hands lost in the merge"
+
+
+def test_the_chosen_name_is_honoured(session, tmp_path):
+    from villain.identity import session_questions
+    from villain.web import SESSIONS, apply_answers, session_payload
+    with Store(tmp_path / "v.db") as store:
+        questions = session_questions(store, SESSIONS[session]["hands"])
+    alias = [q for q in questions if q.kind == "alias"]
+    if not alias:
+        pytest.skip("fixture has no same-person candidates")
+    SESSIONS[session]["questions"] = questions
+    q = alias[0]
+    # Deliberately pick the name that is *not* the default.
+    other = [n for n in q.names if n != q.default_name][0]
+    apply_answers(SESSIONS[session], {q.id: {"same": True, "name": other}})
+    names = {r["name"] for r in session_payload(session)["players"]}
+    assert other in names
+    assert q.default_name not in names
+
+
+def test_declining_leaves_the_session_untouched(session, tmp_path):
+    from villain.identity import session_questions
+    from villain.web import SESSIONS, apply_answers, session_payload
+    with Store(tmp_path / "v.db") as store:
+        SESSIONS[session]["questions"] = session_questions(store, SESSIONS[session]["hands"])
+    before = {r["name"] for r in session_payload(session)["players"]}
+    apply_answers(SESSIONS[session], {})
+    assert {r["name"] for r in session_payload(session)["players"]} == before
+
+
+def test_stored_hands_keep_the_original_account_ids(session, tmp_path):
+    """Identity is a layer on top of the hands; the hands stay as recorded."""
+    from villain.identity import session_questions
+    from villain.web import SESSIONS, apply_answers, commit_session
+    with Store(tmp_path / "v.db") as store:
+        questions = session_questions(store, SESSIONS[session]["hands"])
+        SESSIONS[session]["questions"] = questions
+        alias = [q for q in questions if q.kind == "alias"]
+        if not alias:
+            pytest.skip("fixture has no same-person candidates")
+        original = {s.player_id for h in SESSIONS[session]["hands"] for s in h.seats}
+        apply_answers(SESSIONS[session],
+                      {alias[0].id: {"same": True, "name": alias[0].names[0]}})
+        commit_session(store, session, {})
+        stored = {s.player_id for h in store.stored_hands() for s in h.seats}
+    assert stored == original, "merging must not rewrite the recorded account ids"
+
+
+def test_questions_offer_a_name_to_keep(session, tmp_path):
+    from villain.identity import session_questions
+    from villain.web import SESSIONS
+    with Store(tmp_path / "v.db") as store:
+        for q in session_questions(store, SESSIONS[session]["hands"]):
+            assert q.names, f"{q.id} offers no name choice"
+            assert q.default_name in q.names

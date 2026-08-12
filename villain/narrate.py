@@ -75,16 +75,32 @@ def setting(name: str, default: str | None = None) -> str | None:
     return os.environ.get(name) or _config().get(name) or default
 
 SYSTEM = (
-    "You are a poker coach briefing a player between hands. You are given facts "
-    "about one opponent, already computed. Write a short, plain briefing: what "
-    "this opponent is like, the single most important adjustment, and the "
-    "mistake to avoid making against them.\n\n"
+    "You are a poker coach writing a scouting report on one opponent, for a "
+    "player about to sit down with them. You are given facts already computed "
+    "from their hand history. Write a detailed profile.\n\n"
+    "Cover, in this order, as flowing paragraphs:\n"
+    "1. What kind of player they are -- the shape of their game, not a "
+    "restatement of the label.\n"
+    "2. Their strengths: what they do competently, and which parts of their "
+    "game not to attack. If the facts show none worth naming, say so rather "
+    "than inventing one.\n"
+    "3. Their exploitable weaknesses, most valuable first, and the mechanism "
+    "behind each -- why it costs them money, not merely that it exists.\n"
+    "4. What to do: concrete adjustments, with streets and bet sizes where the "
+    "facts supply them.\n"
+    "5. What not to do: how a player who read this profile would over-adjust "
+    "and hand the money back. This matters as much as the section before it.\n\n"
     "Rules you must follow:\n"
-    "- Use only the numbers given. Never state a figure that is not in the facts.\n"
-    "- Prefer words to numbers. 'folds most rivers' beats '51%'.\n"
-    "- Four sentences at most. No bullet points, no headings, no preamble.\n"
-    "- Plain English. No jargon the facts do not already use.\n"
-    "- If the sample is small, say the read is provisional."
+    "- Use only the facts given. Never state a figure that is not in them. To "
+    "describe a frequency you were not told, use words or leave it out.\n"
+    "- Prefer words to numbers throughout. \'folds most rivers\' beats \'51%\'.\n"
+    "- Four to six paragraphs, at least 250 words. No headings, no bullet "
+    "points, no preamble, no sign-off. Just the report.\n"
+    "- Plain English a competent player would use at the table.\n"
+    "- Be specific to this opponent. Generic advice that would fit anyone is "
+    "worthless here.\n"
+    "- If the sample is small, say which parts of the read are provisional "
+    "rather than hedging every sentence."
 )
 
 
@@ -124,6 +140,20 @@ def fact_sheet(payload: dict) -> str:
         f"Skill rating: {payload.get('skill', {}).get('score', 0)} out of 100 "
         f"({payload.get('skill', {}).get('tier', 'unknown')})",
     ]
+    for item in payload.get("strengths") or []:
+        lines.append(f"Does competently (do not attack): {item}")
+
+    # Only well-observed frequencies. A stat with four observations is noise,
+    # and handing it to a model invites a confident sentence about nothing.
+    measured = []
+    for stat, entry in (payload.get("stats") or {}).items():
+        if isinstance(entry, dict) and (entry.get("opportunities") or 0) >= 10:
+            measured.append(f"- {stat}: {round(100 * entry['value'])}% over "
+                            f"{round(entry['opportunities'])} spots")
+    if measured:
+        lines.append("Measured frequencies, with the observations behind each:")
+        lines.extend(measured)
+
     if payload.get("leaks"):
         lines.append("Leaks found, most valuable first:")
         for leak in payload["leaks"]:
@@ -162,11 +192,29 @@ def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.load(response)
-    except urllib.error.URLError as exc:
+    except urllib.error.HTTPError as exc:
+        # The endpoint answered and refused. Its own message is more useful
+        # than anything guessed here.
+        detail = ""
+        try:
+            detail = json.load(exc).get("error", {}).get("message", "")
+        except Exception:
+            pass
         raise Unavailable(
-            f"could not reach {url}: {exc}. Start a local model with "
-            f"'ollama serve' and 'ollama pull {model}', or point "
-            f"VILLAIN_LLM_URL at another OpenAI-compatible endpoint.") from exc
+            f"{model} returned {exc.code}"
+            + (f": {detail}" if detail else f" ({exc.reason})")
+            + (". This is usually temporary -- try again." if exc.code >= 500 else "")
+        ) from exc
+    except urllib.error.URLError as exc:
+        # Nothing answered at all. Only suggest starting a local model when the
+        # endpoint actually is local; telling somebody to "ollama pull" a
+        # hosted model name is worse than saying nothing.
+        local = "localhost" in url or "127.0.0.1" in url
+        hint = (f"Start it with 'ollama serve' and 'ollama pull {model}'."
+                if local else
+                "Check the endpoint and your network, or set VILLAIN_LLM_URL "
+                "to another OpenAI-compatible endpoint.")
+        raise Unavailable(f"could not reach {url}: {exc.reason}. {hint}") from exc
     except (TimeoutError, OSError) as exc:
         raise Unavailable(f"model at {url} did not respond: {exc}") from exc
 

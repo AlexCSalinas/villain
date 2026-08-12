@@ -68,6 +68,14 @@ def as_dict(profile: Profile) -> dict:
             "observed_bb100": profile.winrate_bb100,
             "adjusted_bb100": profile.skill.adjusted_bb100,
         },
+        # What they do well, so a report is not purely a list of faults.
+        # Taken from rating components that scored highly.
+        "strengths": [
+            f"{c.name} scores {c.score:.0f} out of 100"
+            + (f" ({c.note})" if c.note else "")
+            for c in sorted(profile.skill.components, key=lambda c: -c.score)
+            if c.score >= 70 and c.name != "resistance to exploitation"
+        ][:4],
         "stats": {
             stat: {"value": round(est.value, 4), "opportunities": est.opps,
                    "raw": None if est.raw is None else round(est.raw, 4)}

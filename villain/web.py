@@ -46,7 +46,7 @@ from .exploits import RULES
 from .features import record_hands
 from .evidence import find as find_evidence
 from .glossary import payload as glossary_payload
-from .model import hand_from_dict
+from .model import hand_from_dict, hand_to_dict
 from .identity import session_questions, suggest_links
 from .narrate import Unavailable, enabled as narrator_enabled, narrate
 from .parsers import UnknownFormat, parse_file
@@ -203,10 +203,29 @@ def parse_upload(filename: str, content: str):
         temp.unlink(missing_ok=True)
 
 
+def merged_hands(session: dict) -> list:
+    """The session's hands with confirmed same-person accounts pooled.
+
+    Applied to a copy. The stored hands must keep the account ids the site
+    actually wrote, because identity is a decision layered on top of them and
+    decisions get revised; the hands themselves are evidence and do not.
+    """
+    merges = session.get("merges") or {}
+    if not merges:
+        return session["hands"]
+    hands = [hand_from_dict(hand_to_dict(h)) for h in session["hands"]]
+    for hand in hands:
+        for seat in hand.seats:
+            target = merges.get((hand.site, seat.player_id))
+            if target:
+                seat.player_id, seat.name = target["account"], target["name"]
+    return hands
+
+
 def session_payload(token: str) -> dict:
     """Profiles for an uploaded session, computed without touching the store."""
     session = SESSIONS[token]
-    books = record_hands(session["hands"])
+    books = record_hands(merged_hands(session))
     profiles = [p for p in (build_unified(by_regime) for by_regime in books.values())
                 if p is not None]
     profiles.sort(key=lambda p: -p.hands)
@@ -234,6 +253,10 @@ def session_payload(token: str) -> dict:
         "players": rows,
         "profiles": [profile_payload(p) for p in profiles],
         "saved": session.get("saved", False),
+        "questions": [question_payload(q) for q in session.get("questions", [])],
+        "answered": bool(session.get("answers")),
+        "merges": [{"from": k[1], "to": v["name"]}
+                   for k, v in (session.get("merges") or {}).items()],
     }
 
 
@@ -242,10 +265,36 @@ def question_payload(question) -> dict:
         "id": question.id, "kind": question.kind, "prompt": question.prompt,
         "detail": question.detail, "default": question.default,
         "confidence": question.confidence, "left": question.left, "right": question.right,
+        "names": question.names, "default_name": question.default_name,
     }
 
 
-def commit_session(store: Store, token: str, answers: dict[str, bool]) -> dict:
+def apply_answers(session: dict, answers: dict) -> None:
+    """Record identity decisions on a session and pool the merged accounts.
+
+    Asked at upload rather than at save, so the session you are reading has
+    already combined them. One player split across two names halves both
+    samples exactly when sample size is the scarce thing.
+    """
+    session["answers"] = answers
+    merges: dict[tuple[str, str], dict] = {}
+    for question in session.get("questions", []):
+        answer = answers.get(question.id) or {}
+        if not answer.get("same"):
+            continue
+        keep_name = answer.get("name") or question.default_name
+        sides = [side for side in (question.left, question.right) if side.get("account")]
+        if not sides:
+            continue
+        # Everything folds onto the busiest account present in this session.
+        target = max(sides, key=lambda side: side.get("hands", 0))
+        for side in sides:
+            merges[(side["site"], side["account"])] = {
+                "account": target["account"], "name": keep_name}
+    session["merges"] = merges
+
+
+def commit_session(store: Store, token: str, answers: dict) -> dict:
     """Save an uploaded session, applying the identity answers given.
 
     Order matters. Hands are stored first so that every account exists as a
@@ -255,10 +304,25 @@ def commit_session(store: Store, token: str, answers: dict[str, bool]) -> dict:
     """
     session = SESSIONS[token]
     questions = {q.id: q for q in session.get("questions", [])}
+    answers = answers or session.get("answers") or {}
+
+    def said_same(qid: str, question) -> bool:
+        answer = answers.get(qid)
+        if isinstance(answer, dict):
+            return bool(answer.get("same"))
+        if isinstance(answer, bool):
+            return answer
+        return question.default
+
+    def chosen_name(qid: str, question) -> str:
+        answer = answers.get(qid)
+        if isinstance(answer, dict) and answer.get("name"):
+            return answer["name"]
+        return question.default_name
 
     name_splits = set()
     for qid, question in questions.items():
-        if question.kind != "rename" or answers.get(qid, question.default):
+        if question.kind != "rename" or said_same(qid, question):
             continue
         right = question.right
         name_splits.add((right["site"], right["account"], right["name"]))
@@ -268,17 +332,17 @@ def commit_session(store: Store, token: str, answers: dict[str, bool]) -> dict:
     # A confirmed rename means the player is now known by the new name; the old
     # one stays reachable as an alias.
     for qid, question in questions.items():
-        if question.kind != "rename" or not answers.get(qid, question.default):
+        if question.kind != "rename" or not said_same(qid, question):
             continue
         player_id = _player_id_of(store, question.right)
         if player_id is not None:
             store.conn.execute("UPDATE players SET display_name = ? WHERE id = ?",
-                               (question.right["name"], player_id))
+                               (chosen_name(qid, question), player_id))
     store.conn.commit()
 
     merged, blocked = 0, []
     for qid, question in questions.items():
-        if question.kind != "alias" or not answers.get(qid, question.default):
+        if question.kind != "alias" or not said_same(qid, question):
             continue
         try:
             keep = _player_id_of(store, question.left)
@@ -289,6 +353,9 @@ def commit_session(store: Store, token: str, answers: dict[str, bool]) -> dict:
             continue
         try:
             store.link(keep, absorb)
+            store.conn.execute("UPDATE players SET display_name = ? WHERE id = ?",
+                               (chosen_name(qid, question), keep))
+            store.conn.commit()
             merged += 1
         except ValueError as exc:
             blocked.append(str(exc))
@@ -455,21 +522,25 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, {"error": "reset not confirmed"})
                 with Store(self.db_path) as store:
                     return self._send(200, store.reset())
+            if route.startswith("/api/session/") and route.endswith("/identity"):
+                token = route.split("/")[3]
+                if token not in SESSIONS:
+                    return self._send(404, {"error": "session expired -- upload again"})
+                apply_answers(SESSIONS[token], body.get("answers") or {})
+                return self._send(200, session_payload(token))
             if route.startswith("/api/session/") and route.endswith("/plan"):
                 token = route.split("/")[3]
                 if token not in SESSIONS:
                     return self._send(404, {"error": "session expired -- upload again"})
-                with Store(self.db_path) as store:
-                    questions = session_questions(store, SESSIONS[token]["hands"])
-                SESSIONS[token]["questions"] = questions
-                return self._send(200, [question_payload(q) for q in questions])
+                return self._send(
+                    200, [question_payload(q) for q in SESSIONS[token].get("questions", [])])
             if route.startswith("/api/session/") and route.endswith("/commit"):
                 token = route.split("/")[3]
                 if token not in SESSIONS:
                     return self._send(404, {"error": "session expired -- upload again"})
-                answers = {str(k): bool(v) for k, v in (body.get("answers") or {}).items()}
                 with Store(self.db_path) as store:
-                    return self._send(200, commit_session(store, token, answers))
+                    return self._send(200, commit_session(
+                        store, token, body.get("answers") or {}))
             with Store(self.db_path) as store:
                 if route == "/api/link":
                     store.link(int(body["keep"]), int(body["absorb"]))
@@ -515,6 +586,11 @@ class Handler(BaseHTTPRequestHandler):
         _reap_sessions()
         token = secrets.token_urlsafe(9)
         SESSIONS[token] = {"hands": unique, "files": names, "created": time.time()}
+        # Identity is settled up front so the session being read is already
+        # pooled. Reading the database to ask a better question is not the
+        # same as writing to it -- nothing is stored until you save.
+        with Store(self.db_path) as store:
+            SESSIONS[token]["questions"] = session_questions(store, unique)
         payload = session_payload(token)
         payload["rejected"] = rejected
         return self._send(200, payload)
@@ -574,7 +650,7 @@ PAGE = r"""<!doctype html>
       color-scheme: dark;
       --bg: #0d0d0d; --panel: #17181a; --ink: #f2f1ee; --muted: #98968f;
       --line: #2a2b2d; --accent: #f2f1ee; --accent-soft: #202123;
-      --warn: #e08a5f; --danger: #e5645a;
+      --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
       --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
       --band: #26272a;
       --grid: #232427; --axis: #3a3b3e; --tick: #898781;
@@ -584,7 +660,7 @@ PAGE = r"""<!doctype html>
     color-scheme: dark;
     --bg: #0d0d0d; --panel: #17181a; --ink: #f2f1ee; --muted: #98968f;
     --line: #2a2b2d; --accent: #f2f1ee; --accent-soft: #202123;
-    --warn: #e08a5f; --danger: #e5645a;
+    --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
     --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
     --band: #26272a;
     --grid: #232427; --axis: #3a3b3e; --tick: #898781;
@@ -595,15 +671,15 @@ PAGE = r"""<!doctype html>
     font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   .wrap { max-width: 1060px; margin: 0 auto; padding: 24px 20px 90px; }
-  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
   h1 {
-    font-size: 30px; margin: 0; letter-spacing: -0.045em; font-weight: 800;
-    line-height: 1;
+    font-size: 40px; margin: 0; letter-spacing: -0.05em; font-weight: 800;
+    line-height: 0.95;
   }
   h1 a { color: inherit; text-decoration: none; display: inline-flex; align-items: center; }
   h1 .dot {
-    width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
-    display: inline-block; margin-left: 7px; margin-bottom: 12px;
+    width: 10px; height: 10px; border-radius: 50%; background: var(--red);
+    display: inline-block; margin-left: 8px; margin-bottom: 18px;
   }
   .iconbtn {
     border: 1px solid var(--line); background: transparent; color: var(--muted);
@@ -619,7 +695,7 @@ PAGE = r"""<!doctype html>
     font: inherit; font-size: 14px; padding: 8px 14px; cursor: pointer; border-radius: 0;
   }
   nav button:hover { color: var(--ink); }
-  nav button.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  nav button.on { color: var(--ink); border-bottom-color: var(--red); font-weight: 600; }
   .panel {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 18px; margin: 16px 0;
@@ -642,7 +718,7 @@ PAGE = r"""<!doctype html>
     font-size: 11.5px; border: 1px solid var(--line); color: var(--muted);
     white-space: nowrap;
   }
-  .tag.on { border-color: var(--accent); color: var(--ink); }
+  .tag.on { border-color: var(--red); color: var(--ink); }
   .scroller { overflow-x: auto; }
   .muted { color: var(--muted); }
   .small { font-size: 12.5px; }
@@ -700,7 +776,7 @@ PAGE = r"""<!doctype html>
     border: 1.5px dashed var(--line); border-radius: 12px; padding: 34px 20px;
     text-align: center; color: var(--muted); cursor: pointer; transition: border-color .12s;
   }
-  .drop:hover, .drop.over { border-color: var(--accent); color: var(--ink); }
+  .drop:hover, .drop.over { border-color: var(--red); color: var(--ink); }
   .leak { padding: 12px 0; border-bottom: 1px solid var(--line); }
   .leak:last-child { border-bottom: 0; }
   .leak-head { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; }
@@ -729,7 +805,7 @@ PAGE = r"""<!doctype html>
     cursor: pointer; display: flex; align-items: center; gap: 7px;
   }
   .ptab:hover { color: var(--ink); }
-  .ptab.on { border-color: var(--accent); color: var(--ink); font-weight: 600; }
+  .ptab.on { border-color: var(--red); color: var(--ink); font-weight: 600; }
   .ptab .meta { font-size: 11.5px; color: var(--muted); font-weight: 400; }
   /* the hover-for-meaning affordance */
   .info {
@@ -763,7 +839,7 @@ PAGE = r"""<!doctype html>
   .danger-link { color: var(--danger); text-decoration-color: var(--danger); }
   .narration { margin-top: 10px; max-width: 66ch; }
   .narration blockquote {
-    margin: 0 0 6px; padding: 0 0 0 13px; border-left: 2px solid var(--line);
+    margin: 0 0 6px; padding: 0 0 0 13px; border-left: 2px solid var(--red);
   }
   .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
   .ev { display: grid; grid-template-columns: 54px 1fr auto; gap: 10px;
@@ -772,7 +848,7 @@ PAGE = r"""<!doctype html>
   .ev:hover { background: var(--accent-soft); }
   .ev:last-child { border-bottom: 0; }
   .ev .verdict { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
-  .ev .verdict.hit { color: var(--ink); font-weight: 600; }
+  .ev .verdict.hit { color: var(--red); font-weight: 600; }
   .ev .verdict.miss { color: var(--muted); }
   .cards { font-family: var(--mono); letter-spacing: .04em; }
   .street { border-top: 1px solid var(--line); padding: 10px 0; }
@@ -1274,6 +1350,9 @@ function viewSession() {
       const data = await post("/api/upload", {files: payload});
       state.session = data;
       renderSession();
+      if (data.questions && data.questions.length && !data.answered) {
+        askIdentity(data.token, data.questions);
+      }
       status.innerHTML = data.rejected && data.rejected.length
         ? `<span class="err">skipped: ${data.rejected.map(r => esc(r.name)).join(", ")}</span>`
         : "";
@@ -1307,37 +1386,37 @@ function renderSession() {
   $("#session-roster").appendChild(rosterTable(data.players, {onClick: null}));
   playerTabs(data.profiles, $("#session-profiles"));
   const save = $("#save");
-  if (save && !data.saved) save.onclick = () => reviewAndSave(data.token);
+  if (save && !data.saved) save.onclick = () => commit(data.token);
 }
 
-/* ---- the save flow: ask before touching identity ---- */
-async function reviewAndSave(token) {
-  let questions = [];
-  try {
-    questions = await post(`/api/session/${token}/plan`);
-  } catch (err) {
-    return showResult({error: err.message});
-  }
-  if (!questions.length) return commit(token, {});
-
+/* ---- identity, settled at upload ---- */
+/* Asked when the file lands rather than when it is saved, so the session you
+   are reading has already pooled the accounts. Merging also asks what to call
+   the result: choosing silently files a player under a name they have stopped
+   using. */
+async function askIdentity(token, questions, onDone) {
   const modal = $("#modal");
   modal.innerHTML = `
     <div class="veil"><div class="sheet">
-      <h2 style="margin-top:0">Before saving</h2>
+      <h2 style="margin-top:0">Same player?</h2>
       <p class="small muted" style="margin-top:0">
-        These are the calls the tool will not make on its own. Merging two real
-        players makes both profiles fiction; splitting one throws away half of
-        what is known. Nothing here is reversible from the app.</p>
+        These accounts might belong to one person. Answering now means the
+        session below is read with their hands pooled. Nothing is saved either
+        way \u2014 but merging two real players makes both profiles fiction, so
+        the tool will not guess.</p>
       <div id="questions"></div>
       <div class="row" style="justify-content:flex-end;margin-top:18px">
-        <button class="act" id="cancel">Cancel</button>
-        <button class="act primary" id="confirm">Save session</button>
+        <button class="act" id="cancel">Keep them separate</button>
+        <button class="act primary" id="confirm">Apply</button>
       </div>
     </div></div>`;
   const box = $("#questions");
   for (const q of questions) {
     const div = document.createElement("div");
     div.className = "q";
+    const names = (q.names || []).map((n, i) => `
+      <label><input type="radio" name="name-${esc(q.id)}" value="${esc(n)}"
+        ${n === q.default_name ? "checked" : ""}>keep \u201c${esc(n)}\u201d</label>`).join("");
     div.innerHTML = `
       <div class="q-prompt">${esc(q.prompt)}</div>
       <div class="sides">
@@ -1352,24 +1431,39 @@ async function reviewAndSave(token) {
           ${q.default ? "checked" : ""}>Same player</label>
         <label><input type="radio" name="${esc(q.id)}" value="no"
           ${q.default ? "" : "checked"}>Different people</label>
-      </div>`;
+      </div>
+      <div class="choice namechoice" ${q.default ? "" : 'hidden'}>${names}</div>`;
     box.appendChild(div);
+    // The name only matters if they are the same person.
+    div.querySelectorAll(`input[name="${CSS.escape(q.id)}"]`).forEach(radio =>
+      radio.onchange = () => {
+        $(".namechoice", div).hidden = radio.value !== "yes";
+      });
   }
-  $("#cancel").onclick = () => { modal.innerHTML = ""; };
-  $("#confirm").onclick = () => {
+  $("#cancel").onclick = async () => {
+    modal.innerHTML = "";
+    await post(`/api/session/${token}/identity`, {answers: {}});
+    if (onDone) onDone();
+  };
+  $("#confirm").onclick = async () => {
     const answers = {};
     for (const q of questions) {
       const picked = modal.querySelector(`input[name="${CSS.escape(q.id)}"]:checked`);
-      answers[q.id] = picked ? picked.value === "yes" : q.default;
+      const name = modal.querySelector(`input[name="name-${CSS.escape(q.id)}"]:checked`);
+      answers[q.id] = {same: picked ? picked.value === "yes" : q.default,
+                       name: name ? name.value : q.default_name};
     }
     modal.innerHTML = "";
-    commit(token, answers);
+    const refreshed = await post(`/api/session/${token}/identity`, {answers});
+    state.session = refreshed;
+    renderSession();
+    if (onDone) onDone();
   };
 }
 
-async function commit(token, answers) {
+async function commit(token) {
   try {
-    const result = await post(`/api/session/${token}/commit`, {answers});
+    const result = await post(`/api/session/${token}/commit`, {});
     state.session.saved = true;
     renderSession();
     showResult(result);

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from .archetypes import _log_beta_binomial
@@ -203,7 +203,13 @@ def _combine(name_score: float, log_bf: float | None) -> tuple[float, str]:
 
 @dataclass
 class Question:
-    """Something the import needs a human to settle."""
+    """Something the import needs a human to settle.
+
+    ``names`` carries the display names in play, because saying "yes, same
+    person" leaves a second question unanswered: what to call the result.
+    Picking silently files a profile under a name its owner has stopped using,
+    which is the exact failure identity resolution exists to prevent.
+    """
 
     id: str
     kind: str                 # "rename" or "alias"
@@ -213,6 +219,8 @@ class Question:
     confidence: float | None
     left: dict
     right: dict
+    names: list[str] = field(default_factory=list)
+    default_name: str = ""
 
 
 def _account_index(hands) -> dict[tuple[str, str], dict]:
@@ -277,6 +285,8 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
                   "where": "already in the database"},
             right={"name": entry["name"], "hands": entry["hands"],
                    "site": key[0], "account": key[1], "where": "in this session"},
+            names=[entry["name"], row["name"]],
+            default_name=entry["name"],
         ))
 
     # 2. Different account ids that look like the same person.
@@ -287,11 +297,16 @@ def session_questions(store, hands, min_name_score: float = 0.70) -> list[Questi
 
     def add_alias_question(qid, score, left, right, log_bf=None):
         confidence, reason = _combine(score, log_bf)
+        # Default to the busier account's name -- the one they are better known
+        # by -- but offer both, because merging leaves a second question open:
+        # what to call the result.
+        busier = left if left.get("hands", 0) >= right.get("hands", 0) else right
         questions.append(Question(
             id=qid, kind="alias",
             prompt=f"Are “{left['name']}” and “{right['name']}” the same person?",
             detail=reason, default=False, confidence=confidence,
-            left=left, right=right))
+            left=left, right=right,
+            names=[left["name"], right["name"]], default_name=busier["name"]))
 
     def already_one_player(a_key, b_key) -> bool:
         """Skip pairs the database has already been told are one person."""
