@@ -142,3 +142,38 @@ def test_hand_view_tracks_who_saw_each_street(hands):
             later = [s for s in Street if s > street]
             for s in later:
                 assert seat not in view.saw.get(s, set())
+
+
+def test_vpip_and_pfr_are_counted_once_per_hand():
+    """Regression: a player who limps and then calls a raise put money in once.
+
+    Counting each preflop decision separately inflated both numerator and
+    denominator, which made samples look larger than they were and quietly
+    raised the confidence attached to every read built on them.
+    """
+    hand = build_hand([
+        act(Street.PREFLOP, 1, Act.POST_SB, 5, 5),
+        act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5),
+        act(Street.PREFLOP, 1, Act.CALL, 5, 10, pot_before=15, to_call=5),
+        act(Street.PREFLOP, 2, Act.RAISE, 30, 40, pot_before=20, to_call=0),
+        act(Street.PREFLOP, 1, Act.CALL, 30, 40, pot_before=50, to_call=30),
+    ])
+    books = {}
+    record_hand(hand, books)
+    limper = books["a"]["hu"]
+    assert limper.opps("vpip") == 1
+    assert limper.rate("vpip") == 1.0
+    assert limper.opps("pfr") == 1
+    assert limper.rate("pfr") == 0.0
+
+
+def test_a_player_who_never_acts_gets_no_vpip_opportunity():
+    """A big blind that everybody folds to never had a decision to make."""
+    hand = build_hand([
+        act(Street.PREFLOP, 1, Act.POST_SB, 5, 5),
+        act(Street.PREFLOP, 2, Act.POST_BB, 10, 10, pot_before=5),
+        act(Street.PREFLOP, 1, Act.FOLD, pot_before=15, to_call=5),
+    ])
+    books = {}
+    record_hand(hand, books)
+    assert books["b"]["hu"].opps("vpip") == 0

@@ -28,6 +28,7 @@ whether a deviation is worth money.
 
 from __future__ import annotations
 
+import gzip
 import json
 import secrets
 import tempfile
@@ -36,19 +37,22 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .analyze import as_dict, enrich
 from .archetypes import ARCHETYPE_BY_NAME, deviations
-from .db import DEFAULT_PATH, Store
+from .db import DEFAULT_PATH, Store, split_key
 from .exploits import RULES
 from .features import record_hands
+from .evidence import find as find_evidence
 from .glossary import payload as glossary_payload
+from .model import hand_from_dict
 from .identity import session_questions, suggest_links
 from .narrate import Unavailable, enabled as narrator_enabled, narrate
 from .parsers import UnknownFormat, parse_file
 from .priors import population_mean
 from .profile import build_profiles, build_unified
+from .replay import replay
 
 # Stats worth a row in the profile view, in reading order.
 DISPLAY_STATS = [
@@ -88,10 +92,13 @@ def _references(stat: str, regime: str, profile) -> dict:
     return out
 
 
-def profile_payload(profile) -> dict:
+def profile_payload(profile, player_id: int | None = None) -> dict:
     """``as_dict`` plus the reference points the charts need to be readable."""
     enrich(profile)
     payload = as_dict(profile)
+    # Carried so the UI can link a read back to the hands behind it. Absent for
+    # an unsaved session, whose hands are not in the database to look up.
+    payload["player_id"] = player_id
     payload["rows"] = []
     for stat, label, denominator in DISPLAY_STATS:
         est = profile.stats.get(stat)
@@ -303,6 +310,48 @@ def _player_id_of(store: Store, side: dict) -> int | None:
     return int(row["player_id"]) if row else None
 
 
+def leaderboard_payload(store: Store) -> dict:
+    """Players ranked by what they are worth to you, and games ranked by field.
+
+    The game ranking is the question a player with several regular games
+    actually has: which one is worth turning up to. It is a weighted average
+    rather than a total -- a table where one whale plays every hand is softer
+    than one where four decent players and a whale rotate, even though the
+    whale's leaks are the same size in both.
+    """
+    ranked = roster_payload(store)
+    by_id = {row["player_id"]: row for row in ranked}
+
+    games = []
+    for game in store.games():
+        seats = {pid: n for pid, n in game["seats"].items() if pid in by_id}
+        total = sum(seats.values())
+        if not total:
+            continue
+        field = []
+        soft, skill = 0.0, 0.0
+        for pid, count in sorted(seats.items(), key=lambda kv: -kv[1]):
+            row = by_id[pid]
+            share = count / total
+            soft += share * row["exploitability"]
+            skill += share * row["skill"]
+            field.append({"player_id": pid, "name": row["name"], "hands": count,
+                          "share": round(share, 3), "skill": row["skill"],
+                          "exploitability": row["exploitability"],
+                          "archetype": row["archetype"]})
+        games.append({
+            "site": game["site"], "table_id": game["table_id"],
+            "hands": game["hands"], "first_seen": game["first_seen"],
+            "last_seen": game["last_seen"], "players": len(seats),
+            "softness": round(soft, 2), "field_skill": round(skill, 1),
+            "field": field,
+            "softest": max(field, key=lambda f: f["exploitability"])["name"] if field else None,
+        })
+    games.sort(key=lambda g: -g["softness"])
+    return {"players": sorted(ranked, key=lambda r: -r["exploitability"]),
+            "games": games}
+
+
 class Handler(BaseHTTPRequestHandler):
     db_path = DEFAULT_PATH
 
@@ -340,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
                     if row is None:
                         return self._send(404, {"error": "no such player"})
                     unified = store.profile(player_id)
-                    profiles = [profile_payload(unified)] if unified else []
+                    profiles = [profile_payload(unified, player_id)] if unified else []
                     # The per-table breakdown stays available for anyone who
                     # wants to check that the pooling is not hiding something.
                     by_table = [profile_payload(p)
@@ -362,6 +411,43 @@ class Handler(BaseHTTPRequestHandler):
                 if token not in SESSIONS:
                     return self._send(404, {"error": "session expired -- upload again"})
                 return self._send(200, session_payload(token))
+            if path == "/api/leaderboard":
+                with Store(self.db_path) as store:
+                    return self._send(200, leaderboard_payload(store))
+            if path == "/api/evidence":
+                query = parse_qs(route.query)
+                player_id = int(query.get("player", ["0"])[0])
+                stat = query.get("stat", [""])[0]
+                if not stat:
+                    return self._send(400, {"error": "stat required"})
+                with Store(self.db_path) as store:
+                    hands = store.player_hands(player_id)
+                found = find_evidence(hands, str(player_id), stat, limit=60)
+                return self._send(200, {
+                    "stat": stat, "count": len(found),
+                    "hits": sum(1 for e in found if e.hit),
+                    "hands": [vars(e) for e in found],
+                })
+            if path.startswith("/api/hand/"):
+                hand_id = path.rsplit("/", 1)[1]
+                focus = parse_qs(route.query).get("focus", [None])[0]
+                with Store(self.db_path) as store:
+                    row = store.conn.execute(
+                        "SELECT payload FROM hands WHERE hand_id = ?", (hand_id,)).fetchone()
+                    if row is None:
+                        return self._send(404, {"error": "no such hand"})
+                    data = json.loads(gzip.decompress(row["payload"]))
+                    hand = hand_from_dict(data)
+                    accounts = {
+                        (r["site"], r["account"]): int(r["player_id"])
+                        for r in store.conn.execute(
+                            "SELECT site, account, player_id FROM aliases")}
+                for seat in hand.seats:
+                    pid = (accounts.get((hand.site, split_key(seat.player_id, seat.name)))
+                           or accounts.get((hand.site, seat.player_id)))
+                    if pid is not None:
+                        seat.player_id = str(pid)
+                return self._send(200, replay(hand, focus=focus))
             if path == "/api/meta":
                 return self._send(200, {"narrator": narrator_enabled()})
             if path == "/api/glossary":
@@ -656,6 +742,29 @@ PAGE = r"""<!doctype html>
   button.danger { border-color: #c0392b; color: #c0392b; }
   button.danger:hover { background: #c0392b; color: #fff; border-color: #c0392b; }
   .headline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
+  .gamecard { border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 10px 0; }
+  .gamecard.best { border-color: var(--accent); }
+  .ev { display: grid; grid-template-columns: 54px 1fr auto; gap: 10px;
+        align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line);
+        cursor: pointer; }
+  .ev:hover { background: var(--accent-soft); }
+  .ev:last-child { border-bottom: 0; }
+  .ev .verdict { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+  .ev .verdict.hit { color: var(--ink); font-weight: 600; }
+  .ev .verdict.miss { color: var(--muted); }
+  .cards { font-family: var(--mono); letter-spacing: .04em; }
+  .street { border-top: 1px solid var(--line); padding: 10px 0; }
+  .street:first-child { border-top: 0; }
+  .street h4 { margin: 0 0 6px; font-size: 11.5px; text-transform: uppercase;
+               letter-spacing: .06em; color: var(--muted); font-weight: 600;
+               display: flex; gap: 10px; align-items: baseline; }
+  .act { display: grid; grid-template-columns: 44px 1fr auto auto; gap: 10px;
+         padding: 3px 0; font-size: 13.5px; }
+  .act.focus { font-weight: 600; }
+  .act.focus .who::before { content: "\25B8 "; color: var(--accent); }
+  .act .amt { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .act.post { color: var(--muted); font-size: 12.5px; }
   /* review dialog */
   .veil {
     position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 30;
@@ -693,6 +802,7 @@ PAGE = r"""<!doctype html>
   <nav>
     <button data-tab="session" class="on">Session</button>
     <button data-tab="database">Database</button>
+    <button data-tab="leaderboard">Leaderboard</button>
   </nav>
   <div id="view"></div>
 </div>
@@ -966,7 +1076,22 @@ function profileCard(p) {
     $(".tier", div).after(info(termTip(l.tier)));
 
     const numbers = $(".numbers", div);
-    numbers.appendChild(document.createTextNode(l.in_words));
+    /* The sentence is split so the sample count can be clicked: a read you
+       cannot check is a read you have to take on faith, and this tool is not
+       worth that much faith. */
+    const claim = l.in_words.replace(/ -- seen about .*$/, " -- ");
+    numbers.appendChild(document.createTextNode(claim));
+    if (p.player_id != null) {
+      const link = document.createElement("button");
+      link.className = "act";
+      link.style.cssText = "padding:1px 9px;font-size:12px";
+      link.textContent = `see the ${Math.round(l.sample)} hands`;
+      link.onclick = () => showEvidence(p.player_id, l.stat, l.headline);
+      numbers.appendChild(link);
+    } else {
+      numbers.appendChild(document.createTextNode(
+        `seen about ${Math.round(l.sample)} times`));
+    }
     numbers.appendChild(info(
       `${statTip(l.stat, l.headline)}<hr style="border:0;border-top:1px solid var(--line);margin:7px 0">
        <span class="hl">breakeven ${fmtPct(l.breakeven)}</span><br>${esc((state.glossary || {terms:{}}).terms["breakeven"] || "")}`));
@@ -1310,7 +1435,7 @@ async function viewDatabase() {
   if (state.player) return viewPlayer(state.player);
   view.innerHTML = `<div class="panel"><div class="empty">loading\u2026</div></div>`;
   const data = await get("/api/roster");
-  $("#meta").textContent = `${data.hands} hands \u00b7 ${data.players.length} profiles \u00b7 ${data.db}`;
+  $("#meta").textContent = `${data.hands} hands \u00b7 ${data.players.length} players \u00b7 ${data.db}`;
   if (!data.players.length) {
     view.innerHTML = `<div class="panel"><h2>nothing stored yet</h2>
       <p class="muted">Read a session on the first tab, then add it to the database.</p></div>`;
@@ -1318,7 +1443,7 @@ async function viewDatabase() {
   }
   view.innerHTML = `<div class="panel">
       <div class="spread"><h2>every player so far</h2>
-        <span class="small muted">one row per player per table size \u2014 they are different games</span></div>
+        <span class="small muted">one row per player, pooled across every table size they play</span></div>
       <div id="db-roster"></div></div>
     <div class="panel" id="suggest-panel" hidden>
       <h2>possible same person</h2><div id="suggestions"></div></div>
@@ -1428,6 +1553,169 @@ function confirmReset(data) {
   };
 }
 
+/* ---- tab 3: leaderboard and softest-game picker ---- */
+async function viewLeaderboard() {
+  const view = $("#view");
+  view.innerHTML = `<div class="panel"><div class="empty">loading\u2026</div></div>`;
+  const data = await get("/api/leaderboard");
+  $("#meta").textContent = `${data.games.length} game(s) \u00b7 ${data.players.length} players`;
+  if (!data.players.length) {
+    view.innerHTML = `<div class="panel"><h2>nothing to rank yet</h2>
+      <p class="muted">Add a session to the database first.</p></div>`;
+    return;
+  }
+  view.innerHTML = `
+    <div class="panel">
+      <div class="spread"><h2>which game to play</h2>
+        <span class="small muted">ranked by what the field is worth to you</span></div>
+      <div id="games"></div>
+    </div>
+    <div class="panel">
+      <div class="spread"><h2>players</h2>
+        <span class="small muted worthinfo"></span></div>
+      <div class="scroller"><table><thead><tr>
+        <th></th><th>player</th><th class="num">hands</th><th>read</th>
+        <th class="num">skill</th><th class="num">worth to you</th>
+      </tr></thead><tbody id="ranked"></tbody></table></div>
+    </div>`;
+  const worth = $(".worthinfo");
+  worth.appendChild(document.createTextNode("most attackable first"));
+  worth.appendChild(info(termTip("available")));
+
+  const games = $("#games");
+  data.games.forEach((g, i) => {
+    const card = document.createElement("div");
+    card.className = "gamecard" + (i === 0 && data.games.length > 1 ? " best" : "");
+    const when = g.last_seen ? new Date(g.last_seen).toLocaleDateString() : "";
+    card.innerHTML = `
+      <div class="spread">
+        <div><b>${esc(g.table_id.slice(0, 14))}</b>
+          <span class="small muted">\u00b7 ${g.hands} hands \u00b7 ${g.players} players
+            \u00b7 last played ${esc(when)}</span></div>
+        <div style="text-align:right">
+          <div style="font-size:20px;font-weight:700">${g.softness.toFixed(2)}</div>
+          <div class="small muted">bb/100 available</div>
+        </div>
+      </div>
+      <div class="small muted" style="margin:6px 0 8px">
+        Field skill ${g.field_skill.toFixed(0)}/100.
+        ${g.softest ? "Softest seat: " + esc(g.softest) + "." : ""}</div>
+      <div class="field"></div>`;
+    const field = $(".field", card);
+    for (const f of g.field) {
+      const line = document.createElement("div");
+      line.style.cssText = "display:grid;grid-template-columns:130px 1fr 92px 60px;gap:10px;align-items:center;margin:3px 0";
+      const name = document.createElement("span");
+      name.className = "small"; name.textContent = f.name;
+      const share = document.createElement("span");
+      share.className = "small muted"; share.textContent = `${Math.round(100 * f.share)}% of seats`;
+      const val = document.createElement("span");
+      val.className = "small muted"; val.style.textAlign = "right";
+      val.textContent = `${f.exploitability.toFixed(2)} bb`;
+      line.append(name, bar(f.exploitability, Math.max(0.01,
+        ...g.field.map(x => x.exploitability)), "var(--mark-3)", 150), share, val);
+      bindTip(line, `<b>${esc(f.name)}</b> \u2014 ${esc(f.archetype)}<br>
+        skill ${f.skill.toFixed(0)}/100 \u00b7 ${f.hands} hands at this table<br>
+        <span class="muted">worth ${f.exploitability.toFixed(2)} bb/100 to you</span>`);
+      field.appendChild(line);
+    }
+    games.appendChild(card);
+  });
+
+  const body = $("#ranked");
+  data.players.forEach((p, i) => {
+    const tr = document.createElement("tr");
+    tr.className = "clickable";
+    tr.onclick = () => { state.player = p.player_id; switchTab("database"); };
+    tr.innerHTML = `<td class="rank">${i + 1}</td>
+      <td><span class="name">${esc(p.name)}</span></td>
+      <td class="num">${p.hands}</td>
+      <td>${esc(p.archetype)}</td>
+      <td class="num">${p.skill.toFixed(0)}</td>
+      <td class="num">${p.exploitability ? p.exploitability.toFixed(2) : "\u2014"}</td>`;
+    body.appendChild(tr);
+  });
+}
+
+/* ---- evidence: the hands behind a number ---- */
+async function showEvidence(playerId, stat, headline) {
+  const modal = $("#modal");
+  modal.innerHTML = `<div class="veil"><div class="sheet">
+    <h2 style="margin-top:0">${esc(headline)}</h2>
+    <div class="empty">finding the hands\u2026</div></div></div>`;
+  let data;
+  try {
+    data = await get(`/api/evidence?player=${playerId}&stat=${encodeURIComponent(stat)}`);
+  } catch (err) {
+    modal.innerHTML = `<div class="veil"><div class="sheet">
+      <p class="err">${esc(err.message)}</p>
+      <div class="row" style="justify-content:flex-end"><button class="act" id="close">Close</button></div>
+      </div></div>`;
+    $("#close").onclick = () => { modal.innerHTML = ""; };
+    return;
+  }
+  modal.innerHTML = `<div class="veil"><div class="sheet">
+    <div class="spread"><h2 style="margin:0">${esc(headline)}</h2>
+      <button class="act" id="close">Close</button></div>
+    <p class="small muted">Every hand where this came up: ${data.count} of them,
+      ${data.hits} counted toward the read. Click one to replay it. The estimate
+      weights hands from other table sizes less, so it can differ slightly from
+      this count.</p>
+    <div id="evlist"></div>
+    <div id="replay"></div></div></div>`;
+  $("#close").onclick = () => { modal.innerHTML = ""; };
+
+  const list = $("#evlist");
+  for (const h of data.hands) {
+    const row = document.createElement("div");
+    row.className = "ev";
+    const when = h.started_at ? new Date(h.started_at).toLocaleString() : "";
+    row.innerHTML = `
+      <span class="verdict ${h.hit ? "hit" : "miss"}">${h.hit ? "counted" : "no"}</span>
+      <span><span class="cards">${esc(h.board.join(" ")) || "\u2014"}</span>
+        <div class="small muted">${esc(h.summary)}</div></span>
+      <span class="small muted" style="text-align:right">${h.net_bb > 0 ? "+" : ""}${h.net_bb} bb
+        <div style="font-size:11px">${esc(when)}</div></span>`;
+    row.onclick = () => showReplay(h.hand_id, playerId);
+    list.appendChild(row);
+  }
+}
+
+async function showReplay(handId, playerId) {
+  const box = $("#replay");
+  box.innerHTML = `<div class="empty">loading hand\u2026</div>`;
+  const r = await get(`/api/hand/${handId}?focus=${playerId}`);
+  const seats = r.seats.map(s =>
+    `${esc(s.position)} ${esc(s.name)}${s.hole_cards.length
+      ? ' <span class="cards">' + esc(s.hole_cards.join(" ")) + "</span>" : ""}`
+  ).join(" \u00b7 ");
+  box.innerHTML = `<div class="panel" style="margin-top:14px">
+    <div class="spread"><h2 style="margin:0">hand replay</h2>
+      <span class="small muted">${r.pot_bb} bb pot \u00b7 won by ${esc(r.winners.join(", ") || "\u2014")}</span></div>
+    <div class="small muted" style="margin-bottom:10px">${seats}</div>
+    <div id="streets"></div></div>`;
+  const streets = $("#streets");
+  for (const st of r.streets) {
+    const div = document.createElement("div");
+    div.className = "street";
+    div.innerHTML = `<h4>${esc(st.name)}
+      <span class="cards" style="color:var(--ink)">${esc(st.new_cards.join(" "))}</span></h4>`;
+    for (const a of st.actions) {
+      const line = document.createElement("div");
+      line.className = "act" + (a.focus ? " focus" : "") + (a.post ? " post" : "");
+      const amount = a.act.startsWith("check") || a.act.startsWith("fold")
+        ? "" : `${a.to_bb} bb`;
+      line.innerHTML = `<span class="small muted">${esc(a.position)}</span>
+        <span class="who">${esc(a.name)} ${esc(a.act)}</span>
+        <span class="amt">${amount}</span>
+        <span class="amt small">pot ${a.pot_bb}</span>`;
+      div.appendChild(line);
+    }
+    streets.appendChild(div);
+  }
+  box.scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+
 /* ---- tabs ---- */
 function switchTab(tab) {
   state.tab = tab;
@@ -1441,6 +1729,7 @@ async function render() {
   try {
     if (!state.glossary) state.glossary = await get("/api/glossary");
     if (state.tab === "session") viewSession();
+    else if (state.tab === "leaderboard") await viewLeaderboard();
     else await viewDatabase();
   } catch (err) {
     $("#view").innerHTML = `<div class="panel err">${esc(err.message)}</div>`;

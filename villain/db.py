@@ -475,6 +475,70 @@ class Store:
         return build_unified(books,
                              priors=self.fitted_priors(primary_regime(books)) or None)
 
+    def games(self) -> list[dict]:
+        """Every table in the database, with who plays there and how often.
+
+        A ``table_id`` is one game -- a PokerNow room, a home game that keeps
+        the same link. Which one to turn up to is a database-wide question and
+        the only thing the profiler is missing to answer it.
+        """
+        rows = self.conn.execute(
+            """SELECT h.site, h.table_id,
+                      COUNT(*) AS hands,
+                      MIN(h.started_at) AS first_seen,
+                      MAX(h.started_at) AS last_seen
+                 FROM hands h GROUP BY h.site, h.table_id
+                 ORDER BY last_seen DESC""").fetchall()
+        alias_map = {
+            (r["site"], r["account"]): int(r["player_id"])
+            for r in self.conn.execute("SELECT site, account, player_id FROM aliases")
+        }
+        seats: dict[str, dict[int, int]] = {}
+        for row in self.conn.execute("SELECT site, table_id, payload FROM hands"):
+            data = json.loads(gzip.decompress(row["payload"]))
+            counts = seats.setdefault(row["table_id"], {})
+            for seat in data["seats"]:
+                pid = (alias_map.get((row["site"], seat["player_id"]))
+                       or alias_map.get((row["site"],
+                                         split_key(seat["player_id"], seat["name"]))))
+                if pid is not None:
+                    counts[pid] = counts.get(pid, 0) + 1
+        return [
+            {"site": r["site"], "table_id": r["table_id"], "hands": r["hands"],
+             "first_seen": r["first_seen"], "last_seen": r["last_seen"],
+             "seats": seats.get(r["table_id"], {})}
+            for r in rows
+        ]
+
+    def player_hands(self, player_id: int) -> list[Hand]:
+        """Stored hands this player was dealt into, keyed to internal ids.
+
+        The same re-keying ``rebuild`` does, so anything computed from these
+        hands lines up with the statistics computed from them.
+        """
+        accounts = {
+            (r["site"], r["account"]): int(r["player_id"])
+            for r in self.conn.execute("SELECT site, account, player_id FROM aliases")
+        }
+
+        def resolve(site, account, name):
+            return (accounts.get((site, split_key(account, name)))
+                    or accounts.get((site, account)))
+
+        out = []
+        for row in self.conn.execute(
+                "SELECT site, payload FROM hands ORDER BY started_at"):
+            data = json.loads(gzip.decompress(row["payload"]))
+            hand = hand_from_dict(data)
+            ids = []
+            for seat in hand.seats:
+                pid = resolve(hand.site, seat.player_id, seat.name)
+                seat.player_id = str(pid) if pid is not None else seat.player_id
+                ids.append(pid)
+            if player_id in ids:
+                out.append(hand)
+        return out
+
     def reset(self) -> dict[str, int]:
         """Empty the database, keeping the file and its schema.
 

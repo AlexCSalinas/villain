@@ -41,6 +41,13 @@ a skill rating. **Nothing is saved.** Close the tab and your database is exactly
 as it was. Use this to look at a game you just played without committing to
 anything.
 
+**Leaderboard** — which game to turn up to. Every table in the database ranked
+by what its field is worth to you in bb/100, weighted by how often each player
+actually occupies a seat: one whale who plays every hand makes a softer game
+than a whale who rotates through with three competent regulars, even though the
+whale's leaks are identical. Below it, every player ranked by how attackable
+they are.
+
 **Database** — everyone you have ever imported, accumulating across sessions.
 One row per player, one profile per player. Click through for the full read. A
 player you have 800 hands on reads far more sharply than one you have 80 on,
@@ -127,6 +134,25 @@ knowing and not worth rebuilding your game around.
 
 If a player shows no leaks, that is usually "not enough hands yet" rather than
 "unexploitable". The tool says so rather than inventing something.
+
+### Checking a read
+
+Every exploit shows the hands behind it. "Folds too often to river bets" comes
+with a **see the 25 hands** button that lists each one — board, what they did,
+what it cost them, and whether it counted toward the read — and clicking any of
+them replays the hand street by street with their actions marked.
+
+Nothing extra is stored to make this work. Hands are already the source of
+truth and a statistic's definition already lives in exactly one place, so the
+contributing hands are found by replaying each hand through the same extraction
+the statistics use and asking which ones moved the counter. The evidence
+therefore cannot drift from the number: change a definition and both change
+together, because they are the same code.
+
+This is also the fastest way to find out the tool is wrong. Building it
+immediately surfaced a real bug — VPIP was being counted once per preflop
+*decision* rather than once per hand, so a player who limped and then called a
+raise was counted twice, inflating every sample that fed it.
 
 ### Optional: a plain-English summary
 

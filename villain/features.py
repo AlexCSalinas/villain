@@ -92,6 +92,10 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
     limpers: set[int] = set()
     cold_callers = 0
     bb = hand.big_blind
+    # VPIP and PFR are per *hand*, not per decision. A player who limps and
+    # then calls a raise put money in once; counting both decisions inflates
+    # the denominator and makes the sample look larger than it is.
+    entered: dict[int, dict[str, bool]] = {}
 
     for d in view.decisions():
         if d.street is not Street.PREFLOP:
@@ -103,9 +107,10 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
         called = a.act is Act.CALL
         folded = a.act is Act.FOLD
 
-        # VPIP / PFR: denominator is every player who got a preflop decision.
-        book.count("vpip", raised or called)
-        book.count("pfr", raised)
+        # Recorded once per hand, after the street is over.
+        seen = entered.setdefault(d.seat, {"vpip": False, "pfr": False})
+        seen["vpip"] = seen["vpip"] or raised or called
+        seen["pfr"] = seen["pfr"] or raised
 
         if d.aggression_level == 0 and not voluntary:
             # First in: nobody has voluntarily put money in yet.
@@ -162,6 +167,11 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str) -> None:
             limpers.add(d.seat)
         if raised or called:
             voluntary.add(d.seat)
+
+    for seat, seen in entered.items():
+        book = _book(hand, books, seat, reg)
+        book.count("vpip", seen["vpip"])
+        book.count("pfr", seen["pfr"])
 
 
 # ---------------------------------------------------------------------------
