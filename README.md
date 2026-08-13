@@ -52,15 +52,19 @@ Standard library HTTP server, one self-contained module. Two tabs.
   "+8pp VPIP" measures which table somebody sat at otherwise. A player with too
   little history outside the sitting is told so rather than given a trend.
 
-A profile shows one player at a time from a tab strip: the read, what to do
-about it, the score, six headline numbers, and the rest behind a disclosure,
-because a mid-session read that requires scrolling is one you will not use.
-Every shorthand carries an **ⓘ** giving what the statistic counts and what
-*high* and *low* each mean — both, since both are usually exploitable and call
-for opposite play. Definitions live in `glossary.py` as data, and a test fails
-if a statistic reaches the screen without one. **Reset** makes you type `delete
-everything`; exports are untouched, so statistics can be rebuilt, but the merge
-and rename decisions cannot.
+A profile is one screen of tiles — the read and the plan across the top, then
+what to do, the rating and the numbers — because a mid-session read that
+requires scrolling is one you will not use.
+
+Smaller things it does so you do not have to think about them: every shorthand
+carries an **ⓘ** with what the statistic counts and what *high* and *low* each
+mean, since both are usually exploitable and call for opposite play, and a test
+fails if a statistic reaches the screen without one. Six headline numbers show,
+the rest are one click away. Long imports block the window, because the server
+handles one request at a time and clicking through a half-written database is
+how you get a half-written database. **Reset** makes you type `delete
+everything`, and exports are untouched, so statistics can be rebuilt — the
+merge and rename decisions cannot.
 
 ### Saving a session
 
@@ -72,7 +76,7 @@ every call it is unsure of rather than guessing.
 * **One account id, a new display name.** The PokerNow case, almost always a
   rename, so it defaults to *same player*. Answer no and they stay apart, keyed
   `<account>#<name>` so neither loses its existing hands.
-* **Two account ids that look like one person** — `Arnav`, `Arnav2` — default
+* **Two account ids that look like one person** — `villain`, `villain2` — default
   to *different people*: the merge is the more expensive mistake on the weaker
   evidence.
 
@@ -130,7 +134,7 @@ Local, with nothing leaving the machine:
 ```bash
 brew install ollama && ollama serve
 ollama pull llama3.2
-VILLAIN_LLM_MODEL=llama3.2 villain profile DavidMazour --narrate
+VILLAIN_LLM_MODEL=llama3.2 villain profile "seat 4" --narrate
 ```
 
 Or a hosted free tier, in `~/.villain/env`:
@@ -169,7 +173,7 @@ evidence view exists to check them against the hands.
 
 ```
 ------------------------------------------------------------------------------
-Arnav2  --  heads-up, 183 hands (usable)
+seat 4  --  heads-up, 183 hands (usable)
 ------------------------------------------------------------------------------
 READ: TAG  (confidence 51%)
   Solid and hard to exploit; frequencies sit close to the field.
@@ -179,7 +183,7 @@ READ: TAG  (confidence 51%)
   (also plausibly: trapper 20%, station 15%)
 
 EXPLOITS  (1 found)
-  [tentative] Folds too often to river bets  ~0.1 bb/100
+  [tentative] Folds too often to river bets  ~2.3 bb/100
       51% vs 40% breakeven  (field 45%, n=16)
       Bluff every river you reach with a busted hand, and size up -- they are
       folding to the decision rather than to the price.
@@ -189,13 +193,12 @@ SKILL: strong (69/100)   confidence 54%
     hand selection             ###############...  81.5
     bet sizing                 ###############...  85.3
     preflop aggression         ##################  97.6  raises 73% of hands played
-    resistance to exploitation ##################  97.7  ~0.1 bb/100 available
+    resistance to exploitation ############......  62.1  ~2.3 bb/100 available
   observed -1.0 bb/100, shrunk and all-in adjusted -0.2 bb/100
 ```
 
 Note what it does *not* claim: 183 hands buy a bucket at 51% confidence and one
-tentative leak worth a tenth of a big blind per 100, which is what a session
-this size contains.
+leak still labelled tentative, which is what a session this size contains.
 
 Each exploit answers four questions — what they are doing (as behaviour, not as
 a statistic), why it is exploitable (the breakeven arithmetic), what to do, and
@@ -227,8 +230,25 @@ of once per hand.
 ## How it works
 
 **Everything is shrunk toward a population prior and carries its own
-uncertainty.** A frequency is a Beta posterior, not a fraction: three
-observations barely move it, three hundred make the prior irrelevant.
+uncertainty.** A frequency is a Beta posterior, not a fraction. A prior is a
+mean `m` and a strength `s`; `h` hits in `n` chances give
+`Beta(m·s + h, (1−m)·s + n − h)`, so the estimate is `(m·s + h) / (s + n)` and
+the interval comes out of the same posterior. Three observations barely move
+it, three hundred make the prior irrelevant, and nothing has to decide when a
+sample became "enough" — the arithmetic does that continuously.
+
+**The prior is fitted from your own pool, not assumed.** With eight or more
+players who have five or more chances at a statistic, a Beta-Binomial
+method-of-moments fit replaces the built-in online numbers. The mean is the
+pool average; the strength comes from the *spread between players*, taking the
+total variance and subtracting the binomial sampling noise `m(1−m)/n̄`. What is
+left is genuine player-to-player variation, and `s = m(1−m)/between − 1`. If
+everyone in your game folds to c-bets at about the same rate, three
+observations of a new player should barely move them; if the spread is wide,
+the same three carry real information. The fitted population then feeds the
+archetype label and the exploit thresholds as well as the shrinkage — measuring
+a home game against a generic online field otherwise makes every deviation
+wrong by the gap between the two.
 
 **Table size is part of a player's identity.** 55% VPIP is a nit heads-up, a
 normal three-handed player and a maniac at a full ring, so statistics are
@@ -264,6 +284,22 @@ the *same* features — one scored only on the features it mentions wins by
 mentioning fewer — and the result is a posterior, because players sit between
 buckets.
 
+### Matching is a likelihood, not a distance
+
+Each archetype implies a frequency per feature: the population mean shifted by
+that archetype's deviation, in log-odds, scaled by the feature's spread. Raw
+counts are then scored against each implied frequency with an overdispersed
+Beta-Binomial, and the archetype posterior is the product across features,
+weighted by how much each feature identifies a plan and discounted because
+those features are correlated — VPIP and PFR are not independent measurements.
+
+Shrinking first and *then* measuring distance to a prototype would count the
+uncertainty twice and collapse every thin sample onto whichever prototype sits
+in the middle. That failure is worth naming because it recurs: a prototype
+close to the population centre wins every ambiguous player by default, so each
+archetype needs a real identity, not just a name. The bucket a player is
+"between" is reported rather than hidden.
+
 ### Leaks are priced from pot odds, not from the field
 
 A leak fires on an **absolute** threshold, because what makes a tendency
@@ -273,7 +309,14 @@ exploitable is arithmetic, not fashion:
   half pot, 40% at two thirds, 50% at pot;
 * below a third folds, even the cheapest bluff worth making loses money, so the
   exploit inverts from pressure to thin value;
-* a steal risking `r` to win `p` breaks even at `r / (r + p)`.
+* a steal risking `r` to win `p` breaks even at `r / (r + p)`;
+* facing a bet of size `s` a call needs `s / (1 + 2s)` equity, so a range that
+  bets past `v / (1 − s/(1+2s))` — about 1.40× the field at two-thirds pot — is
+  betting more than its value hands support, and calling down profits.
+
+That last one is the mirror of the first, and it exists because pricing only
+the passive errors made an over-aggressive player look unexploitable rather
+than merely unmeasured.
 
 Folding 55% to a two-thirds pot bet is exploitable whether or not the rest of
 the pool folds 55% too; population comparisons only *identify* a player, and
@@ -300,7 +343,7 @@ Hands are the source of truth and statistics are a disposable cache:
 definitions change, and `villain rebuild` recomputes every profile from stored
 hands rather than leaving old players wrong until they sit down again.
 
-The same human is `DavidMazour` at one table and `DavidMazour2` at the next, so
+The same human is one screen name at one table and a near-miss of it at the next, so
 accounts are aliases pointing at an internal player. Candidate merges come from
 name similarity (case, punctuation and trailing digits stripped) and a Bayes
 factor over their statistics — one player against two — which stops two tight
