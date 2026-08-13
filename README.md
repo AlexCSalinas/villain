@@ -25,7 +25,7 @@ python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
 
-pytest                             # 198 tests
+pytest                             # 207 tests
 ```
 
 That installs two commands, `villain` and `villain-ui`. The parser suite checks
@@ -39,15 +39,18 @@ modelling mistakes that produced them.
 villain ui                         # http://127.0.0.1:8766
 ```
 
-Standard library HTTP server, one self-contained module. Three tabs, because
-there are three questions.
+Standard library HTTP server, one self-contained module. Two tabs.
 
-* **Session** — who am I playing right now. Drop a hand history on the page and
-  the read comes back at once. **Nothing is written anywhere.**
-* **Database** — who is this, across every session ever imported. One profile
-  per player, and 800 hands read far more sharply than 80.
-* **Leaderboard** — every player you have recorded, ranked by skill score, with
-  the bb/100 you can attack them for alongside.
+* **Database** — everyone you have recorded, ranked by skill, with the bb/100
+  you can attack them for alongside. Drop any number of exports on it at once:
+  duplicates are skipped by hand id, and the identity questions are asked once
+  for the whole batch rather than once per file, so you cannot answer "same
+  player" for one file and "different" for the next.
+* **Sessions** — one sitting at a time, derived from the gaps between hands
+  rather than stored. Who played, what they looked like that night, and what
+  they did more or less of than usual. Compared *within* a table size, because
+  "+8pp VPIP" measures which table somebody sat at otherwise. A player with too
+  little history outside the sitting is told so rather than given a trend.
 
 A profile shows one player at a time from a tab strip: the read, what to do
 about it, the score, six headline numbers, and the rest behind a disclosure,
@@ -150,8 +153,9 @@ pinned Gemini versions retire and start returning 404 to a tool that worked
 last month.
 
 **Two guards on what it can say.** It may not state a figure the profile did
-not produce -- the output is checked, and an invented number is sent back once
-with the offending figure named before the response is refused. And every
+not produce -- the output is checked, and an invented number is sent back with
+the offending figure named, up to two more attempts, before the response is
+refused. And every
 statistic reaches it spelled out ("having bet the flop, how often they fire
 again on the turn: 41%") rather than as an internal key, because a correctly
 quoted number used to mean the wrong thing is a mistake no guard on invented
@@ -207,8 +211,13 @@ enough hands yet, and the tool says so rather than inventing something.
 
 ### Checking a read
 
-Every exploit carries a **see the N hands** button — board, what they did, what
-it cost, whether it counted — and any of them replays street by street. Nothing
+Every exploit and every rating component carries a **see the hands** button —
+the board as cards, what they did, what it cost — and any of them replays street
+by street. It opens on the hands where the thing actually happened, with the
+rest a click away, and says in a line what the rate means: *4 of 2,945 — 0%,
+almost never. Normal, good players rarely limp.* A statistic with thousands of
+instances gets no button, because a list of every hand somebody played is a
+denominator rather than evidence. Nothing
 extra is stored: contributing hands are found by replaying each hand through
 the same extraction the statistics use, so the evidence cannot drift from the
 number, being the same code. It is also the fastest way to catch the tool being
@@ -320,11 +329,14 @@ returning something authoritative-looking and wrong.
   bias is reduced, not removed.
 * **Severity constants are assumptions.** The breakeven thresholds are derived;
   the capture fractions are judgement calls.
-* **Side pots are not modelled.** All-in equity with three or more players of
-  different stacks is approximate, and those hands are flagged rather than
-  trusted.
+* **Side pots are approximate.** Each player's equity is capped at the pot they
+  were actually eligible for, so a short all-in is no longer credited with money
+  it could never have won, but the split between layered pots is not modelled
+  and those hands carry a `side_pot` flag.
 * **Built-in priors are pool-agnostic.** They describe a generic online
-  population. Run `villain fit` once your database has enough players.
+  population until your own pool can replace them, which happens automatically
+  on import once eight players clear the bar. The fitted population then feeds
+  the archetype label and the exploit thresholds too, not just the shrinkage.
 * **PokerNow is the only parser so far.** The format registry in
   `villain/parsers/` takes new sites without touching anything downstream.
 
