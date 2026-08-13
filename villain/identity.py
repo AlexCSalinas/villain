@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -62,6 +63,17 @@ def normalise(name: str) -> str:
     return stripped or text
 
 
+def display_key(name: str) -> str:
+    """Case- and punctuation-insensitive, but digits intact.
+
+    :func:`normalise` deliberately strips trailing digits so ``Arnav`` and
+    ``Arnav2`` compare equal. That is the wrong tool for asking whether two
+    accounts are literally showing the same screen name, where ``Vik`` and
+    ``Vik2`` are different answers.
+    """
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+
 def name_similarity(a: str, b: str) -> float:
     """Similarity of two screen names, 0-1.
 
@@ -78,7 +90,32 @@ def name_similarity(a: str, b: str) -> float:
         return 1.0
     blocks = SequenceMatcher(None, na, nb).ratio()
     edits = 1.0 - _levenshtein(na, nb) / max(len(na), len(nb))
-    return max(blocks, edits)
+    return max(blocks, edits, _skeleton_score(na, nb))
+
+
+def _skeleton(name: str) -> str:
+    """The consonants, in order. ``saarang`` and ``srng`` share one."""
+    return re.sub(r"[aeiou]", "", name)
+
+
+def _skeleton_score(na: str, nb: str) -> float:
+    """Catch the vowel-dropped nickname, which neither other measure can see.
+
+    ``saarang`` against ``srng`` scores 0.73 on shared runs and 0.57 on edit
+    distance, so it sat well under the bar -- but dropping the vowels out of a
+    name is one of the most common ways a person shortens it, and the two are
+    almost always the same human.
+
+    Deliberately conservative. The skeletons have to match exactly and be at
+    least three consonants long: at two, ``Dan`` and ``Dean`` collapse onto the
+    same ``dn`` and the measure starts inventing people. It also returns less
+    than an exact-name match, because it is weaker evidence -- enough to raise
+    the question, never enough to answer it.
+    """
+    sa, sb = _skeleton(na), _skeleton(nb)
+    if len(sa) < 3 or sa != sb:
+        return 0.0
+    return 0.93
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -175,9 +212,49 @@ def _name_match_reason(a: str, b: str, score: float) -> str:
     Display names can drift (``TinHusband`` while the only alias is still
     ``ShishGL``); citing those makes a real same-screen-name hit look fake.
     """
-    if normalise(a) == normalise(b):
+    if a == b:
         return f"both appeared as “{a}”"
+    if normalise(a) == normalise(b):
+        # Same root, different strings. Saying "both appeared as Jay2" when one
+        # of them is "Jay 5:30" states something that did not happen.
+        return f"both shorten to “{normalise(a)}”"
+    if _skeleton_score(normalise(a), normalise(b)):
+        return f"“{a}” is “{b}” with the vowels dropped"
     return f"“{a}” ≈ “{b}” ({score:.0%})"
+
+
+def _short_account(value) -> str:
+    text = str(value or "")
+    return text if len(text) <= 10 else f"{text[:6]}\u2026{text[-3:]}"
+
+
+def _when(entry: dict) -> str:
+    first, last = entry.get("first"), entry.get("last")
+    if not first:
+        return ""
+    day = time.strftime("%-d %b", time.localtime(first / 1000))
+    if last and time.strftime("%j", time.localtime(last / 1000)) != \
+            time.strftime("%j", time.localtime(first / 1000)):
+        return f"{day}\u2013{time.strftime('%-d %b', time.localtime(last / 1000))}"
+    return day
+
+
+def _distinguish(left: dict, right: dict, overlap: int = 0) -> str:
+    """What separates two accounts wearing the same screen name.
+
+    The name is not evidence here -- both sides show the same string -- so the
+    question has to be answered on account id, volume and when each was seen.
+    """
+    parts = []
+    for side in (left, right):
+        bits = [f"account {_short_account(side.get('account'))}"]
+        if side.get("hands"):
+            bits.append(f"{side['hands']} hands")
+        when = _when(side)
+        if when:
+            bits.append(when)
+        parts.append(", ".join(bits))
+    return f"Same name, two account ids \u2014 {parts[0]}; {parts[1]}."
 
 
 def _combine(name_score: float, log_bf: float | None = None) -> tuple[float, str]:
@@ -244,9 +321,15 @@ def _account_index(hands) -> dict[tuple[str, str], dict]:
         for seat in hand.seats:
             key = (hand.site, seat.player_id)
             entry = out.setdefault(key, {"site": hand.site, "account": seat.player_id,
-                                         "name": seat.name, "hands": 0})
+                                         "name": seat.name, "hands": 0,
+                                         "first": hand.started_at, "last": hand.started_at})
             entry["hands"] += 1
             entry["name"] = seat.name or entry["name"]
+            if hand.started_at is not None:
+                if entry["first"] is None or hand.started_at < entry["first"]:
+                    entry["first"] = hand.started_at
+                if entry["last"] is None or hand.started_at > entry["last"]:
+                    entry["last"] = hand.started_at
     return out
 
 
@@ -305,7 +388,7 @@ def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> 
             left={"name": db_name, "hands": row["hands"], "player_id": row["player_id"],
                   "where": "already in the database"},
             right={"name": new_name, "hands": entry["hands"],
-                   "site": key[0], "account": key[1], "where": "in this session"},
+                   "site": key[0], "account": key[1], "where": "in the hands you are adding"},
             # Prefer the name already on file so a reconnect does not invent a
             # second display name for somebody you already track.
             names=[db_name, new_name],
@@ -327,9 +410,8 @@ def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> 
         if overlap:
             # State it rather than hiding it: the user is being asked to
             # overrule the strongest signal the tool has.
-            reason += (f". Note they were seated together in {overlap} hand"
-                       f"{'s' if overlap > 1 else ''} -- usually a reconnect "
-                       "leaving a stale seat, but check before merging")
+            reason += (f" \u2014 but seated together in {overlap} hand"
+                       f"{'s' if overlap > 1 else ''}")
             confidence *= 0.5
             auto = False
         # When one side is already in the database, keep that display name.
@@ -344,13 +426,29 @@ def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> 
             busier = left if left.get("hands", 0) >= right.get("hands", 0) else right
             default_name = busier["name"]
             names = [left["name"], right["name"]]
+        # Two accounts showing the *same* screen name, never dealt in together,
+        # is what a reconnect looks like: the site issues a new account id and
+        # the player retypes nothing. Asking "Are Vik and Vik the same person?"
+        # gave the reader two identical strings and no way to answer, so say
+        # what actually differs and lead with the likely answer. A merge is
+        # still the expensive mistake, so the co-occurrence guard above stays
+        # absolute -- it is only the wording and the default that change here.
+        identical = display_key(left["name"]) == display_key(right["name"])
+        if identical:
+            prompt = (f"Two accounts are both called “{left['name']}”. "
+                      "Same person?")
+            reason = _distinguish(left, right, overlap)
+        else:
+            prompt = f"Are “{left['name']}” and “{right['name']}” the same person?"
         questions.append(Question(
             id=qid, kind="alias",
-            prompt=f"Are “{left['name']}” and “{right['name']}” the same person?",
+            prompt=prompt,
             detail=reason,
             # Clear matches to a known player default to yes; session-only
-            # pairs still default to no (merging two real people is costly).
-            default=auto or (db_side is not None and overlap == 0),
+            # pairs still default to no (merging two real people is costly)
+            # unless the screen name is identical and they never met.
+            default=auto or (db_side is not None and overlap == 0)
+            or (identical and overlap == 0),
             confidence=confidence,
             left=left, right=right,
             names=names, default_name=default_name, auto=auto))
@@ -376,9 +474,11 @@ def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> 
             add_alias_question(
                 f"alias:{key[1]}|{other_key[1]}", score,
                 {"name": entry["name"], "hands": entry["hands"], "site": key[0],
-                 "account": key[1], "where": "in this session"},
+                 "account": key[1], "where": "in the hands you are adding",
+                 "first": entry.get("first"), "last": entry.get("last")},
                 {"name": other["name"], "hands": other["hands"], "site": other_key[0],
-                 "account": other_key[1], "where": "in this session"},
+                 "account": other_key[1], "where": "in the hands you are adding",
+                 "first": other.get("first"), "last": other.get("last")},
                 overlap=overlap, auto=False)
 
         # incoming vs the database — clear name match auto-merges onto the
@@ -402,7 +502,7 @@ def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> 
                 {"name": row["display_name"], "hands": row["hands"] or 0,
                  "player_id": player_id, "where": "already in the database"},
                 {"name": entry["name"], "hands": entry["hands"], "site": key[0],
-                 "account": key[1], "where": "in this session"},
+                 "account": key[1], "where": "in the hands you are adding"},
                 auto=True, matched_a=best[1], matched_b=entry["name"])
 
     questions.sort(key=lambda q: (q.kind != "rename", -(q.confidence or 1.0)))

@@ -60,7 +60,7 @@ NEIGHBOURS = {HEADS_UP: (THREE, SHORT, FULL), THREE: (HEADS_UP, SHORT, FULL),
 # to 0.5 with a weak prior.
 POPULATION: dict[str, dict[str, float]] = {
     HEADS_UP: {
-        "vpip": 0.70, "pfr": 0.55, "rfi": 0.75, "limp": 0.06,
+        "vpip": 0.70, "pfr": 0.55, "raise_share": 0.79, "rfi": 0.75, "limp": 0.06,
         "three_bet": 0.16, "fold_to_three_bet": 0.45, "four_bet": 0.12,
         "fold_to_four_bet": 0.45, "bb_defend": 0.62, "bb_fold_to_open": 0.38,
         "steal": 0.75, "fold_to_steal": 0.38, "three_bet_vs_steal": 0.16,
@@ -84,7 +84,7 @@ POPULATION: dict[str, dict[str, float]] = {
         "river_bet_bluff": 0.30, "sd_light_call": 0.35,
     },
     SHORT: {
-        "vpip": 0.24, "pfr": 0.19, "rfi": 0.26, "limp": 0.05,
+        "vpip": 0.24, "pfr": 0.19, "raise_share": 0.79, "rfi": 0.26, "limp": 0.05,
         "three_bet": 0.08, "fold_to_three_bet": 0.55, "four_bet": 0.08,
         "fold_to_four_bet": 0.50, "bb_defend": 0.42, "bb_fold_to_open": 0.58,
         "steal": 0.32, "fold_to_steal": 0.62, "three_bet_vs_steal": 0.11,
@@ -179,7 +179,7 @@ CONTINUOUS[FULL] = dict(CONTINUOUS[SHORT])
 #: statistic -- everyone limps at roughly no rate at all until somebody limps
 #: constantly, so ``limp`` spreads far more than ``wsd`` does.
 SPREAD = {
-    "vpip": 0.50, "pfr": 0.55, "three_bet": 0.55, "fold_to_three_bet": 0.45,
+    "vpip": 0.50, "pfr": 0.55, "raise_share": 0.55, "three_bet": 0.55, "fold_to_three_bet": 0.45,
     "cbet:flop": 0.50, "cbet:turn": 0.50, "cbet:river": 0.52,
     "fold_to_cbet:flop": 0.45, "fold_to_cbet:turn": 0.48,
     "fold_vs_bet:flop": 0.45, "fold_vs_bet:turn": 0.48, "fold_vs_bet:river": 0.50,

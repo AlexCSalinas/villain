@@ -45,7 +45,7 @@ from .db import DEFAULT_PATH, Store, split_key
 from .exploits import RULES, find_watchlist
 from .features import record_hands
 from .evidence import find as find_evidence
-from .glossary import payload as glossary_payload
+from .glossary import payload as glossary_payload, stat_help
 from .model import hand_from_dict, hand_to_dict
 from .identity import askable_questions, auto_answers, session_questions, suggest_links
 from .skill import weaknesses
@@ -62,6 +62,11 @@ DISPLAY_STATS = [
     ("pfr", "PFR", "hands raised preflop"),
     ("three_bet", "3-bet", "raises facing a raise"),
     ("fold_to_three_bet", "fold to 3-bet", "after opening"),
+    ("four_bet", "4-bet", "facing a 3-bet"),
+    ("five_bet", "5-bet", "facing a 4-bet"),
+    ("squeeze", "squeeze", "after a raise and a caller"),
+    ("cold_call", "cold call", "calls a raise, no money in"),
+    ("rfi", "open (RFI)", "first in, folded to them"),
     ("bb_defend", "BB defence", "big blind vs a raise"),
     ("cbet:flop", "c-bet flop", "as the preflop raiser"),
     ("cbet:turn", "c-bet turn", "after betting the flop"),
@@ -535,6 +540,19 @@ def commit_session(store: Store, token: str, answers: dict) -> dict:
         name_splits.add((right["site"], right["account"], right["name"]))
 
     report = store.add_hands(session["hands"], name_splits=name_splits)
+    # Refit the population from the pool itself. This used to be a button, but
+    # it is not a preference: measuring a home game against a generic online
+    # population makes every deviation wrong by the gap between the two, and
+    # the fit already refuses (8+ players, 5+ opportunities per stat) when the
+    # data cannot support it. Announced rather than silent, because it moves
+    # the reference point every read is measured from.
+    priors_fitted = None
+    fitted = store.fit_priors()
+    if fitted:
+        players = store.conn.execute(
+            "SELECT COUNT(DISTINCT player_id) c FROM books").fetchone()["c"]
+        priors_fitted = {"regimes": fitted, "players": players}
+        store.rebuild()
 
     # A confirmed rename means the player is now known by the new name; the old
     # one stays reachable as an alias.
@@ -570,6 +588,9 @@ def commit_session(store: Store, token: str, answers: dict) -> dict:
     session["saved"] = True
     return {
         "hands_new": report.hands_new, "duplicates": report.duplicates,
+        "priors_fitted": priors_fitted,
+        # Surfaced so a batch that silently stored unreadable hands says so.
+        "unusable": report.unusable,
         "players_new": report.players_new, "merged": merged, "blocked": blocked,
     }
 
@@ -617,6 +638,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path in ("/", "/index.html"):
                 return self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+            if path == "/api/sessions":
+                with Store(self.db_path) as store:
+                    out = []
+                    for sess in store.sessions():
+                        out.append({k: v for k, v in sess.items() if k != "hand_ids"})
+                    return self._send(200, out)
+            if path.startswith("/api/session-detail"):
+                sid = int(parse_qs(urlparse(self.path).query).get("id", ["0"])[0])
+                with Store(self.db_path) as store:
+                    match = next((x for x in store.sessions() if x["id"] == sid), None)
+                    if match is None:
+                        return self._send(404, {"error": "no such session"})
+                    return self._send(200, {
+                        "id": match["id"], "started_at": match["started_at"],
+                        "ended_at": match["ended_at"], "hands": match["hands"],
+                        "players": store.session_detail(match)})
             if path == "/api/roster":
                 with Store(self.db_path) as store:
                     n_players = store.conn.execute(
@@ -677,11 +714,36 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, {"error": "stat required"})
                 with Store(self.db_path) as store:
                     hands = store.player_hands(player_id)
-                found = find_evidence(hands, str(player_id), stat, limit=60)
+                # Count over *every* matching hand, then truncate. Truncating
+                # first made "count" a synonym for the cap and, worse, computed
+                # "hits" inside that window -- so a player who limped 4 times in
+                # 6,210 hands showed 0 of 60, because none of the four fell in
+                # the slice. The instances are what you came to see, so they go
+                # first and the rest fill the remainder.
+                found = find_evidence(hands, str(player_id), stat)
+                hits = [e for e in found if e.hit]
+                misses = [e for e in found if not e.hit]
+                recent = lambda xs: sorted(
+                    xs, key=lambda e: e.started_at or 0, reverse=True)
+                shown = recent(hits)[:60] + recent(misses)[:max(0, 60 - len(hits))]
+                # One line saying what the count actually means, from the
+                # glossary's own high/low readings -- a number without a
+                # reading is the thing this whole tool exists to avoid.
+                reading, rate, pop = "", None, None
+                with Store(self.db_path) as store:
+                    prof = store.profile(player_id)
+                if prof is not None and prof.stats.get(stat) is not None:
+                    rate = prof.stats[stat].value
+                    pop = prof.population(stat)
+                    entry = stat_help(stat) or {}
+                    reading = entry.get("high" if rate >= pop else "low", "")
                 return self._send(200, {
-                    "stat": stat, "count": len(found),
-                    "hits": sum(1 for e in found if e.hit),
-                    "hands": [vars(e) for e in found],
+                    "stat": stat, "count": len(found), "hits": len(hits),
+                    "rate": None if rate is None else round(rate, 4),
+                    "population": None if pop is None else round(pop, 4),
+                    "reading": reading,
+                    "shown_hits": sum(1 for e in shown if e.hit),
+                    "hands": [vars(e) for e in shown],
                 })
             if path.startswith("/api/hand/"):
                 hand_id = path.rsplit("/", 1)[1]
@@ -904,7 +966,7 @@ PAGE = r"""<!doctype html>
     color-scheme: light;
     --bg: #f6f6f5; --panel: #ffffff; --ink: #111111; --muted: #6b6b68;
     --line: #e3e2df; --accent: #111111; --accent-soft: #f1f0ee;
-    --warn: #b4532a;
+    --warn: #b4532a; --danger: #b4532a; --red: #b4532a;
     /* Neutral ordinal ramp, validated light->dark on the panel surface:
        light end clears 2:1, monotone lightness, visible step gaps. Shade
        carries confidence, never identity. */
@@ -912,7 +974,7 @@ PAGE = r"""<!doctype html>
     --mark-2: #5c5a57;   /* likely */
     --mark-3: #111111;   /* strong */
     --band: #e8e7e4;     /* credible interval wash */
-    --grid: #e6e5e2; --axis: #b9b7b2; --tick: #898781;
+    --grid: #e6e5e2; --axis: #8a8a86; --tick: #6f6e69;
     --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   @media (prefers-color-scheme: dark) {
@@ -923,7 +985,7 @@ PAGE = r"""<!doctype html>
       --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
       --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
       --band: #26272a;
-      --grid: #232427; --axis: #3a3b3e; --tick: #898781;
+      --grid: #232427; --axis: #75746f; --tick: #9b9a94;
     }
   }
   :root[data-theme="dark"] {
@@ -933,7 +995,7 @@ PAGE = r"""<!doctype html>
     --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
     --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
     --band: #26272a;
-    --grid: #232427; --axis: #3a3b3e; --tick: #898781;
+    --grid: #232427; --axis: #75746f; --tick: #9b9a94;
   }
   * { box-sizing: border-box; }
   body {
@@ -970,6 +1032,43 @@ PAGE = r"""<!doctype html>
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 18px; margin: 16px 0;
   }
+  /* Dashboard: tiles sized by content, flowing into as many columns as fit.
+     align-items:start stops a tall tile stretching its neighbours. */
+  .dash {
+    display: grid; gap: 14px; align-items: start; margin: 16px 0;
+    /* 420px min gives two columns at the 1060px wrap and one on a laptop in a
+       split view. A narrower minimum fitted three, which left a dead column
+       whenever there were only two tiles to place. */
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  }
+  /* No height:100% -- a short tile stretching to match a tall neighbour is
+     empty space pretending to be content. */
+  .dash > .panel { margin: 0; }
+  /* The tiles flow into balanced columns rather than being assigned to a fixed
+     left and right. Which panel is tallest changes with the data -- an empty
+     "What to do" on a thin sample is short, a long leak list is not -- so any
+     fixed split leaves a column of air on some player. */
+  /* Two real columns, packed by height in JS. CSS column-count fills the first
+     column before the second, so a tall panel and a short one landed together
+     and left the other column 740px empty. */
+  .dash-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+               align-items: start; margin: 0; }
+  @media (max-width: 780px) { .dash-cols { grid-template-columns: 1fr; } }
+  .dash-cols { align-items: stretch; }
+  .dash-cols > .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .dash-cols > .col > .panel:last-child { flex: 1 1 auto; }
+  .dash-cols .panel { margin: 0; }
+  /* The interval chart is drawn in a 0-300 viewBox, so it can scale to the
+     cell instead of forcing one: at a fixed 300px every stat label in the
+     column wrapped to three lines. */
+  .detail-body td svg { width: 100%; height: auto; display: block; }
+  .detail-body th, .detail-body td { white-space: nowrap; }
+  .detail-body td.label { white-space: normal; }
+  /* Anything marked wide spans the row -- the read, the balanced column block,
+     the full-width panels. Scoping this to .panel meant the column container
+     was placed in a single grid track and then split again inside it. */
+  .dash > .wide { grid-column: 1 / -1; }
+  @media (max-width: 700px) { .dash { grid-template-columns: 1fr; } }
   .panel h2 {
     font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em;
     color: var(--muted); margin: 0 0 14px; font-weight: 600;
@@ -983,6 +1082,12 @@ PAGE = r"""<!doctype html>
   tbody tr.clickable { cursor: pointer; }
   tbody tr.clickable:hover { background: var(--accent-soft); }
   .name { font-weight: 600; }
+  /* The archetype pill keeps the accent whatever the confidence; a solid edge
+     means the read has cleared 50%, a dashed one means it has not. Colour on
+     its own was carrying that distinction, and dropping the colour to fix
+     that lost the accent instead. */
+  .tag.arch { border-color: var(--red); color: var(--ink); }
+  .tag.arch:not(.on) { border-style: dashed; }
   .tag {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11.5px; border: 1px solid var(--line); color: var(--muted);
@@ -1074,6 +1179,97 @@ PAGE = r"""<!doctype html>
     border: 1.5px dashed var(--line); border-radius: 12px; padding: 34px 20px;
     text-align: center; color: var(--muted); cursor: pointer; transition: border-color .12s;
   }
+  .drop.compact { padding: 14px; margin-bottom: 12px; }
+  .bulk {
+    display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    margin: 0 0 14px;
+  }
+  .bulk input { margin-top: 3px; }
+  .comp { padding: 8px 0; border-top: 1px solid var(--line); }
+  .comp:first-child { border-top: 0; }
+  .comp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .comp-name { font-size: 13.5px; }
+  .comp-score { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .comp.weak .comp-score { color: var(--red); font-weight: 600; }
+  .comp-bar { margin: 5px 0 0; }
+  .comp-bar svg { display: block; width: 100%; height: auto; }
+  .comp-note { margin-top: 3px; }
+  .comp-why { margin-top: 4px; color: var(--muted); }
+  .comp.weak .comp-why { color: var(--ink); }
+  .comp-ev { margin-top: 5px; }
+  .comp-ev:empty { display: none; }
+  .cards-row { display: inline-flex; gap: 3px; vertical-align: middle; }
+  .card {
+    display: inline-flex; align-items: center; gap: 1px;
+    border: 1px solid var(--line); border-radius: 4px;
+    background: var(--panel); padding: 2px 5px; line-height: 1;
+    font-size: 13px; font-variant-numeric: tabular-nums; min-width: 26px;
+    justify-content: center;
+  }
+  .card.red { color: var(--red); }
+  .card.black { color: var(--ink); }
+  .card .r { font-weight: 600; }
+  .small-cards .card { font-size: 11.5px; padding: 1px 4px; min-width: 22px; }
+  .sess-delta {
+    display: grid; grid-template-columns: 1fr auto 62px auto; gap: 10px;
+    align-items: baseline; padding: 5px 0; border-top: 1px solid var(--line);
+  }
+  .sess-delta:first-child { border-top: 0; }
+  .sess-who { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  tbody tr.on { background: var(--accent-soft); }
+  .sess-layout {
+    display: grid; grid-template-columns: 260px minmax(0, 1fr);
+    gap: 14px; align-items: start; margin: 16px 0;
+  }
+  .sess-layout.collapsed { grid-template-columns: 46px minmax(0, 1fr); }
+  .sess-layout.collapsed .sess-list h2,
+  .sess-layout.collapsed #sess-rows { display: none; }
+  .sess-list {
+    position: sticky; top: 12px; max-height: calc(100vh - 40px);
+    overflow: auto; margin: 0;
+  }
+  .sess-main { margin: 0; }
+  #sess-rows { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+  .sess-item {
+    display: flex; flex-direction: column; gap: 2px; text-align: left;
+    font: inherit; background: none; color: var(--ink); cursor: pointer;
+    border: 0; border-left: 2px solid transparent; border-radius: 6px;
+    padding: 7px 8px;
+  }
+  .sess-item:hover { background: var(--accent-soft); }
+  .sess-item.on { background: var(--accent-soft); border-left-color: var(--red); }
+  .sess-when { font-size: 13px; }
+  @media (max-width: 780px) {
+    .sess-layout, .sess-layout.collapsed { grid-template-columns: 1fr; }
+    .sess-list { position: static; max-height: 240px; }
+  }
+  .sess-delta .up { color: var(--red); }
+  .sess-delta .down { color: var(--muted); }
+  .linkish { cursor: pointer; text-decoration: underline;
+             text-underline-offset: 3px; text-decoration-color: var(--axis); }
+  select { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 8px;
+           background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+  .q.group .members { margin: 8px 0; }
+  .q.group .member {
+    display: flex; gap: 10px; align-items: baseline; padding: 4px 0;
+    border-top: 1px solid var(--line);
+  }
+  .q.group .member:first-child { border-top: 0; }
+  /* A merged suggestion is finished business: it dims and leaves. */
+  .leak.merged { opacity: 0; transition: opacity .35s ease; }
+  @media (prefers-reduced-motion: reduce) { .leak.merged { transition: none; } }
+  .veil.busy { cursor: progress; }
+  .busy-sheet { display: flex; gap: 14px; align-items: center; max-width: 420px; }
+  .spinner {
+    width: 20px; height: 20px; flex: none; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--red);
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+  /* button.act wraps by design (long leak labels); a toolbar button must not. */
+  .act.nowrap { white-space: nowrap; }
   .drop:hover, .drop.over { border-color: var(--red); color: var(--ink); }
   .leak { padding: 14px 0; border-bottom: 1px solid var(--line); }
   .leak:last-child { border-bottom: 0; }
@@ -1191,14 +1387,29 @@ PAGE = r"""<!doctype html>
   }
   .narrate-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .rank { font-variant-numeric: tabular-nums; color: var(--muted); width: 22px; }
-  .ev { display: grid; grid-template-columns: 54px 1fr auto; gap: 10px;
-        align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line);
-        cursor: pointer; }
+  .ev { display: grid; grid-template-columns: minmax(200px, auto) 1fr auto; gap: 12px;
+        align-items: center; padding: 8px 0 8px 8px;
+        border-bottom: 1px solid var(--line);
+        border-left: 2px solid transparent; cursor: pointer; }
+  /* A hand that moved the numerator gets a rail, not the word "counted": the
+     board and the action already say what happened. */
+  .ev.counted { border-left-color: var(--red); }
+  .ev[hidden] { display: none; }
+  .ev-summary { display: block; }
+  .ev-when { display: block; font-size: 11px; }
+  .ev-net { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ev-net.lost { color: var(--muted); }
+  .ev-verdict { margin: 0 0 6px; font-size: 14px; color: var(--ink); max-width: 70ch; }
+  .onlyhits { display: inline-flex; gap: 6px; align-items: center;
+              margin-left: 10px; cursor: pointer; white-space: nowrap; }
+  #modal2 .veil { z-index: 60; }
+  .cards-row.hole { opacity: .75; margin-left: 8px; padding-left: 8px;
+                    border-left: 1px solid var(--line); }
+  .seatline { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+  .seatchunk { display: inline-flex; align-items: center; gap: 4px; }
   .ev:hover { background: var(--accent-soft); }
   .ev:last-child { border-bottom: 0; }
-  .ev .verdict { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
-  .ev .verdict.hit { color: var(--red); font-weight: 600; }
-  .ev .verdict.miss { color: var(--muted); }
+  .mono { font-family: var(--mono); font-size: .95em; }
   .cards { font-family: var(--mono); letter-spacing: .04em; }
   .street { border-top: 1px solid var(--line); padding: 10px 0; }
   .street:first-child { border-top: 0; }
@@ -1253,20 +1464,22 @@ PAGE = r"""<!doctype html>
     <button class="iconbtn" id="theme" title="light / dark" aria-label="switch theme"></button>
   </header>
   <nav>
-    <button data-tab="session" class="on">Session</button>
-    <button data-tab="players">Database</button>
+    <button data-tab="players" class="on">Database</button>
+    <button data-tab="sessions">Sessions</button>
   </nav>
   <div id="view"></div>
 </div>
 <div class="tip" id="tip"></div>
 <div id="modal"></div>
+<div id="modal2"></div>
 <script>
 const $ = (s, r) => (r || document).querySelector(s);
 const fmtPct = v => (100 * v).toFixed(0) + "%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const SVG = "http://www.w3.org/2000/svg";
-const state = {tab: "session", session: null, player: null, glossary: null};
+const state = {tab: "players", session: null, player: null, glossary: null,
+               sessionId: null};
 
 /* An "i" that explains a term on hover. Everything the tool says in shorthand
    gets one, because a number nobody can interpret is worse than no number. */
@@ -1404,7 +1617,7 @@ function rosterTable(players, opts) {
       <th data-k="name">player</th>
       <th data-k="hands" class="num">hands</th><th data-k="archetype">read</th>
       <th data-k="skill" class="num">skill</th>
-      <th data-k="exploitability" class="num">worth to you</th>
+      <th data-k="exploitability" class="num">worth bb/100</th>
       <th data-k="top_leak">biggest leak</th>
     </tr></thead><tbody></tbody></table>`;
   const body = $("tbody", wrap);
@@ -1431,14 +1644,13 @@ function rosterTable(players, opts) {
         linkBits.push(`as ${p.session_names.map(n => `\u201c${esc(n)}\u201d`).join(", ")}`);
       tr.innerHTML = `
         <td><span class="name">${esc(shown)}</span>
-            <div class="small muted quality">${esc(p.sample_quality)}</div>
             ${linkBits.length
               ? `<div class="small muted">${linkBits.join(" \u00b7 ")}</div>` : ""}</td>
         <td class="num">${p.hands}</td>
-        <td><span class="tag ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
+        <td><span class="tag arch ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
             <div class="small muted">${fmtPct(p.confidence)} sure</div></td>
         <td class="num"></td>
-        <td class="num">${p.exploitability ? p.exploitability.toFixed(1) + " bb/100" : "\u2014"}</td>
+        <td class="num">${p.exploitability ? p.exploitability.toFixed(1) : "\u2014"}</td>
         <td class="small leakcell">${p.top_leak ? esc(p.top_leak)
           : '<span class="muted">nothing yet</span>'}</td>`;
       const holder = document.createElement("div");
@@ -1446,8 +1658,14 @@ function rosterTable(players, opts) {
       const label = document.createElement("span");
       label.textContent = p.skill.toFixed(0);
       holder.append(bar(p.skill, 100, "var(--mark-3)", 66), label);
-      const q = $(".quality", tr);
-      if (q) q.appendChild(info(termTip(p.sample_quality)));
+      // Sample quality moved onto the hands count as a tooltip: it qualifies
+      // that number and nothing else, so it does not need its own line on
+      // every row.
+      const hcell = tr.children[1];
+      if (hcell) {
+        hcell.classList.add("q-" + String(p.sample_quality).split(" ")[0]);
+        bindTip(hcell, `<b>${esc(p.sample_quality)}</b><br>${termTip(p.sample_quality)}`);
+      }
       /* An unconfirmed read still belongs in the column -- "none clears the
          bar" left the weakest player at the table looking like the safest.
          The marker says which kind of claim it is. */
@@ -1461,9 +1679,6 @@ function rosterTable(players, opts) {
         $(".leakcell", tr).appendChild(flag);
       } else if (p.top_leak) {
         $(".leakcell", tr).appendChild(info(esc(p.top_leak_note)));
-      }
-      if (q && p.table_mix) {
-        q.appendChild(document.createTextNode(" \u00b7 " + p.regime_label));
       }
       tr.children[3].appendChild(holder);
       bindTip(holder, `<b>${esc(p.skill_tier)}</b> ${p.skill.toFixed(0)}/100<br>
@@ -1484,10 +1699,14 @@ function rosterTable(players, opts) {
 function profileCard(p, opts) {
   opts = opts || {};
   const card = document.createElement("div");
+  card.className = "dash";
   const leaks = p.leaks;
+  // Full-width tiles are placed last: dropped mid-grid they force a row break
+  // and strand whatever tile precedes them alone on a line.
+  const wideTiles = [];
 
   const head = document.createElement("div");
-  head.className = "panel";
+  head.className = "panel wide";
   head.innerHTML = `
     <div class="hero-row">
       <div class="hero">${esc(p.archetype)}</div>
@@ -1497,14 +1716,21 @@ function profileCard(p, opts) {
       </div>
     </div>
     <div class="read-meta" id="read-meta"></div>
-    <div class="read-grid">
-      <div class="read-copy">
-        <p class="summary">${esc(p.summary)}</p>
-        <p class="plan">${esc(p.plan)}</p>
-      </div>
-      <div class="skill-side" id="skill-side"></div>
+    <div class="read-copy">
+      <p class="summary">${esc(p.summary)}</p>
+      <p class="plan">${esc(p.plan)}</p>
     </div>`;
   card.appendChild(head);
+
+  const cols = document.createElement("div");
+  cols.className = "dash-cols wide";
+  card.appendChild(cols);
+
+  const skillBox = document.createElement("div");
+  skillBox.className = "panel";
+  skillBox.innerHTML =
+    `<h2>Skill breakdown <span class="muted" style="font-weight:400">\u00b7 ` +
+    `${esc(p.skill.tier)}</span></h2><div class="skill-side" id="skill-side"></div>`;
 
   const badge = $("#skill-badge", head);
   bindTip(badge, `<b>${esc(p.skill.tier)}</b> ${p.skill.score.toFixed(0)}/100<br>
@@ -1514,8 +1740,8 @@ function profileCard(p, opts) {
 
   const meta = $("#read-meta", head);
   const line = document.createElement("span");
-  line.append(document.createTextNode(`${p.hands} hands, ${p.sample_quality}`));
-  line.appendChild(info(termTip(p.sample_quality)));
+  line.append(document.createTextNode(`${p.hands} hands`));
+  line.appendChild(info(`<b>${esc(p.sample_quality)}</b><br>${termTip(p.sample_quality)}`));
   const conf = document.createElement("span");
   conf.style.marginLeft = "12px";
   conf.append(document.createTextNode(
@@ -1523,30 +1749,56 @@ function profileCard(p, opts) {
   conf.appendChild(info(`${termTip("confidence")}<br><br>
     <span class="hl">also plausibly</span><br>${
       p.archetype_mix.slice(1, 4).map(([n, v]) => `${esc(n)} ${fmtPct(v)}`).join("<br>")}`));
-  const where = document.createElement("span");
-  where.style.marginLeft = "12px";
-  where.textContent = p.table_mix || p.regime_label;
+  meta.append(line, conf);
   if (p.contributions && Object.keys(p.contributions).length > 1) {
+    const where = document.createElement("span");
+    where.style.marginLeft = "12px";
+    where.textContent = p.regime_label;
     where.appendChild(info(`<span class="hl">one read, several table sizes</span><br>
       Each table's hands are measured against that table's own norms, then
-      pooled. Shown on ${esc(p.regime_label)} terms, where they play most.`));
+      pooled. Shown on ${esc(p.regime_label)} terms, where they play most.<br>
+      ${esc(p.table_mix || "")}`));
+    meta.appendChild(where);
   }
-  meta.append(line, conf, where);
 
-  const skillSide = $("#skill-side", head);
-  skillSide.innerHTML = `<div class="skill-head">Skill breakdown
-    <span style="font-weight:400">\u00b7 ${esc(p.skill.tier)}</span></div>`;
-  for (const c of [...p.skill.components].sort((a, b) => a.score - b.score)) {
+  // Seven bars spanning 77-100 rank a player without telling you anything.
+  // Each component now carries what it measures, the figure behind it, and
+  // whether it is the part of their game that is actually costing them.
+  const skillSide = $("#skill-side", skillBox);
+  skillSide.innerHTML = "";
+  const comps = p.skill_components || p.skill.components;
+  for (const c of [...comps].sort((a, b) => a.score - b.score)) {
     const row = document.createElement("div");
-    row.className = "metric";
-    const label = document.createElement("span");
-    label.className = "small"; label.textContent = c.name;
-    const val = document.createElement("span");
-    val.className = "small muted"; val.style.textAlign = "right";
-    val.textContent = c.score.toFixed(0);
-    row.append(label, bar(c.score, 100, "var(--mark-3)", 90), val);
-    bindTip(row, `<b>${esc(c.name)}</b> ${c.score.toFixed(0)}/100<br>
-      <span class="muted">counts ${c.weight}x${c.note ? " \u00b7 " + esc(c.note) : ""}</span>`);
+    row.className = "comp" + (c.weak ? " weak" : "");
+    row.innerHTML = `
+      <div class="comp-head">
+        <span class="comp-name">${esc(c.name)}</span>
+        <span class="comp-score">${c.score.toFixed(0)}</span>
+      </div>
+      <div class="comp-bar"></div>
+      ${c.note ? `<div class="small muted comp-note">${esc(c.note)}</div>` : ""}
+      ${c.meaning ? `<div class="small comp-why">${esc(c.meaning)}</div>` : ""}
+      <div class="small comp-ev"></div>`;
+    $(".comp-bar", row).appendChild(
+      bar(c.score, 100, c.weak ? "var(--red)" : "var(--mark-1)", 999));
+    if (c.measures) {
+      $(".comp-name", row).appendChild(info(
+        `<b>${esc(c.name)}</b><br>${esc(c.measures)}<br>
+         <span class="muted">counts ${c.weight}x toward the rating</span>`));
+    }
+    // The same evidence route the leaks use: a rating you cannot check against
+    // the hands is just an opinion with a number on it.
+    const ev = $(".comp-ev", row);
+    for (const st of (c.stats || [])) {
+      if (p.player_id == null) break;
+      const b = document.createElement("button");
+      b.className = "linkbtn";
+      const label = statLabel(st, p.rows);
+      b.textContent = label;
+      b.onclick = () => showEvidence(p.player_id, st, `${c.name} \u00b7 ${label}`);
+      if (ev.childNodes.length) ev.appendChild(document.createTextNode(" \u00b7 "));
+      ev.appendChild(b);
+    }
     skillSide.appendChild(row);
   }
 
@@ -1558,14 +1810,13 @@ function profileCard(p, opts) {
   worthLabel.append(document.createTextNode(
     leaks.length ? `${p.skill.exploitability_bb100.toFixed(1)} bb/100 available` : ""));
   if (leaks.length) worthLabel.appendChild(info(termTip("available")));
-  card.appendChild(doBox);
+  cols.appendChild(doBox);
 
   const leakBox = $(".leaks", doBox);
   if (!leaks.length) {
     const nothing = (p.watchlist || []).length || (p.weak_spots || []).length
-      ? `<div class="empty">No frequency clears the evidence bar yet, so
-         nothing here has a price on it. What follows is what the numbers so
-         far point at.</div>`
+      ? `<div class="empty">Nothing clears the evidence bar yet. Below is
+         what the numbers point at so far.</div>`
       : `<div class="empty">Nothing stands out yet. Play them straight and
          collect more hands.</div>`;
     leakBox.innerHTML = nothing;
@@ -1626,7 +1877,7 @@ function profileCard(p, opts) {
     leakBox.appendChild(div);
   }
 
-  if ((p.weak_spots || []).length) {
+  if (false && (p.weak_spots || []).length) {
     const weak = document.createElement("div");
     weak.className = "leak weakspots";
     weak.innerHTML = `<div class="headline"><b>Weakest parts of their game</b>
@@ -1659,17 +1910,22 @@ function profileCard(p, opts) {
   }
 
   if (opts.narrate) {
+    const suggestBox = document.createElement("div");
+    suggestBox.className = "panel wide";
+    suggestBox.innerHTML = `<h2>suggested exploits</h2>
+      <div class="small muted" style="margin:-6px 0 12px">
+        Not measured reads \u2014 check them against the hands.</div>`;
     const narrateBox = document.createElement("div");
     narrateBox.className = "narrate";
-    narrateBox.style.marginTop = "14px";
-    leakBox.appendChild(narrateBox);
+    suggestBox.appendChild(narrateBox);
+    wideTiles.push(suggestBox);
     buildNarrator(narrateBox, p);
   }
 
   const tells = p.timing_tells || [];
   if (tells.some(c => c.n > 0)) {
     const timingBox = document.createElement("div");
-    timingBox.className = "panel";
+    timingBox.className = "panel wide";
     const headRow = document.createElement("div");
     headRow.className = "spread";
     const title = document.createElement("div");
@@ -1730,34 +1986,70 @@ function profileCard(p, opts) {
       block.appendChild(grid);
       timingBox.appendChild(block);
     }
-    card.appendChild(timingBox);
+    wideTiles.push(timingBox);
   }
+
+  cols.appendChild(skillBox);
 
   const detail = document.createElement("div");
   detail.className = "panel";
-  detail.innerHTML = `<h2>Detailed Stats</h2><div class="detail-body"></div>`;
-  card.appendChild(detail);
+  detail.innerHTML = `<h2>Key numbers</h2><div class="detail-body"></div>`;
+  cols.appendChild(detail);
+  for (const tile of wideTiles) card.appendChild(tile);
+  requestAnimationFrame(() => balanceColumns(cols));
   const body = $(".detail-body", detail);
 
-  const table = document.createElement("div");
-  table.className = "scroller";
-  table.innerHTML = `<table><thead><tr><th>stat</th>
-      <th style="width:310px">0% \u2014 100%</th>
-      <th class="num">estimate</th><th class="num">sample</th></tr></thead>
-    <tbody></tbody></table>`;
-  const tbody = $("tbody", table);
-  for (const row of p.rows) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td class="label"></td><td></td>
-                    <td class="num">${fmtPct(row.value)}</td>
-                    <td class="num small muted">${row.opps}</td>`;
-    const label = $(".label", tr);
-    label.appendChild(document.createTextNode(row.label));
-    label.appendChild(info(statTip(row.stat, row.label, row)));
-    tr.children[1].appendChild(statRow(row));
-    tbody.appendChild(tr);
+  // Six headline numbers, the rest one click away. Rendering all seventeen
+  // open made this panel taller than the read, the plan and the exploits put
+  // together, and it was the whole reason the page scrolled.
+  const HEADLINE = ["vpip", "pfr", "three_bet", "fold_to_three_bet",
+                    "cbet:flop", "fold_vs_bet:flop"];
+  const rank = (r) => {
+    const i = HEADLINE.indexOf(r.stat);
+    return i === -1 ? HEADLINE.length : i;
+  };
+  const TIMING = /^(tank_fold|snap_call)(:|$)/;
+  const ordered = [...p.rows]
+    .filter((r) => !TIMING.test(r.stat))
+    .sort((a, b) => rank(a) - rank(b));
+  const headline = ordered.filter((r) => HEADLINE.includes(r.stat));
+  const rest = ordered.filter((r) => !HEADLINE.includes(r.stat));
+
+  const makeTable = () => {
+    const table = document.createElement("div");
+    table.className = "scroller";
+    table.innerHTML = `<table><thead><tr><th>stat</th>
+        <th style="width:40%">0% \u2014 100%</th>
+        <th class="num">estimate</th><th class="num">sample</th></tr></thead>
+      <tbody></tbody></table>`;
+    return table;
+  };
+  const fill = (table, rows) => {
+    const tbody = $("tbody", table);
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="label"></td><td></td>
+                      <td class="num">${fmtPct(row.value)}</td>
+                      <td class="num small muted">${Math.round(row.opps)}</td>`;
+      const label = $(".label", tr);
+      label.appendChild(document.createTextNode(row.label));
+      label.appendChild(info(statTip(row.stat, row.label, row)));
+      tr.children[1].appendChild(statRow(row));
+      tbody.appendChild(tr);
+    }
+  };
+
+  const first = makeTable();
+  fill(first, headline.length ? headline : ordered);
+  body.appendChild(first);
+  if (rest.length) {
+    const more = document.createElement("details");
+    more.innerHTML = `<summary>See more</summary>`;
+    const table = makeTable();
+    fill(table, rest);
+    more.appendChild(table);
+    body.appendChild(more);
   }
-  body.appendChild(table);
   return card;
 }
 
@@ -1861,6 +2153,209 @@ function playerTabs(profiles, container, opts) {
   show(0);
 }
 
+async function readFiles(list) {
+  const payload = [];
+  for (const f of [...list]) payload.push({name: f.name, content: await f.text()});
+  return payload;
+}
+
+/* Import straight into the database: one session for the whole batch, the
+   identity questions asked once across all of it, then a single commit. */
+function showBusy(text) {
+  const modal = $("#modal");
+  modal.innerHTML = `<div class="veil busy"><div class="sheet busy-sheet">
+    <div class="spinner" aria-hidden="true"></div>
+    <div><b id="busy-text"></b></div>
+  </div></div>`;
+  $("#busy-text").textContent = text;
+  return (next) => { const el = $("#busy-text"); if (el) el.textContent = next; };
+}
+
+async function importFiles(list, status, done) {
+  const files = [...list];
+  if (!files.length) return;
+  status.textContent = "";
+  const setBusy = showBusy(`Reading ${files.length} file(s)\u2026`);
+  try {
+    const payload = await readFiles(files);
+    setBusy(`Parsing ${files.length} file(s)\u2026`);
+    const data = await post("/api/upload", {files: payload});
+    const skipped = (data.rejected || []).length
+      ? ` \u00b7 skipped ${data.rejected.map(r => r.name).join(", ")}` : "";
+    setBusy(`Parsed ${data.hands} hands \u2014 saving and rebuilding profiles\u2026`);
+    const finish = async (answers) => {
+      setBusy("Saving and rebuilding profiles\u2026");
+      const r = await post(`/api/session/${data.token}/commit`,
+                           answers ? {answers} : {});
+      $("#modal").innerHTML = "";
+      // Inline, not a modal: after a batch you want to be looking at the
+      // roster you just changed, not dismissing a box in front of it.
+      const bits = [`${r.hands_new} new hand(s) stored`];
+      if (r.duplicates) bits.push(`${r.duplicates} already known`);
+      if (r.unusable) bits.push(`${r.unusable} unreadable`);
+      if (r.players_new) bits.push(`${r.players_new} new player(s)`);
+      if (r.merged) bits.push(`${r.merged} merge(s)`);
+      if (r.priors_fitted) {
+        bits.push(`priors refitted from ${r.priors_fitted.players} players`);
+      }
+      status.innerHTML = esc(bits.join(" \u00b7 ")) + esc(skipped) +
+        (r.blocked || []).map(b => `<div class="err">${esc(b)}</div>`).join("");
+      if (done) done(status.innerHTML);
+    };
+    if (data.questions && data.questions.length && !data.answered) {
+      $("#modal").innerHTML = "";
+      askIdentity(data.token, data.questions, finish);
+    } else {
+      await finish(null);
+    }
+  } catch (err) {
+    $("#modal").innerHTML = "";
+    status.innerHTML = `<span class="err">${esc(err.message)}</span>`;
+  }
+}
+
+/* Binds whichever import controls are on the page. Both states of the
+   Database tab share one handler so they cannot drift apart. */
+function wireImport() {
+  const input = $("#db-file"), status = $("#db-status"), drop = $("#db-drop");
+  if (!input || !status) return;
+  const go = (files) => importFiles(files, status, async (summary) => {
+    state.player = null;
+    await viewPlayers();
+    const after = $("#db-status");
+    if (after && summary) after.innerHTML = summary;
+  });
+  input.onchange = () => go(input.files);
+  const button = $("#db-add");
+  if (button && drop) {
+    button.onclick = () => { drop.hidden = false; input.click(); };
+  }
+  if (drop) {
+    drop.onclick = () => input.click();
+    drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+    drop.ondragleave = () => drop.classList.remove("over");
+    drop.ondrop = e => {
+      e.preventDefault(); drop.classList.remove("over");
+      go(e.dataTransfer.files);
+    };
+  }
+  // Dropping anywhere on the panel works too: hunting for a target is friction
+  // on the one action this tab exists for.
+  const panel = status.closest(".panel");
+  if (panel && drop) {
+    panel.ondragover = e => { e.preventDefault(); drop.hidden = false; };
+    panel.ondrop = e => {
+      e.preventDefault();
+      go(e.dataTransfer.files);
+    };
+  }
+}
+
+/* ---- sittings, derived from the database ---- */
+function whenLabel(ms, withTime) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  // The year matters: these sittings span months, so "Aug 12" and "Oct 29"
+  // are ambiguous without it.
+  const thisYear = d.getFullYear() === new Date().getFullYear();
+  const day = d.toLocaleDateString([], {weekday: "short", day: "numeric",
+    month: "short", ...(thisYear ? {} : {year: "numeric"})});
+  return withTime ? `${day} \u00b7 ${d.toLocaleTimeString([],
+    {hour: "2-digit", minute: "2-digit"})}` : day;
+}
+
+async function viewSessions() {
+  const view = $("#view");
+  view.innerHTML = `<div class="panel"><div class="empty">loading\u2026</div></div>`;
+  const sessions = await get("/api/sessions");
+  if (!sessions.length) {
+    view.innerHTML = `<div class="panel"><h2>no sittings yet</h2>
+      <p class="muted">Add hand histories on the Database tab.</p></div>`;
+    return;
+  }
+  if (state.sessionId == null) state.sessionId = sessions[0].id;
+  // The list lives beside the detail, not above it: twenty sittings pushed the
+  // thing you came to read off the bottom of the screen, and switching meant
+  // scrolling back up every time.
+  view.innerHTML = `<div class="sess-layout${state.sessListHidden ? " collapsed" : ""}"
+      id="sess-layout">
+      <div class="panel sess-list">
+        <div class="spread"><h2 style="margin:0">sittings</h2>
+          <button class="iconbtn" id="sess-toggle"
+            title="hide the list">\u00ab</button></div>
+        <div id="sess-rows"></div>
+      </div>
+      <div class="panel sess-main">
+        <h2 id="sess-title">who played, and how</h2>
+        <div id="sess-body"></div>
+      </div>
+    </div>`;
+  const rows = $("#sess-rows");
+  for (const sess of sessions) {
+    const item = document.createElement("button");
+    item.className = "sess-item" + (sess.id === state.sessionId ? " on" : "");
+    const hrs = Math.floor(sess.minutes / 60), mins = sess.minutes % 60;
+    item.innerHTML = `<span class="sess-when">${esc(whenLabel(sess.started_at, true))}</span>
+      <span class="small muted">${hrs ? hrs + "h " : ""}${mins}m \u00b7 ${
+        sess.hands} hands \u00b7 ${sess.players}p</span>`;
+    item.onclick = () => { state.sessionId = sess.id; viewSessions(); };
+    rows.appendChild(item);
+  }
+  const layout = $("#sess-layout"), toggle = $("#sess-toggle");
+  toggle.onclick = () => {
+    state.sessListHidden = !state.sessListHidden;
+    layout.classList.toggle("collapsed", state.sessListHidden);
+    toggle.textContent = state.sessListHidden ? "\u00bb" : "\u00ab";
+    toggle.title = state.sessListHidden ? "show the list" : "hide the list";
+  };
+  if (state.sessListHidden) { toggle.textContent = "\u00bb"; }
+  const chosen = sessions.find(x => x.id === state.sessionId);
+  if (chosen) {
+    $("#sess-title").textContent =
+      `${whenLabel(chosen.started_at, true)} \u00b7 ${chosen.hands} hands`;
+  }
+  await drawSession(state.sessionId);
+}
+
+async function drawSession(id) {
+  const body = $("#sess-body");
+  body.innerHTML = `<div class="empty">reading the sitting\u2026</div>`;
+  const data = await get(`/api/session-detail?id=${id}`);
+  body.innerHTML = "";
+  for (const p of data.players) {
+    const div = document.createElement("div");
+    div.className = "leak";
+    div.innerHTML = `<div class="leak-head">
+        <div class="sess-who"><b class="linkish">${esc(p.name)}</b>
+          <span class="tag arch ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
+          <span class="small muted">${p.hands} hands \u00b7 ${esc(p.regime_label || "")}</span>
+        </div>
+        <div class="num small muted">${p.skill} <span class="muted">skill</span></div></div>
+      <div class="sess-deltas"></div>`;
+    $("b", div).onclick = () => { state.player = p.player_id; switchTab("players"); };
+    const box = $(".sess-deltas", div);
+    if (!p.deltas.length) {
+      box.innerHTML = `<div class="small muted">No trend yet \u2014 not enough
+        hands at this table size outside this sitting to say what is usual.</div>`;
+    } else {
+      for (const d of p.deltas) {
+        const row = document.createElement("div");
+        row.className = "sess-delta";
+        const up = d.delta > 0;
+        // Percentage *points*, inside one table size: "+30% VPIP" across
+        // regimes measures which table they sat at, not how they played.
+        row.innerHTML = `<span>${esc(statLabel(d.stat, null))}</span>
+          <span class="num">${fmtPct(d.session)}</span>
+          <span class="small ${up ? "up" : "down"}">${up ? "\u25b2" : "\u25bc"}${
+            Math.abs(Math.round(d.delta * 100))}pp</span>
+          <span class="small muted">usually ${fmtPct(d.usual)} ${esc(d.regime_label)}</span>`;
+        box.appendChild(row);
+      }
+    }
+    body.appendChild(div);
+  }
+}
+
 /* ---- tab 1: session ---- */
 function viewSession() {
   const view = $("#view");
@@ -1945,16 +2440,171 @@ function renderSession() {
    are reading has already pooled the accounts. Merging also asks what to call
    the result: choosing silently files a player under a name they have stopped
    using. */
+/* Accounts that might be one person arrive as pairs, but three accounts that
+   are all the same human arrive as three separate questions -- and nothing
+   stops you answering them inconsistently. Union the pairs into components so
+   each *person* is one decision. Applying the links is still pairwise, which
+   is what makes this safe: the co-occurrence guard is enforced per link, so a
+   group can never smuggle through a merge the tool would refuse. */
+function sideKey(side) {
+  if (!side) return "";
+  return side.player_id != null ? `db${side.player_id}` : `ac${side.account}`;
+}
+function groupQuestions(questions) {
+  const parent = {};
+  const find = k => { while (parent[k] !== k) k = parent[k] = parent[parent[k]]; return k; };
+  const union = (a, b) => {
+    parent[a] = parent[a] ?? a; parent[b] = parent[b] ?? b;
+    parent[find(a)] = find(b);
+  };
+  for (const q of questions) {
+    const a = sideKey(q.left), b = sideKey(q.right);
+    parent[a] = parent[a] ?? a; parent[b] = parent[b] ?? b;
+    union(a, b);
+  }
+  const groups = new Map();
+  for (const q of questions) {
+    const root = find(sideKey(q.left));
+    if (!groups.has(root)) groups.set(root, {questions: [], members: new Map()});
+    const g = groups.get(root);
+    g.questions.push(q);
+    for (const side of [q.left, q.right]) g.members.set(sideKey(side), side);
+  }
+  return [...groups.values()];
+}
+
+function sideMeta(side) {
+  // Only "already in the database" earns a label; everything else in this
+  // dialog came from the files being added, so saying so on every row is noise.
+  const bits = [];
+  if (side.player_id != null) bits.push("in the database");
+  bits.push(`${side.hands || 0} hands`);
+  const id = side.account ? String(side.account) : "";
+  if (id) bits.push(`<span class="mono">${esc(id.length <= 10 ? id
+    : `${id.slice(0, 6)}\u2026${id.slice(-3)}`)}</span>`);
+  return bits.join(" \u00b7 ");
+}
+
+const STAT_LABELS = {
+  "vpip": "VPIP", "pfr": "PFR", "three_bet": "3-bet", "limp": "limps",
+  "wtsd": "went to showdown", "wsd": "won at showdown",
+  "aggression:flop": "flop aggression", "aggression:turn": "turn aggression",
+  "aggression:river": "river aggression",
+  "fold_vs_bet:flop": "fold vs flop bet", "fold_vs_bet:turn": "fold vs turn bet",
+  "fold_vs_bet:river": "fold vs river bet",
+};
+const SUITS = {s: "\u2660", h: "\u2665", d: "\u2666", c: "\u2663"};
+/* A board is the one thing in this tool that is not a statistic, and reading
+   "7s Jd 3c" as text is slower than seeing it. */
+function cardsEl(list, opts) {
+  const wrap = document.createElement("span");
+  wrap.className = "cards-row" + ((opts && opts.small) ? " small-cards" : "");
+  for (const raw of (list || [])) {
+    const text = String(raw);
+    const rank = text.slice(0, -1).replace("T", "10");
+    const suit = text.slice(-1).toLowerCase();
+    const card = document.createElement("span");
+    card.className = "card " + (suit === "h" || suit === "d" ? "red" : "black");
+    card.innerHTML = `<span class="r">${esc(rank)}</span><span class="s">${
+      SUITS[suit] || esc(suit)}</span>`;
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
+
+/* "4 limps out of 2,945 chances" is a number; "essentially never limps, which
+   is a strong player's habit" is a read. The rate decides which way, the
+   glossary supplies the words. */
+function evidenceVerdict(d) {
+  if (!d.count) return "No hands where this could have happened yet.";
+  const rate = d.rate != null ? d.rate : d.hits / d.count;
+  const pop = d.population;
+  const pct = Math.round(rate * 100);
+  let scale;
+  if (d.hits === 0) scale = "never";
+  else if (rate < 0.02) scale = "almost never";
+  else if (pop != null && rate > pop * 1.35) scale = "far more than the field";
+  else if (pop != null && rate < pop * 0.65) scale = "far less than the field";
+  else scale = "about as often as the field";
+  const head = `${d.hits} of ${d.count} \u2014 ${pct}%, ${scale}.`;
+  return d.reading ? `${head} ${d.reading}` : head;
+}
+
+function statLabel(stat, rows) {
+  const hit = (rows || []).find(r => r.stat === stat);
+  return hit ? hit.label : (STAT_LABELS[stat] || stat);
+}
+
+function normaliseName(name) {
+  const text = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return text.replace(/\d+$/, "") || text;
+}
+
+/* The pairwise reason says "both shorten to jay", which is wrong on a group of
+   three. Describe the group itself. */
+function groupReason(members, questions) {
+  const roots = new Set(members.map(m => normaliseName(m.name)));
+  const exact = new Set(members.map(m => displayKey(m.name)));
+  if (exact.size === 1) {
+    return `all ${members.length} appeared as \u201c${members[0].name}\u201d`;
+  }
+  if (roots.size === 1) {
+    return `all ${members.length} shorten to \u201c${[...roots][0]}\u201d`;
+  }
+  return [...new Set(questions.map(q => q.detail))].join("; ");
+}
+
+/* Longest-processing-time bin packing: tallest panel first, then each next one
+   into whichever column is currently shorter. Unlike CSS columns it cannot
+   strand a panel on its own. */
+function balanceColumns(host) {
+  if (!host) return;
+  const tiles = [...host.children].filter(el => el.classList.contains("panel"));
+  if (tiles.length < 2) return;
+  const measured = tiles.map(el => ({el, h: el.getBoundingClientRect().height}));
+  const wide = getComputedStyle(host).gridTemplateColumns.split(" ").length > 1;
+  const cols = [];
+  for (let i = 0; i < (wide ? 2 : 1); i++) {
+    const c = document.createElement("div");
+    c.className = "col";
+    cols.push({node: c, h: 0});
+  }
+  for (const item of [...measured].sort((a, b) => b.h - a.h)) {
+    const target = cols.reduce((a, b) => (a.h <= b.h ? a : b));
+    target.node.appendChild(item.el);
+    target.h += item.h + 14;
+  }
+  for (const c of cols) host.appendChild(c.node);
+}
+
+function displayKey(name) {
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+function isExactName(q) {
+  return displayKey(q.left && q.left.name) === displayKey(q.right && q.right.name);
+}
+
+/* When both sides show the same screen name the name tells you nothing, so
+   the account id has to be on screen to make the question answerable. */
+function sideAccount(side) {
+  if (!side || !side.account) return "";
+  const id = String(side.account);
+  const short = id.length <= 10 ? id : `${id.slice(0, 6)}\u2026${id.slice(-3)}`;
+  return ` \u00b7 <span class="mono">${esc(short)}</span>`;
+}
+
 async function askIdentity(token, questions, onDone) {
   const modal = $("#modal");
   modal.innerHTML = `
     <div class="veil"><div class="sheet">
       <h2 style="margin-top:0">Same player?</h2>
       <p class="small muted" style="margin-top:0">
-        Matches to people already in your database were linked automatically
-        (keeping their existing name). These leftover accounts have nearly
-        the same screen name \u2014 merging two real players makes both
-        profiles fiction, so the tool will not guess.</p>
+        Same-id accounts were merged already. These are different ids.</p>
+      <label class="bulk" id="bulk-wrap" hidden>
+        <input type="checkbox" id="merge-exact" checked>
+        <span><b>Merge exact name matches</b>
+          <span class="small muted" id="bulk-count"></span></span>
+      </label>
       <div id="questions"></div>
       <div class="row" style="justify-content:flex-end;margin-top:18px">
         <button class="act" id="cancel">Keep them separate</button>
@@ -1962,19 +2612,54 @@ async function askIdentity(token, questions, onDone) {
       </div>
     </div></div>`;
   const box = $("#questions");
-  for (const q of questions) {
+  const groups = groupQuestions(questions);
+
+  for (const g of groups.filter(x => x.questions.length > 1)) {
+    const members = [...g.members.values()]
+      .sort((a, b) => (b.hands || 0) - (a.hands || 0));
+    const allExact = g.questions.every(isExactName);
     const div = document.createElement("div");
-    div.className = "q";
-    const names = (q.names || []).map((n, i) => `
+    div.className = "q group" + (allExact ? " exact" : "");
+    div.dataset.group = g.questions.map(q => q.id).join("|");
+    const names = [...new Map(members.map(m => [displayKey(m.name), m.name])).values()];
+    div.innerHTML = `
+      <div class="q-prompt">${members.length} accounts look like one person</div>
+      <div class="small muted">${esc(groupReason(members, g.questions))}</div>
+      <div class="members">${members.map(m => `
+        <div class="member"><b>${esc(m.name)}</b>
+          <span class="small muted">${sideMeta(m)}</span></div>`).join("")}</div>
+      <div class="choice">
+        <label><input type="radio" name="g-${esc(div.dataset.group)}" value="yes" checked>
+          Merge all ${members.length}</label>
+        <label><input type="radio" name="g-${esc(div.dataset.group)}" value="no">
+          Keep all separate</label>
+      </div>
+      ${names.length < 2 ? "" : `<div class="choice namechoice">
+        <span class="small muted namelabel">keep the name</span>${names.map(n => `
+        <label><input type="radio" name="gname-${esc(div.dataset.group)}"
+          value="${esc(n)}" ${n === names[0] ? "checked" : ""}>keep \u201c${esc(n)}\u201d</label>`
+        ).join("")}</div>`}`;
+    box.appendChild(div);
+  }
+
+  const singles = new Set(
+    groups.filter(x => x.questions.length === 1).map(x => x.questions[0].id));
+  for (const q of questions.filter(x => singles.has(x.id))) {
+    const div = document.createElement("div");
+    div.className = isExactName(q) ? "q exact" : "q";
+    // Two identical strings are not a choice, so the picker goes away rather
+    // than offering "keep Pratul" or "keep Pratul".
+    const distinct = [...new Map((q.names || []).map(n => [displayKey(n), n])).values()];
+    const names = distinct.length < 2 ? "" : distinct.map(n => `
       <label><input type="radio" name="name-${esc(q.id)}" value="${esc(n)}"
         ${n === q.default_name ? "checked" : ""}>keep \u201c${esc(n)}\u201d</label>`).join("");
     div.innerHTML = `
       <div class="q-prompt">${esc(q.prompt)}</div>
       <div class="sides">
         <div class="side"><b>${esc(q.left.name)}</b>
-          <div class="small muted">${esc(q.left.where)} \u00b7 ${q.left.hands} hands</div></div>
+          <div class="small muted">${sideMeta(q.left)}</div></div>
         <div class="side"><b>${esc(q.right.name)}</b>
-          <div class="small muted">${esc(q.right.where)} \u00b7 ${q.right.hands} hands</div></div>
+          <div class="small muted">${sideMeta(q.right)}</div></div>
       </div>
       <div class="small muted">${esc(q.detail)}</div>
       <div class="choice">
@@ -1983,8 +2668,8 @@ async function askIdentity(token, questions, onDone) {
         <label><input type="radio" name="${esc(q.id)}" value="no"
           ${q.default ? "" : "checked"}>Different people</label>
       </div>
-      <div class="choice namechoice">
-        <span class="small muted namelabel">keep the name</span>${names}</div>`;
+      ${names ? `<div class="choice namechoice">
+        <span class="small muted namelabel">keep the name</span>${names}</div>` : ""}`;
     box.appendChild(div);
 
     // The name only means anything if they are one person, so it greys out
@@ -1992,6 +2677,7 @@ async function askIdentity(token, questions, onDone) {
     // whether you missed something.
     const setEnabled = same => {
       const group = $(".namechoice", div);
+      if (!group) return;
       group.classList.toggle("disabled", !same);
       group.querySelectorAll("input").forEach(input => { input.disabled = !same; });
     };
@@ -1999,24 +2685,71 @@ async function askIdentity(token, questions, onDone) {
     div.querySelectorAll(`input[name="${CSS.escape(q.id)}"]`).forEach(radio =>
       radio.onchange = () => setEnabled(radio.value === "yes"));
   }
+  // Exact-name pairs are the bulk of a batch and all get the same answer, so
+  // they collapse behind one switch instead of being asked one at a time.
+  const exact = questions.filter(isExactName);
+  const bulk = $("#merge-exact");
+  if (exact.length) {
+    $("#bulk-wrap").hidden = false;
+    $("#bulk-count").textContent = `\u00b7 ${exact.length} of ${questions.length}`;
+    const sync = () => {
+      box.querySelectorAll(".q.exact").forEach(el => { el.hidden = bulk.checked; });
+    };
+    bulk.onchange = sync;
+    sync();
+  }
+
+  const groupAnswer = (q) => {
+    const card = box.querySelector(`.q.group[data-group*="${CSS.escape(q.id)}"]`);
+    if (!card) return undefined;
+    const picked = card.querySelector(`input[name="g-${CSS.escape(card.dataset.group)}"]:checked`);
+    const name = card.querySelector(`input[name="gname-${CSS.escape(card.dataset.group)}"]:checked`);
+    return {same: picked ? picked.value === "yes" : true,
+            name: name ? name.value : q.default_name};
+  };
+
+  const answerFor = (q, forceSame) => {
+    if (forceSame !== undefined) return {same: forceSame, name: q.default_name};
+    const picked = modal.querySelector(`input[name="${CSS.escape(q.id)}"]:checked`);
+    const name = modal.querySelector(`input[name="name-${CSS.escape(q.id)}"]:checked`);
+    return {same: picked ? picked.value === "yes" : q.default,
+            name: name ? name.value : q.default_name};
+  };
+
+  const send = async (answers) => {
+    showBusy("Applying\u2026");
+    try {
+      const refreshed = await post(`/api/session/${token}/identity`, {answers});
+      if (state.session && state.session.token === token) {
+        state.session = refreshed;
+        renderSession();
+      }
+      if (onDone) await onDone();
+      else $("#modal").innerHTML = "";
+    } catch (err) {
+      $("#modal").innerHTML = "";
+      throw err;
+    }
+  };
+
   $("#cancel").onclick = async () => {
-    modal.innerHTML = "";
-    await post(`/api/session/${token}/identity`, {answers: {}});
-    if (onDone) onDone();
+    // Say "no" explicitly for every question. An empty object meant
+    // "unanswered", which falls back to each question's default -- and now that
+    // an identical screen name defaults to *merge*, "Keep them separate" was
+    // merging the very accounts it promised to leave alone.
+    const answers = {};
+    for (const q of questions) answers[q.id] = {same: false, name: q.default_name};
+    await send(answers);
   };
   $("#confirm").onclick = async () => {
     const answers = {};
     for (const q of questions) {
-      const picked = modal.querySelector(`input[name="${CSS.escape(q.id)}"]:checked`);
-      const name = modal.querySelector(`input[name="name-${CSS.escape(q.id)}"]:checked`);
-      answers[q.id] = {same: picked ? picked.value === "yes" : q.default,
-                       name: name ? name.value : q.default_name};
+      const grouped = groupAnswer(q);
+      if (grouped) { answers[q.id] = grouped; continue; }
+      const forced = (bulk && bulk.checked && isExactName(q)) ? true : undefined;
+      answers[q.id] = answerFor(q, forced);
     }
-    modal.innerHTML = "";
-    const refreshed = await post(`/api/session/${token}/identity`, {answers});
-    state.session = refreshed;
-    renderSession();
-    if (onDone) onDone();
+    await send(answers);
   };
 }
 
@@ -2064,48 +2797,53 @@ async function viewPlayers() {
   $("#meta").textContent = `${data.hands} hands \u00b7 ${data.players.length} players`;
   if (!data.players.length) {
     view.innerHTML = `<div class="panel"><h2>nothing stored yet</h2>
-      <p class="muted">Read a session on the first tab, then add it to the
-      database.</p></div>`;
+      <p class="muted">Drop your hand history exports here.</p>
+      <div class="drop" id="db-drop">
+        <div style="font-size:15px;color:var(--ink)">Drop hand history files here</div>
+        <div class="small" style="margin-top:4px">or click to choose \u00b7
+          any number at once</div>
+      </div>
+      <input type="file" id="db-file" multiple accept=".json,.txt" hidden>
+      <div id="db-status" class="small muted" style="margin-top:10px"></div></div>`;
+    wireImport();
     return;
   }
   /* One table, sorted however you like. A separate leaderboard tab was the
      same rows in a different order. */
   view.innerHTML = `<div class="panel">
       <div class="spread"><h2>database</h2>
-        <span class="small muted">click a column to re-rank</span></div>
-      <div id="fit-banner" class="leak" hidden style="margin-bottom:12px"></div>
+        <div class="row">
+          <span class="small muted" id="db-meta">click a column to re-rank</span>
+          <button class="act small nowrap" id="db-add">Add hands</button>
+        </div></div>
+      <div class="drop compact" id="db-drop" hidden>
+        <div style="font-size:14px;color:var(--ink)">Drop hand history files here</div>
+        <div class="small" style="margin-top:4px">any number at once</div>
+      </div>
+      <input type="file" id="db-file" multiple accept=".json,.txt" hidden>
+      <div id="db-status" class="small muted" style="margin-bottom:10px"></div>
       <div id="db-roster"></div></div>
     <div id="suggest-panel" class="panel" hidden>
       <h2>possible same person</h2><div id="suggestions"></div></div>
     <p class="footnote">
       <button class="linkbtn danger-link" id="reset">reset database</button>
       <span class="muted">deletes every hand, player and merge decision</span></p>`;
+  wireImport();
   $("#db-roster").appendChild(rosterTable(data.players, {
     onClick: p => { state.player = p.player_id; viewPlayer(p.player_id); },
   }));
   $("#reset").onclick = () => confirmReset(data);
 
+  // Priors are fitted on import now, not on request. What is worth showing is
+  // which population the reads on this page were measured against -- that is
+  // the one thing the automatic fit changes about how you should read them.
   const fit = data.fit_priors;
-  if (fit && fit.suggested) {
-    const banner = $("#fit-banner");
-    banner.hidden = false;
-    banner.innerHTML = `<div class="leak-head">
-      <div><b>Fit home-game priors</b>
-        <div class="small muted">You have ${fit.players} players and still use
-          online defaults. Fitting the pool makes session and database reads
-          agree.</div></div>
-      <button class="act small primary" id="fit-priors">fit priors</button>
-    </div>`;
-    $("#fit-priors").onclick = async () => {
-      const btn = $("#fit-priors");
-      btn.disabled = true; btn.textContent = "fitting\u2026";
-      try {
-        await post("/api/fit-priors", {});
-        viewPlayers();
-      } catch (err) {
-        btn.textContent = "failed"; btn.classList.add("err");
-      }
-    };
+  if (fit && fit.has_fitted) {
+    $("#db-meta").innerHTML =
+      `measured against your own pool \u00b7 ${fit.players} players`;
+  } else if (fit) {
+    $("#db-meta").innerHTML =
+      `measured against generic online norms \u2014 your pool takes over at 8 players`;
   }
 
   const suggestions = await get("/api/suggestions");
@@ -2122,7 +2860,20 @@ async function viewPlayers() {
       b.disabled = true; b.textContent = "merging\u2026";
       try {
         await post("/api/link", {keep: +b.dataset.keep, absorb: +b.dataset.absorb});
+        // Retire the row here rather than relying on the re-render to drop it:
+        // the merge is done, and a suggestion still sitting on screen reads as
+        // one that failed. If it was the last one, the panel goes too.
         b.textContent = "done";
+        const row = b.closest(".leak");
+        if (row) {
+          row.classList.add("merged");
+          setTimeout(() => {
+            row.remove();
+            if (!$("#suggestions").querySelector(".leak")) {
+              $("#suggest-panel").hidden = true;
+            }
+          }, 550);
+        }
         // A session on the other tab is about the same people; leaving it
         // unmerged would contradict the database it is about to be saved into.
         if (state.session && state.session.token) {
@@ -2153,7 +2904,9 @@ async function viewPlayers() {
 async function viewPlayer(id) {
   const view = $("#view");
   const data = await get("/api/player/" + id);
-  $("#meta").textContent = data.aliases.map(a => a.name).join(" \u00b7 ");
+  const names = [...new Set(data.aliases.map(a => a.name))];
+  $("#meta").textContent = names.length > 1
+    ? `also known as ${names.slice(1).join(", ")}` : "";
   view.innerHTML = "";
   const back = document.createElement("p");
   back.innerHTML = `<button class="linkbtn" id="back">\u2190 all players</button>`;
@@ -2167,10 +2920,9 @@ async function viewPlayer(id) {
   if (data.by_table && data.by_table.length > 1) {
     const panel = document.createElement("div");
     panel.className = "panel";
-    panel.innerHTML = `<h2>Split by Table Size</h2>
+    panel.innerHTML = `<h2>split by table size</h2>
       <div class="small muted" style="margin:0 0 12px">
-        The read above pools these. Shown separately so you can check the
-        pooling is not hiding a difference.</div>
+        The read above pools these.</div>
       <div class="scroller"><table><thead><tr>
         <th>table</th><th class="num">hands</th><th>read</th>
         <th class="num">skill</th><th>biggest leak</th>
@@ -2244,49 +2996,86 @@ async function showEvidence(playerId, stat, headline) {
   modal.innerHTML = `<div class="veil"><div class="sheet">
     <div class="spread"><h2 style="margin:0">${esc(headline)}</h2>
       <button class="act" id="close">Close</button></div>
-    <p class="small muted">Every hand where this came up: ${data.count} of them,
-      ${data.hits} counted toward the read. Click one to replay it. The estimate
-      weights hands from other table sizes less, so it can differ slightly from
-      this count.</p>
+    <p class="ev-verdict">${esc(evidenceVerdict(data))}</p>
+    <p class="small muted">${data.hits
+      ? `<b>${data.hits}</b> of ${data.count} \u2014 showing the most recent.
+         Click one to replay it.`
+      : `Never, in ${data.count} chance${data.count === 1 ? "" : "s"}.`}
+      ${data.count > data.hits
+      ? `<label class="onlyhits"><input type="checkbox" id="show-all">
+           show the ones where it did not</label>` : ""}</p>
     <div id="evlist"></div>
-    <div id="replay"></div></div></div>`;
+    </div></div>`;
   $("#close").onclick = () => { modal.innerHTML = ""; };
 
   const list = $("#evlist");
+  // The hands that moved the number are what you opened this to check; the
+  // denominator is one click away, because 19 of 60 and 19 of 20 are different
+  // players and hiding that would misrepresent the rate.
+  const showAll = $("#show-all");
+  if (showAll) {
+    showAll.onchange = () => list.querySelectorAll(".ev").forEach(el => {
+      el.hidden = !showAll.checked && !el.classList.contains("counted");
+    });
+  }
   for (const h of data.hands) {
     const row = document.createElement("div");
     row.className = "ev";
     const when = h.started_at ? new Date(h.started_at).toLocaleString() : "";
     row.innerHTML = `
-      <span class="verdict ${h.hit ? "hit" : "miss"}">${h.hit ? "counted" : "no"}</span>
-      <span><span class="cards">${esc(h.board.join(" ")) || "\u2014"}</span>
-        <div class="small muted">${esc(h.summary)}</div></span>
-      <span class="small muted" style="text-align:right">${h.net_bb > 0 ? "+" : ""}${h.net_bb} bb
-        <div style="font-size:11px">${esc(when)}</div></span>`;
-    row.onclick = () => showReplay(h.hand_id, playerId);
+      <span class="ev-board"></span>
+      <span class="ev-what"><span class="ev-summary">${esc(h.summary)}</span>
+        <span class="small muted ev-when">${esc(when)}</span></span>
+      <span class="ev-net ${h.net_bb < 0 ? "lost" : ""}">${
+        h.net_bb > 0 ? "+" : ""}${h.net_bb} bb</span>`;
+    const boardCell = $(".ev-board", row);
+    if ((h.board || []).length) boardCell.appendChild(cardsEl(h.board, {small: true}));
+    else boardCell.innerHTML = `<span class="small muted">no flop</span>`;
+    if ((h.hole_cards || []).length) {
+      const hole = cardsEl(h.hole_cards, {small: true});
+      hole.classList.add("hole");
+      boardCell.appendChild(hole);
+    }
+    row.classList.toggle("counted", !!h.hit);
+    if (!h.hit) row.hidden = true;
+    row.onclick = () => showReplay(h.hand_id, playerId, headline);
     list.appendChild(row);
   }
 }
 
-async function showReplay(handId, playerId) {
-  const box = $("#replay");
-  box.innerHTML = `<div class="empty">loading hand\u2026</div>`;
+async function showReplay(handId, playerId, headline) {
+  // Its own layer: the replay used to append under a list you had scrolled
+  // through, so the hand you clicked ended up off screen.
+  const layer = $("#modal2");
+  layer.innerHTML = `<div class="veil"><div class="sheet">
+    <div class="spread"><h2 style="margin:0">${esc(headline || "hand replay")}</h2>
+      <button class="act" id="close-replay">Back</button></div>
+    <div id="replay"><div class="empty">loading hand\u2026</div></div>
+  </div></div>`;
+  $("#close-replay").onclick = () => { layer.innerHTML = ""; };
+  const box = $("#replay", layer);
   const r = await get(`/api/hand/${handId}?focus=${playerId}`);
-  const seats = r.seats.map(s =>
-    `${esc(s.position)} ${esc(s.name)}${s.hole_cards.length
-      ? ' <span class="cards">' + esc(s.hole_cards.join(" ")) + "</span>" : ""}`
-  ).join(" \u00b7 ");
+  const seatLine = document.createElement("div");
+  seatLine.className = "small muted seatline";
+  for (const st of r.seats) {
+    const chunk = document.createElement("span");
+    chunk.className = "seatchunk";
+    chunk.textContent = `${st.position} ${st.name} `;
+    if (st.hole_cards.length) chunk.appendChild(cardsEl(st.hole_cards, {small: true}));
+    seatLine.appendChild(chunk);
+  }
   box.innerHTML = `<div class="panel" style="margin-top:14px">
     <div class="spread"><h2 style="margin:0">hand replay</h2>
       <span class="small muted">${r.pot_bb} bb pot \u00b7 won by ${esc(r.winners.join(", ") || "\u2014")}</span></div>
-    <div class="small muted" style="margin-bottom:10px">${seats}</div>
+    <div id="seats"></div>
     <div id="streets"></div></div>`;
+  $("#seats").appendChild(seatLine);
   const streets = $("#streets");
   for (const st of r.streets) {
     const div = document.createElement("div");
     div.className = "street";
-    div.innerHTML = `<h4>${esc(st.name)}
-      <span class="cards" style="color:var(--ink)">${esc(st.new_cards.join(" "))}</span></h4>`;
+    div.innerHTML = `<h4>${esc(st.name)}</h4>`;
+    if ((st.new_cards || []).length) $("h4", div).appendChild(cardsEl(st.new_cards));
     for (const a of st.actions) {
       const line = document.createElement("div");
       line.className = "act" + (a.focus ? " focus" : "") + (a.post ? " post" : "");
@@ -2300,7 +3089,7 @@ async function showReplay(handId, playerId) {
     }
     streets.appendChild(div);
   }
-  box.scrollIntoView({behavior: "smooth", block: "nearest"});
+
 }
 
 /* ---- tabs ---- */
@@ -2316,6 +3105,7 @@ async function render() {
   try {
     if (!state.glossary) state.glossary = await get("/api/glossary");
     if (state.tab === "session") viewSession();
+    else if (state.tab === "sessions") await viewSessions();
     else await viewPlayers();
   } catch (err) {
     $("#view").innerHTML = `<div class="panel err">${esc(err.message)}</div>`;

@@ -75,6 +75,19 @@ CREATE TABLE IF NOT EXISTS hands (
 );
 CREATE INDEX IF NOT EXISTS hands_time ON hands(started_at);
 
+-- Which accounts sat in which hand. Without it a targeted rebuild still had to
+-- gunzip and JSON-decode every hand in the database to find out whether it
+-- involved the players being rebuilt, so the cost of importing scaled with the
+-- size of the database rather than the size of the import.
+CREATE TABLE IF NOT EXISTS hand_seats (
+    hand_id  TEXT NOT NULL,
+    site     TEXT NOT NULL,
+    account  TEXT NOT NULL,
+    name     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (hand_id, account)
+);
+CREATE INDEX IF NOT EXISTS hand_seats_account ON hand_seats(site, account);
+
 CREATE TABLE IF NOT EXISTS books (
     player_id  INTEGER NOT NULL REFERENCES players(id),
     regime     TEXT NOT NULL,
@@ -183,6 +196,23 @@ class Store:
             self.conn.execute(
                 "ALTER TABLE distinct_pairs ADD COLUMN hands INTEGER NOT NULL DEFAULT 1")
         self._repair_distinct_pairs()
+        self._backfill_hand_seats()
+
+    def _backfill_hand_seats(self) -> None:
+        """Populate the seat index for hands stored before it existed."""
+        have = self.conn.execute("SELECT COUNT(*) c FROM hand_seats").fetchone()["c"]
+        if have:
+            return
+        rows = []
+        for row in self.conn.execute("SELECT hand_id, site, payload FROM hands"):
+            data = json.loads(gzip.decompress(row["payload"]))
+            for seat in data.get("seats") or []:
+                rows.append((row["hand_id"], row["site"],
+                             seat.get("player_id") or "", seat.get("name") or ""))
+        if rows:
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO hand_seats (hand_id, site, account, name)"
+                " VALUES (?, ?, ?, ?)", rows)
 
     def _ensure_definitions(self) -> None:
         """Rebuild cached books when feature definitions moved under them."""
@@ -421,6 +451,11 @@ class Store:
                 (hand.hand_id, hand.site, hand.table_id, hand.started_at,
                  len(hand.seats), payload),
             )
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO hand_seats (hand_id, site, account, name)"
+                " VALUES (?, ?, ?, ?)",
+                [(hand.hand_id, hand.site, seat.player_id, seat.name or "")
+                 for seat in hand.seats])
             fresh.append(hand)
             report.hands_new += 1
             if "pot_mismatch" in hand.flags or hand.big_blind <= 0:
@@ -507,18 +542,27 @@ class Store:
 
         names: dict[str, str] = {}
         hands: list[Hand] = []
-        for row in self.conn.execute("SELECT site, payload FROM hands ORDER BY started_at"):
+        query = "SELECT site, payload FROM hands ORDER BY started_at"
+        params: tuple = ()
+        if wanted_keys is not None:
+            # Pick the hands out of the index first. The seat table is small and
+            # uncompressed, so this replaces a full-database decompression with
+            # one cheap scan plus a lookup of just the hands that matter.
+            wanted_ids = {
+                row["hand_id"]
+                for row in self.conn.execute(
+                    "SELECT hand_id, site, account, name FROM hand_seats")
+                if (row["site"], row["account"]) in wanted_keys
+                or (row["site"], split_key(row["account"], row["name"])) in wanted_keys
+            }
+            if not wanted_ids:
+                return 0
+            marks = ",".join("?" * len(wanted_ids))
+            query = (f"SELECT site, payload FROM hands WHERE hand_id IN ({marks})"
+                     " ORDER BY started_at")
+            params = tuple(wanted_ids)
+        for row in self.conn.execute(query, params):
             data = json.loads(gzip.decompress(row["payload"]))
-            site = row["site"]
-            seats = data.get("seats") or []
-            if wanted_keys is not None:
-                if not any(
-                    (site, seat.get("player_id")) in wanted_keys
-                    or (site, split_key(seat.get("player_id", ""), seat.get("name") or ""))
-                    in wanted_keys
-                    for seat in seats
-                ):
-                    continue
             hand = hand_from_dict(data)
             # Re-key seats onto internal player ids so merged aliases pool.
             for seat in hand.seats:
@@ -600,6 +644,151 @@ class Store:
                 continue
             out[row["regime"]][row["stat"]].append((row["hits"], row["opps"]))
         return {r: dict(v) for r, v in out.items()}
+
+    # -- sessions ---------------------------------------------------------
+
+    #: A gap this long between hands starts a new session. Home games run for
+    #: hours and reconvene days later, so anything from a couple of hours up
+    #: separates them cleanly; four is comfortably inside that margin.
+    SESSION_GAP_MS = 4 * 60 * 60 * 1000
+
+    def sessions(self) -> list[dict]:
+        """Sittings, derived from gaps between hands rather than stored.
+
+        Nothing records a session id -- the hands are the source of truth and a
+        sitting is just a run of them close together in time. Deriving it means
+        no migration and no second thing to keep correct.
+        """
+        rows = list(self.conn.execute(
+            "SELECT hand_id, started_at FROM hands ORDER BY started_at"))
+        out: list[dict] = []
+        for row in rows:
+            at = int(row["started_at"] or 0)
+            if out and at - out[-1]["ended_at"] <= self.SESSION_GAP_MS:
+                cur = out[-1]
+                cur["ended_at"] = at
+                cur["hands"] += 1
+                cur["hand_ids"].append(row["hand_id"])
+            else:
+                out.append({"started_at": at, "ended_at": at, "hands": 1,
+                            "hand_ids": [row["hand_id"]]})
+        seats: dict[str, set] = {}
+        tables: dict[str, str] = {}
+        for row in self.conn.execute(
+                "SELECT h.hand_id, h.table_id, s.account FROM hands h"
+                " LEFT JOIN hand_seats s ON s.hand_id = h.hand_id"):
+            seats.setdefault(row["hand_id"], set()).add(row["account"])
+            tables[row["hand_id"]] = row["table_id"]
+        for i, sess in enumerate(out):
+            sess["id"] = i + 1
+            who: set = set()
+            for hid in sess["hand_ids"]:
+                who |= seats.get(hid, set())
+            sess["players"] = len([w for w in who if w])
+            sess["table_id"] = tables.get(sess["hand_ids"][0], "")
+            sess["minutes"] = round((sess["ended_at"] - sess["started_at"]) / 60000)
+        out.reverse()                      # most recent first
+        return out
+
+    def session_books(self, hand_ids: list[str]) -> dict:
+        """Books built from one sitting's hands only."""
+        from .features import record_hands
+        from .model import hand_from_dict
+        if not hand_ids:
+            return {}
+        alias_map = {(r["site"], r["account"]): int(r["player_id"])
+                     for r in self.conn.execute(
+                         "SELECT site, account, player_id FROM aliases")}
+        hands = []
+        marks = ",".join("?" * len(hand_ids))
+        for row in self.conn.execute(
+                f"SELECT site, payload FROM hands WHERE hand_id IN ({marks})"
+                " ORDER BY started_at", tuple(hand_ids)):
+            hand = hand_from_dict(json.loads(gzip.decompress(row["payload"])))
+            for seat in hand.seats:
+                pid = alias_map.get((hand.site, split_key(seat.player_id, seat.name))) \
+                    or alias_map.get((hand.site, seat.player_id))
+                if pid is not None:
+                    seat.player_id = str(pid)
+            hands.append(hand)
+        return record_hands(hands)
+
+    #: Only statistics with a per-*hand* denominator are compared session to
+    #: session. Street-conditioned ones (fold vs turn bet, say) give a handful
+    #: of observations in one sitting, which is enough for a story and not for
+    #: a finding.
+    SESSION_STATS = ("vpip", "pfr", "three_bet", "limp",
+                     "aggression:flop", "aggression:turn", "wtsd")
+
+    #: A sitting needs this many opportunities before it is compared at all,
+    #: and the baseline needs this many on top of it.
+    SESSION_MIN_OPPS = 20
+    SESSION_MIN_BASELINE = 60
+
+    def session_detail(self, session: dict) -> list[dict]:
+        """Per player: what they did in this sitting, against their own norm.
+
+        The baseline is the player's other hands, not this sitting's -- comparing
+        a session against a total that contains it shrinks every difference
+        toward nothing, and the more of their history this sitting is, the more
+        it hides.
+        """
+        from .priors import REGIME_LABELS
+        books = self.session_books(session["hand_ids"])
+        names = {str(r["id"]): r["display_name"] for r in self.players()}
+        out = []
+        for pid, by_regime in books.items():
+            hands = sum(b.hands for b in by_regime.values())
+            stored = self.books(int(pid))
+            deltas = []
+            # Compared inside a table size, never across one. 55% VPIP is tight
+            # heads-up and wild at a full ring, so pooling the two and reporting
+            # the difference measures which table they sat at, not how they
+            # played.
+            for regime, book in by_regime.items():
+                baseline = stored.get(regime)
+                if baseline is None:
+                    continue
+                for stat, ratio in sorted(book.ratios.items()):
+                    if stat not in self.SESSION_STATS or not ratio.opps:
+                        continue
+                    total = baseline.ratios.get(stat)
+                    if total is None or ratio.opps < self.SESSION_MIN_OPPS:
+                        continue
+                    rest_hits = total.hits - ratio.hits
+                    rest_opps = total.opps - ratio.opps
+                    if rest_opps < self.SESSION_MIN_BASELINE:
+                        continue      # no history at this table size to differ from
+                    here, usual = ratio.hits / ratio.opps, rest_hits / rest_opps
+                    if abs(here - usual) < 0.03:
+                        continue      # not a difference, just arithmetic noise
+                    deltas.append({"stat": stat, "regime": regime,
+                                   "regime_label": REGIME_LABELS.get(regime, regime),
+                                   "session": round(here, 4),
+                                   "usual": round(usual, 4),
+                                   "delta": round(here - usual, 4),
+                                   "opps": round(ratio.opps, 1)})
+            deltas.sort(key=lambda d: -abs(d["delta"]))
+            # A read built from this sitting alone, so the trends sit next to
+            # what the player looked like while they were producing them.
+            from .archetypes import match
+            from .profile import build_profile
+            from .skill import rate
+            primary = max(by_regime.items(), key=lambda kv: kv[1].hands)[1]
+            snap = build_profile(primary, by_regime,
+                                 priors=self.fitted_priors(primary.regime) or None)
+            snap.skill = rate(snap)
+            arch, conf, _mix = match(snap)
+            out.append({"player_id": int(pid), "name": names.get(pid, pid),
+                        "hands": hands, "deltas": deltas,
+                        "regimes": sorted(by_regime),
+                        "archetype": arch, "confidence": round(conf, 3),
+                        "skill": round(snap.skill.score, 1),
+                        "skill_tier": snap.skill.tier,
+                        "sample_quality": snap.sample_quality,
+                        "regime_label": snap.regime_label})
+        out.sort(key=lambda p: -p["hands"])
+        return out
 
     # -- fitted priors ----------------------------------------------------
 
@@ -697,7 +886,7 @@ class Store:
             "hands": self.conn.execute("SELECT COUNT(*) c FROM hands").fetchone()["c"],
             "players": self.conn.execute("SELECT COUNT(*) c FROM players").fetchone()["c"],
         }
-        for table in ("ratios", "meters", "books", "notes", "distinct_pairs",
+        for table in ("ratios", "meters", "books", "notes", "distinct_pairs", "hand_seats",
                       "aliases", "fitted_priors", "hands", "players"):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.execute("DELETE FROM sqlite_sequence WHERE name = 'players'")

@@ -92,11 +92,17 @@ def test_archetypes_are_scored_over_a_common_feature_set():
         book.ratios[feature].hits = pop * 100
         book.ratios[feature].opps = 100
     book.meters["table_size"].add(6, 1)
-    # Field-average play lands on TAG (near-field solid). Extreme buckets must not.
+    # Field-average play must not land confidently anywhere: it is the case the
+    # prototypes are least able to distinguish. This used to assert TAG, which
+    # encoded the very bug that made TAG a magnet -- a bucket that *is* the
+    # population centroid wins every ambiguous player by default. TAG now has
+    # its own identity (tighter than field, folds rivers less), so the honest
+    # assertion is about the shape of the mix, not about which name is on top.
     name, conf, mix = match(build_profile(book))
-    assert name == "tag"
-    assert conf > 0.4
-    assert mix[0][0] == "tag"
+    assert conf < 0.6, f"field-average play should not be a confident {name}"
+    assert sum(share for _, share in mix[:3]) > 0.5   # spread over near-field buckets
+    extreme = {"nit", "maniac", "station", "limper"}
+    assert name not in extreme, f"field-average play read as {name}"
 
 
 def test_passive_buckets_catch_non_tags(synth_profile):

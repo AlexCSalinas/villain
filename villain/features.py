@@ -92,7 +92,12 @@ def record_hand(hand: Hand, books: Books,
         book.measure("table_size", len(hand.seats))
         book.measure("stack_bb", seat.stack / hand.big_blind)
 
-    _preflop(hand, view, books, reg, pace_locks=pace_locks)
+    # A bomb pot has no preflop betting round -- everyone is dealt in for a
+    # forced ante and the action starts on the flop. Counting it credits every
+    # player with a VPIP, RFI and limp *opportunity* they were never given, and
+    # home games run them. The postflop streets are real and still counted.
+    if "bomb_pot" not in hand.flags:
+        _preflop(hand, view, books, reg, pace_locks=pace_locks)
     pace_events = _postflop(hand, view, books, reg, pace_locks=pace_locks)
     _results(hand, view, books, reg, pace_events)
 
@@ -217,6 +222,13 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
         book = _book(hand, books, seat, reg)
         book.count("vpip", seen["vpip"])
         book.count("pfr", seen["pfr"])
+        # Of the hands they chose to play, how many did they raise. VPIP and
+        # PFR as separate marginals cannot see this: a player at 25/13 and one
+        # at 25/22 have similar-looking numbers and completely different plans,
+        # and the rating already treats the ratio as decisive while the
+        # archetype matcher was blind to it.
+        if seen["vpip"]:
+            book.count("raise_share", seen["pfr"])
 
 
 # ---------------------------------------------------------------------------

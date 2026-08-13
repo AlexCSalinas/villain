@@ -22,7 +22,7 @@ from .stats import Meter, Ratio, StatBook
 
 # The features that define a player, in the order clustering expects.
 PROFILE_FEATURES = [
-    "vpip", "pfr", "three_bet", "fold_to_three_bet",
+    "vpip", "pfr", "raise_share", "three_bet", "fold_to_three_bet",
     "cbet:flop", "cbet:turn", "cbet:river",
     "fold_to_cbet:flop", "fold_to_cbet:turn",
     "fold_vs_bet:flop", "fold_vs_bet:turn", "fold_vs_bet:river",
@@ -70,6 +70,19 @@ class Profile:
     first_seen: int | None = None
     last_seen: int | None = None
     borrowed_from: list[str] = field(default_factory=list)
+    #: Empirically fitted population, when the database has enough players to
+    #: support one. Carried here so everything downstream measures against the
+    #: same population the shrinkage used -- the archetype label, the exploit
+    #: thresholds and the rating were all still reading the built-in online
+    #: defaults, so "learn from your own pool" only ever moved the number and
+    #: never the read.
+    priors: dict = field(default_factory=dict)
+
+    def population(self, stat: str) -> float:
+        """The population frequency this profile is measured against."""
+        from .priors import population_mean
+        fitted = self.priors.get(stat)
+        return fitted[0] if fitted else population_mean(stat, self.regime)
     #: hands played at each table size, busiest first. Empty for a profile
     #: built from a single regime.
     contributions: dict[str, int] = field(default_factory=dict)
@@ -128,6 +141,7 @@ def build_profile(book: StatBook, others: dict[str, StatBook] | None = None,
         regime=reg, table_size=book.mean("table_size") or 0.0,
         first_seen=book.first_seen, last_seen=book.last_seen,
         borrowed_from=[r for r in NEIGHBOURS.get(reg, ()) if r in others],
+        priors=dict(priors),
     )
 
     def estimate(stat: str, hits: float, opps: float) -> Estimate:

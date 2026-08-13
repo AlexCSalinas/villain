@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from .archetypes import ARCHETYPE_BY_NAME, match
 from .exploits import find_leaks, find_watchlist
-from .glossary import component_help
+from .glossary import (component_entry, component_help, component_reading,
+                       component_stats)
 from .playbook import combinations_for
 from .profile import Profile
-from .skill import rate, weaknesses
+from .skill import WEAK_COMPONENT, rate, weaknesses
 
 #: Internal counters. They exist so aggression frequencies can be derived from
 #: raw action mixes; as standalone frequencies they mean nothing, so they are
@@ -109,6 +110,39 @@ def as_dict(profile: Profile) -> dict:
         # Where their game is thinnest. This is what the rating is built on,
         # so a player rated poorly always has something to show even when no
         # frequency clears a statistical test.
+        # Every component carries what it measures and the figure behind it, so
+        # the breakdown can explain itself in place instead of showing seven
+        # bars whose numbers all sit between 77 and 100.
+        "skill_components": [
+            {"name": c.name, "score": round(c.score, 1), "note": c.note,
+             "weight": c.weight,
+             "measures": (component_entry(c.name) or {}).get("measures", ""),
+             "meaning": component_reading(c.name, c.score),
+             # Only stats the evidence viewer can actually resolve. Aggression
+             # is derived from the raw action mix rather than stored as its own
+             # ratio, so replaying hands for it finds nothing and the panel
+             # opens on "0 of 0".
+             # Offer the link only when there is something behind it: the
+             # opportunity count is not enough, because a stat the player never
+             # once did opens an empty panel.
+             "stats": [st for st in component_stats(c.name)
+                       if profile.opps(st) and not st.startswith("aggression:")
+                       # At least a handful of actual instances: Arnav limps
+                       # 4 times in 1841 hands, which is nonzero and is not
+                       # evidence of anything.
+                       # Between a handful and a reviewable list. VPIP has
+                       # thousands of instances and no single hand tells you
+                       # anything: "here are 1,053 hands where they played" is
+                       # not evidence, it is the denominator.
+                       # At least one real instance. The bar used to be five,
+                       # which hid exactly the informative cases -- 4 limps in
+                       # 2,945 hands is a read ("essentially never"), and the
+                       # panel now says so in words. The upper cap stays: a
+                       # list of 2,000 hands is a denominator, not evidence.
+                       and 1 <= (profile.stats[st].raw or 0) * profile.opps(st) <= 150],
+             "weak": c.score < WEAK_COMPONENT and c.name != "Resistance to exploitation"}
+            for c in profile.skill.components
+        ],
         "weak_spots": [
             {"name": c.name, "score": round(c.score, 1), "note": c.note,
              "meaning": component_help(c.name) or ""}

@@ -113,7 +113,7 @@ def rate(profile: Profile) -> Skill:
 
 def _solid(profile: Profile, feature: str) -> float:
     """What a competent player does with this stat at this table size."""
-    return target_frequency(ARCHETYPE_BY_NAME["tag"], feature, profile.regime)
+    return target_frequency(ARCHETYPE_BY_NAME["tag"], feature, profile.regime, profile)
 
 
 def _band_score(value: float, target: float, tolerance: float,

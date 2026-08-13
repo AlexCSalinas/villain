@@ -42,6 +42,45 @@ STATS: dict[str, dict[str, str]] = {
         "high": "Their opening range collapses under pressure. Re-raise them light.",
         "low": "They defend their raises. Re-raise for value, not as a bluff.",
     },
+    "four_bet": {
+        "what": "Facing a three-bet, how often they raise again rather than "
+                "call or fold.",
+        "high": "They four-bet often, so a three-bet from you is not the end "
+                "of the hand. Three-bet a tighter range and be ready to play "
+                "for stacks.",
+        "low": "They almost never four-bet. Your three-bets can be wide, and "
+               "when they do raise again, believe it.",
+    },
+    "five_bet": {
+        "what": "Facing a four-bet, how often they raise again. Rare enough "
+                "that it takes a lot of hands to mean anything.",
+        "high": "They five-bet light, so four-betting as a bluff is expensive "
+                "against them.",
+        "low": "They fold or call four-bets. Four-bet bluffs get through.",
+    },
+    "squeeze": {
+        "what": "After a raise and at least one caller, how often they "
+                "re-raise.",
+        "high": "They punish limped-along pots. Do not flat behind a raiser "
+                "with a hand you cannot continue with.",
+        "low": "They let multiway pots go to the flop, so cold-calling behind "
+               "a raiser is cheap.",
+    },
+    "cold_call": {
+        "what": "How often they call a raise having not yet put money in.",
+        "high": "They call raises with hands that should fold or re-raise, so "
+                "their calling range is capped and full of second-best hands.",
+        "low": "They three-bet or fold rather than call, so a flat call from "
+               "them is a narrow, deliberate range.",
+    },
+    "rfi": {
+        "what": "How often they open the pot with a raise when it is folded "
+                "to them.",
+        "high": "They open a lot, so their opening range is weak on average. "
+                "Three-bet and defend wider against it.",
+        "low": "They open rarely, so an open is a real hand. Give their raises "
+               "more respect and steal their blinds more often.",
+    },
     "bb_defend": {
         "what": "In the big blind facing a raise, how often they play rather "
                 "than fold.",
@@ -288,33 +327,109 @@ TERMS: dict[str, str] = {
 #: What a low score in each rated area means for you. The rating knows these
 #: things whether or not a statistical test clears, and saying nothing about
 #: them makes a weak player look unreadable.
-COMPONENTS: dict[str, str] = {
-    "Hand selection": "They play the wrong hands -- too many, too few, or "
-                      "entering pots by calling. Punish it before the flop by "
-                      "raising more of your own hands against them.",
-    "Preflop aggression": "They call where they should raise. Their calling "
-                          "range is capped, so bet at them after the flop and "
-                          "believe them when they finally raise.",
-    "Postflop aggression": "Their betting after the flop is off -- too passive "
-                           "to protect their good hands, or too busy to have "
-                           "them. Either way their bets and checks say more "
-                           "than they should.",
-    "Discipline vs bets": "They fold at the wrong frequencies when facing "
-                          "bets. Whichever way they err, the answer is to "
-                          "bet more or bluff less accordingly.",
-    "Showdown judgement": "They arrive at showdown with the wrong hands -- "
-                          "paying off too often, or folding hands that were "
-                          "good. Value bet thinner against them.",
-    "Bet sizing": "Their sizes are readable or badly chosen. One size for "
-                  "every situation means the size tells you nothing they meant "
-                  "it to, and often a lot they did not.",
-    "Resistance to exploitation": "How much money the leaks found against them "
-                                  "are worth in total.",
+#: What each rating component measures, and what a good or bad score means.
+#: Split by direction on purpose: the single blurb this replaced was written as
+#: a weakness, so a player scoring 100 on hand selection was told they "play
+#: the wrong hands".
+#:
+#: ``stats`` names the frequencies the component is computed from, so the
+#: breakdown can offer the same "see the hands" evidence the leaks do.
+COMPONENTS: dict[str, dict] = {
+    "Hand selection": {
+        "measures": "Which hands they enter pots with, and whether they enter "
+                    "by raising or by calling.",
+        "low": "They play the wrong hands -- too many, too few, or entering "
+               "pots by calling. Punish it before the flop by raising more of "
+               "your own hands against them.",
+        "high": "Their starting hands are sensible for the table size. No "
+                "cheap edge before the flop.",
+        "stats": ["vpip", "limp", "cold_call", "rfi"],
+    },
+    "Preflop aggression": {
+        "measures": "How often they raise rather than call the hands they "
+                    "choose to play.",
+        "low": "They call where they should raise. Their calling range is "
+               "capped, so bet at them after the flop and believe them when "
+               "they finally raise.",
+        "high": "They raise the hands they play, so their range is not capped "
+                "when they call. Do not read a flat call as weakness.",
+        "stats": ["vpip", "pfr", "three_bet", "four_bet", "five_bet", "squeeze"],
+    },
+    "Postflop aggression": {
+        "measures": "How often they bet and raise after the flop, street by "
+                    "street.",
+        "low": "Their betting after the flop is off -- too passive to protect "
+               "their good hands, or too busy to have them. Either way their "
+               "bets and checks say more than they should.",
+        "high": "Their betting frequency is in a normal band, so a bet from "
+                "them carries the usual information and no more.",
+        "stats": ["aggression:flop", "aggression:turn", "aggression:river"],
+    },
+    "Discipline vs bets": {
+        "measures": "How often they fold when facing a bet, against the "
+                    "frequency the pot odds call for.",
+        "low": "They fold at the wrong frequencies when facing bets. "
+               "Whichever way they err, the answer is to bet more or bluff "
+               "less accordingly.",
+        "high": "They fold about as often as the price demands, so neither "
+                "bluffing nor value betting thin is free against them.",
+        "stats": ["fold_vs_bet:flop", "fold_vs_bet:turn", "fold_vs_bet:river"],
+    },
+    "Showdown judgement": {
+        "measures": "How often they reach showdown, and how often they win "
+                    "when they do.",
+        "low": "They arrive at showdown with the wrong hands -- paying off "
+               "too often, or folding hands that were good. Value bet thinner "
+               "against them.",
+        "high": "The hands they take to showdown are the right ones. Thin "
+                "value bets will not get paid as often as usual.",
+        "stats": ["wtsd", "wsd"],
+    },
+    "Bet sizing": {
+        "measures": "Whether their bet sizes vary with the situation or stay "
+                    "the same regardless.",
+        "low": "Their sizes are readable or badly chosen. One size for every "
+               "situation means the size tells you nothing they meant it to, "
+               "and often a lot they did not.",
+        "high": "Their sizing does not give them away.",
+        "stats": [],
+    },
+    "Resistance to exploitation": {
+        "measures": "How much money the leaks found against them are worth in "
+                    "total, weighted by how much evidence there is.",
+        "low": "There is real money available against them -- see the leaks "
+               "listed above.",
+        "high": "No leak found so far is worth much. On a thin sample that "
+                "means 'not yet found', not 'not there'.",
+        "stats": [],
+    },
 }
+
+#: Above this a component reads as a strength rather than a weakness.
+COMPONENT_STRONG = 78.0
+
+
+def component_entry(name: str) -> dict | None:
+    return COMPONENTS.get(name)
+
+
+def component_reading(name: str, score: float) -> str:
+    """The explanation that matches which way the score actually went."""
+    entry = COMPONENTS.get(name)
+    if not entry:
+        return ""
+    return entry["high"] if score >= COMPONENT_STRONG else entry["low"]
+
+
+def component_stats(name: str) -> list[str]:
+    entry = COMPONENTS.get(name)
+    return list(entry["stats"]) if entry else []
 
 
 def component_help(name: str) -> str | None:
-    return COMPONENTS.get(name)
+    """The weakness reading. Kept for the callers that only show weak spots."""
+    entry = COMPONENTS.get(name)
+    return entry["low"] if entry else None
 
 
 #: How the table-size split is explained.

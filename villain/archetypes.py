@@ -64,8 +64,8 @@ from .profile import PROFILE_FEATURES, Profile
 #: archetype: these are exponents in a likelihood, so varying them per
 #: archetype would make the scores incomparable.
 IMPORTANCE = {
-    "vpip": 2.0, "pfr": 1.3, "three_bet": 1.1, "fold_to_three_bet": 0.9,
-    "fold_vs_bet:flop": 1.4, "fold_vs_bet:turn": 1.6, "fold_vs_bet:river": 1.3,
+    "vpip": 2.0, "pfr": 1.3, "raise_share": 2.6, "three_bet": 2.2, "fold_to_three_bet": 0.9,
+    "fold_vs_bet:flop": 1.4, "fold_vs_bet:turn": 1.6, "fold_vs_bet:river": 3.4,
     "fold_to_cbet:flop": 1.2, "fold_to_cbet:turn": 1.0,
     "aggression:flop": 1.4, "aggression:turn": 1.4, "aggression:river": 1.2,
     "cbet:flop": 1.1, "cbet:turn": 1.0, "cbet:river": 0.8,
@@ -97,7 +97,7 @@ ARCHETYPES: list[Archetype] = [
         "they have it, and the pots they contest are the ones to keep "
         "small. Your profit here is a lot of tiny uncontested pots, not one "
         "big one.",
-        {"vpip": -2.2, "pfr": -1.8, "three_bet": -1.2, "fold_to_three_bet": +1.5,
+        {"vpip": -2.2, "pfr": -1.8, "raise_share": +0.3, "three_bet": -1.2, "fold_to_three_bet": +1.5,
          "fold_vs_bet:flop": +1.2, "fold_vs_bet:turn": +1.2, "wtsd": -1.2,
          "aggression:flop": -1.0, "bb_defend": -1.5},
     ),
@@ -118,7 +118,7 @@ ARCHETYPES: list[Archetype] = [
         # asymmetry: *passivity* (low PFR given entry) stays a full part of the
         # identity, because that is the plan -- it is only the volume that was
         # borrowed from a different bucket.
-        {"vpip": +0.7, "pfr": -1.2, "three_bet": -1.0,
+        {"vpip": +0.7, "pfr": -1.2, "raise_share": -1.2, "three_bet": -1.0,
          "fold_to_cbet:flop": -2.0, "fold_vs_bet:flop": -2.0, "fold_vs_bet:turn": -2.2,
          "fold_vs_bet:river": -1.8, "wtsd": +1.6, "wsd": -0.8,
          "aggression:flop": -1.4, "aggression:turn": -1.5},
@@ -133,7 +133,7 @@ ARCHETYPES: list[Archetype] = [
         "they do anything other than fold. Their raises and their multi-"
         "street calls are genuine, because everything weak left the hand "
         "already.",
-        {"vpip": +0.3, "fold_to_cbet:flop": +1.3, "fold_to_cbet:turn": +1.4,
+        {"raise_share": +0.1, "vpip": +0.3, "fold_to_cbet:flop": +1.3, "fold_to_cbet:turn": +1.4,
          "fold_vs_bet:flop": +1.3, "fold_vs_bet:turn": +1.5, "fold_vs_bet:river": +1.3,
          "wtsd": -1.3, "check_raise:flop": -0.8, "wwsf": -0.8},
     ),
@@ -146,7 +146,7 @@ ARCHETYPES: list[Archetype] = [
         "strong hands so they keep firing into them. Never bluff and never "
         "raise as a bluff: that is the one part of their game already "
         "working. Expect variance; the money arrives in lumps.",
-        {"vpip": +1.6, "pfr": +1.8, "three_bet": +1.8, "cbet:flop": +1.3,
+        {"raise_share": +0.5, "vpip": +1.6, "pfr": +1.8, "three_bet": +1.8, "cbet:flop": +1.3,
          "cbet:turn": +1.3, "aggression:flop": +1.7, "aggression:turn": +1.7,
          "aggression:river": +1.5, "wtsd": +0.4},
     ),
@@ -160,8 +160,13 @@ ARCHETYPES: list[Archetype] = [
         "bluffing war on the later streets; they are competent, and that "
         "part of their game works. Position matters more here than against "
         "anyone else.",
-        {"vpip": +1.0, "pfr": +1.2, "three_bet": +1.0, "cbet:flop": +0.7,
-         "aggression:flop": +0.9, "aggression:turn": +0.8, "wwsf": +0.5,
+        # Identity on the axes a LAG actually shows: they enter raising, three-bet
+        # hard and never limp. Softening the postflop demands made this the
+        # smallest prototype in the table (L1 6.1) and therefore the new magnet
+        # for every average player -- the same failure TAG had.
+        {"raise_share": +0.5, "vpip": +0.9, "pfr": +1.5, "three_bet": +1.6,
+         "limp": -1.2, "fold_to_three_bet": -0.6, "cbet:flop": +0.45,
+         "aggression:flop": +0.6, "aggression:turn": +0.55, "wwsf": +0.5,
          "fold_vs_bet:turn": -0.3},
     ),
     Archetype(
@@ -182,9 +187,17 @@ ARCHETYPES: list[Archetype] = [
         # *below* field on. It says nothing at all about fold frequency: that
         # axis is "station"'s identity, and a TAG may be sticky or not without
         # leaving the bucket.
-        {"vpip": 0.0, "pfr": +0.2, "three_bet": +0.35, "limp": -1.0,
-         "donk:flop": -0.6, "fold_to_three_bet": -0.3, "cbet:flop": +0.3,
-         "check_raise:flop": +0.2, "wsd": +0.3, "wtsd": -0.2},
+        # The fold signal is here, and it points the *other way* from the
+        # attempt that was reverted last session. That one gave TAG a positive
+        # fold deviation -- folds more than the field -- and it pushed real
+        # TAGs into tight passive. Measured against four players with known
+        # labels, a TAG folds rivers *less* than the field and plays tighter:
+        # they get to the river with hands worth calling, so they are not the
+        # ones surrendering to the last bet.
+        {"vpip": -0.9, "pfr": +0.2, "raise_share": +0.70, "three_bet": +0.35,
+         "limp": -1.0, "donk:flop": -0.6, "fold_to_three_bet": -0.3,
+         "cbet:flop": +0.3, "fold_vs_bet:river": -1.3,
+         "check_raise:flop": +0.6, "wsd": +0.3, "wtsd": -0.2},
     ),
     Archetype(
         "tight passive",
@@ -196,7 +209,7 @@ ARCHETYPES: list[Archetype] = [
         "than against a station because they will get away from weak pairs, "
         "so prefer bluffs and small-stab continuation bets over three-street "
         "value with mediocre holdings.",
-        {"vpip": -1.0, "pfr": -1.0, "three_bet": -0.8, "fold_to_three_bet": +0.6,
+        {"raise_share": -1.3, "vpip": -1.0, "pfr": -1.0, "three_bet": -0.8, "fold_to_three_bet": +0.6,
          "fold_vs_bet:flop": +0.6, "fold_vs_bet:turn": +0.5, "cbet:flop": -0.8,
          "aggression:flop": -1.1, "aggression:turn": -1.1, "wtsd": +0.5,
          "check_raise:flop": -0.6},
@@ -211,7 +224,7 @@ ARCHETYPES: list[Archetype] = [
         "yourself: when they finally raise, give them credit. The edge is "
         "volume of small-to-medium value pots, not one heroic bluff.",
         # Elevated VPIP is the gate. Limp is optional — many fish just flat.
-        {"vpip": +1.7, "pfr": +0.35, "three_bet": -0.3, "limp": 0.0,
+        {"raise_share": -1.4, "vpip": +1.7, "pfr": +0.35, "three_bet": -1.0, "limp": 0.0,
          "fold_to_cbet:flop": -0.5, "fold_vs_bet:flop": -0.4, "fold_vs_bet:turn": -0.3,
          "aggression:flop": -0.9, "aggression:turn": -0.9, "cbet:flop": -0.3,
          "wtsd": +0.8, "wsd": -0.3},
@@ -225,7 +238,7 @@ ARCHETYPES: list[Archetype] = [
         "cheap flops, so they miss constantly and give up when they do. "
         "Slow down when they call the flop -- that call means something "
         "real -- and fold to their raises without hesitation.",
-        {"vpip": +0.8, "pfr": -1.8, "limp": +2.5, "three_bet": -1.2,
+        {"raise_share": -1.9, "vpip": +0.8, "pfr": -1.8, "limp": +2.5, "three_bet": -1.2,
          "fold_to_cbet:flop": +0.8, "aggression:flop": -1.2},
     ),
     Archetype(
@@ -237,7 +250,7 @@ ARCHETYPES: list[Archetype] = [
         "marginal holdings and treat every check-raise as the real thing -- "
         "they do not have a bluffing range there. The edge comes from not "
         "paying them off in the big pots they engineer.",
-        {"vpip": -0.8, "pfr": -0.6, "check_raise:flop": +2.2, "donk:flop": -0.5,
+        {"raise_share": -0.5, "vpip": -0.8, "pfr": -0.6, "check_raise:flop": +2.2, "donk:flop": -0.5,
          "cbet:flop": -1.4, "aggression:flop": -0.9, "wtsd": +0.6, "wsd": +1.0},
     ),
 ]
@@ -276,14 +289,22 @@ def deviations(profile: Profile) -> dict[str, float]:
         est = profile.stats.get(feature)
         if est is None or est.opps <= 0:
             continue
-        pop = population_mean(feature, profile.regime)
+        pop = profile.population(feature)
         out[feature] = (logit(est.value) - logit(pop)) / spread_of(feature)
     return out
 
 
-def target_frequency(arch: Archetype, feature: str, table_regime: str) -> float:
-    """The frequency this archetype implies for a feature at this table size."""
-    pop = population_mean(feature, table_regime)
+def target_frequency(arch: Archetype, feature: str, table_regime: str,
+                     profile: "Profile | None" = None) -> float:
+    """The frequency this archetype implies for a feature at this table size.
+
+    Pass ``profile`` to measure against that player's fitted population rather
+    than the built-in one. A prototype is a deviation *from the field*, so with
+    a fitted pool the same deviation has to be applied to the fitted mean or
+    the label is describing a different field than the numbers are.
+    """
+    pop = profile.population(feature) if profile is not None \
+        else population_mean(feature, table_regime)
     return sigmoid(logit(pop) + arch.deviation(feature) * spread_of(feature))
 
 
@@ -308,7 +329,7 @@ def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
     for arch in ARCHETYPES:
         total = 0.0
         for feature, hits, opps in observed:
-            p = target_frequency(arch, feature, profile.regime)
+            p = target_frequency(arch, feature, profile.regime, profile)
             total += (IMPORTANCE.get(feature, DEFAULT_IMPORTANCE)
                       * _log_beta_binomial(hits, opps, p))
         log_posterior[arch.name] = (
