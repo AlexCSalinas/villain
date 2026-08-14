@@ -1221,6 +1221,11 @@ PAGE = r"""<!doctype html>
   }
   .sess-delta:first-child { border-top: 0; }
   .sess-who { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .sess-regime {
+    font-size: 12px; color: var(--muted); margin: 10px 0 2px;
+    padding-top: 8px; border-top: 1px solid var(--line);
+  }
+  .sess-regime:first-child { margin-top: 4px; padding-top: 0; border-top: 0; }
   td.worth { font-variant-numeric: tabular-nums; }
   td.worth.big { color: var(--red); font-weight: 600; }
   .detail-body td.label { min-width: 156px; }
@@ -2384,18 +2389,34 @@ async function drawSession(id) {
       box.innerHTML = `<div class="small muted">No trend yet \u2014 not enough
         hands at this table size outside this sitting to say what is usual.</div>`;
     } else {
+      // Grouped under one heading per table size. Rendering a row per
+      // (stat, regime) put VPIP on screen two or three times with the table
+      // size in small print, which reads as a duplicate rather than as two
+      // different games.
+      const byRegime = new Map();
       for (const d of p.deltas) {
-        const row = document.createElement("div");
-        row.className = "sess-delta";
-        const up = d.delta > 0;
-        // Percentage *points*, inside one table size: "+30% VPIP" across
-        // regimes measures which table they sat at, not how they played.
-        row.innerHTML = `<span>${esc(statLabel(d.stat, null))}</span>
-          <span class="num">${fmtPct(d.session)}</span>
-          <span class="small ${up ? "up" : "down"}">${up ? "\u25b2" : "\u25bc"}${
-            Math.abs(Math.round(d.delta * 100))}pp</span>
-          <span class="small muted">usually ${fmtPct(d.usual)} ${esc(d.regime_label)}</span>`;
-        box.appendChild(row);
+        const key = d.regime_label || d.regime || "";
+        if (!byRegime.has(key)) byRegime.set(key, []);
+        byRegime.get(key).push(d);
+      }
+      for (const [label, deltas] of byRegime) {
+        if (byRegime.size > 1 || label) {
+          const head = document.createElement("div");
+          head.className = "sess-regime";
+          head.textContent = label;
+          box.appendChild(head);
+        }
+        for (const d of deltas) {
+          const row = document.createElement("div");
+          row.className = "sess-delta";
+          const up = d.delta > 0;
+          row.innerHTML = `<span>${esc(statLabel(d.stat, null))}</span>
+            <span class="num">${fmtPct(d.session)}</span>
+            <span class="small ${up ? "up" : "down"}">${up ? "\u25b2" : "\u25bc"}${
+              Math.abs(Math.round(d.delta * 100))}pp</span>
+            <span class="small muted">usually ${fmtPct(d.usual)}</span>`;
+          box.appendChild(row);
+        }
       }
     }
     body.appendChild(div);

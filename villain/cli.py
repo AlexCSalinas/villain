@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-players", type=int, default=8)
 
     sub.add_parser("rebuild", help="recompute all profiles from stored hands")
+    sub.add_parser("validate", help="score the classifier on hands it has not seen")
 
     p = sub.add_parser("ui", help="serve the local web interface")
     p.add_argument("--port", type=int, default=8766)
@@ -286,6 +287,21 @@ def _cmd_fit(args) -> int:
                     print(f"    {row['display_name']}: {read}")
         except ReadsNeedMore as exc:
             print(f"  {exc}")
+    return 0
+
+
+def _cmd_validate(args) -> int:
+    from .validate import score
+    with Store(args.db) as store:
+        result = score(store)
+    if result is None:
+        print("Not enough hands on any player to split. Import more first.")
+        return 1
+    print(result)
+    print("\n  Stated confidence should track accuracy; the gap between them is\n"
+          "  the calibration error. Halves agreeing is reproducibility, not\n"
+          "  correctness -- a player can be labelled the same way twice and be\n"
+          "  wrong both times.")
     return 0
 
 
