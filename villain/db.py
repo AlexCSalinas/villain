@@ -136,7 +136,7 @@ SPURIOUS_OVERLAP = 2
 
 #: Feature / display-stat definition stamp. Bump when ``rebuild`` is required
 #: for existing databases to grow new counters or fix old ones.
-DEFINITIONS_VERSION = "2026-08-13.faced-size"
+DEFINITIONS_VERSION = "2026-08-14.fitted-priors"
 
 
 def split_key(account: str, name: str) -> str:
@@ -224,6 +224,16 @@ class Store:
         n_hands = self.conn.execute("SELECT COUNT(*) AS c FROM hands").fetchone()["c"]
         if n_hands:
             self.rebuild()
+            # The fitted population is a cache too, and it was not covered here.
+            # A definitions bump that adds a feature refreshed the stat books
+            # but left the priors without it, so the new feature silently fell
+            # back to the built-in online default -- measuring a home game
+            # against a field it does not play in. Adding raise_share this way
+            # changed 26 of 68 real labels before anyone ran `villain fit`.
+            # Refit first, then rebuild again so the books are shrunk against
+            # the population they are about to be read against.
+            if self.fit_priors():
+                self.rebuild()
         self.conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('definitions_version', ?)",
             (DEFINITIONS_VERSION,))
