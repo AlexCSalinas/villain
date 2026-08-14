@@ -257,6 +257,32 @@ ARCHETYPES: list[Archetype] = [
 
 ARCHETYPE_BY_NAME = {a.name: a for a in ARCHETYPES}
 
+#: How close to the correct fold frequency each plan implies its player sits,
+#: and how hard that counts. This is the one axis the trait vectors cannot
+#: express: every other trait is a *signed* deviation, so folding far too much
+#: and folding far too little land on opposite ends, while both are the same
+#: mistake. Measured on players with known labels, competent regulars sit at or
+#: under 0.064 mean distance from the reference and weak ones at or over 0.069.
+DISCIPLINE = {
+    "tag": 0.045, "lag": 0.060, "nit": 0.110, "station": 0.130,
+    "overfolder": 0.130, "maniac": 0.120, "tight passive": 0.100,
+    "loose passive": 0.110, "limper": 0.110, "trapper": 0.080,
+}
+DISCIPLINE_SPREAD = 0.035
+
+#: Measured but *not* wired into :func:`match` yet, and the reason is worth
+#: recording. The signal is real -- on players with known labels it separates
+#: cleanly where no single frequency does -- but the penalty it produces is
+#: about half a nat, against archetype margins many times that, so it changes
+#: nothing at a defensible weight. Turned up far enough to move those players
+#: it stops the prototypes recovering their own frequencies, which is the test
+#: that guards against exactly this kind of forcing.
+#:
+#: The next honest step is not a bigger weight. It is to score it through
+#: villain.validate, which can say whether the term helps on hands the matcher
+#: has not seen, rather than whether it moves six players somebody labelled.
+DISCIPLINE_WEIGHT = 2.4
+
 #: Beta-Binomial concentration. Low values mean an archetype tolerates a wide
 #: band of frequencies; high values demand players hit the prototype exactly.
 #: At 22 the implied tolerance was ~0.95 population spreads -- half of an

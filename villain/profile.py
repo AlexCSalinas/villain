@@ -52,6 +52,11 @@ DERIVED = {
 #: prior for this one. Related game, not the same game.
 CROSS_REGIME_DISCOUNT = 0.35
 
+#: The fold frequency a competent player defends at, facing a normal bet. Used
+#: as the fixed reference for :meth:`Profile.fold_accuracy`; the same number
+#: skill.py's discipline component scores against.
+CORRECT_FOLD = 0.44
+
 
 @dataclass
 class Profile:
@@ -77,6 +82,33 @@ class Profile:
     #: defaults, so "learn from your own pool" only ever moved the number and
     #: never the read.
     priors: dict = field(default_factory=dict)
+
+    def fold_accuracy(self) -> float | None:
+        """Mean distance from the breakeven fold frequency, across streets.
+
+        Two-sided on purpose, and that is the whole point of it. Every trait in
+        :mod:`villain.archetypes` is a *signed* deviation -- folds more than the
+        field, or less -- so a player who folds far too much and one who folds
+        far too little sit at opposite ends of every axis the matcher has, while
+        both are making the same kind of mistake. There was no way to say "folds
+        about right", which is exactly what separates a good regular from
+        somebody whose frequencies merely look tight.
+
+        Measured against one fixed reference rather than each player's own
+        faced sizes. That is deliberate: pricing it per-player inverts the
+        signal, because somebody who calls too much gets shown smaller bets,
+        which lowers his own breakeven until he clears it. On real players the
+        personalised version rated two known-weak opponents as *more*
+        disciplined than two known-strong ones. The fixed bar is the frequency
+        a competent player defends at, and distance from it is the measure.
+        """
+        errors = []
+        for street in ("flop", "turn", "river"):
+            est = self.stats.get(f"fold_vs_bet:{street}")
+            if est is None or est.native_opps < 12:
+                continue
+            errors.append(abs(est.value - CORRECT_FOLD))
+        return sum(errors) / len(errors) if errors else None
 
     def population(self, stat: str) -> float:
         """The population frequency this profile is measured against."""
