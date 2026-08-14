@@ -268,7 +268,7 @@ def test_other_tables_are_discounted_not_ignored(hands):
     from villain.profile import CROSS_REGIME_DISCOUNT, unified_book
     books = record_hands(hands)
     by_regime = max(books.values(), key=lambda by: sum(b.hands for b in by.values()))
-    merged, contributions = unified_book(by_regime)
+    merged, contributions, _native = unified_book(by_regime)
     home = max(contributions, key=contributions.get)
     for stat, ratio in by_regime[home].ratios.items():
         other = sum(b.ratios[stat].opps for r, b in by_regime.items()

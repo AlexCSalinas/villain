@@ -14,7 +14,7 @@ the same game.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .priors import (CONTINUOUS, NEIGHBOURS, REGIME_LABELS, SHORT, Estimate, logit,
                      population_mean, prior_for, regime, shrink, sigmoid)
@@ -125,7 +125,8 @@ class Profile:
 
 
 def build_profile(book: StatBook, others: dict[str, StatBook] | None = None,
-                  priors: dict[str, tuple[float, float]] | None = None) -> Profile:
+                  priors: dict[str, tuple[float, float]] | None = None,
+                  native: dict[str, float] | None = None) -> Profile:
     """Shrink one regime's book into a profile.
 
     ``others`` is the same player's books in other regimes, used as a personal
@@ -147,7 +148,8 @@ def build_profile(book: StatBook, others: dict[str, StatBook] | None = None,
     def estimate(stat: str, hits: float, opps: float) -> Estimate:
         mean, strength = priors.get(stat) or prior_for(stat, reg)
         mean, strength = _personal_prior(stat, others, mean, strength)
-        return shrink(hits, opps, mean, strength)
+        est = shrink(hits, opps, mean, strength)
+        return replace(est, native_opps=(native or {}).get(stat, opps))
 
     for stat, ratio in book.ratios.items():
         if stat.startswith("seat:") or stat.startswith("saw:"):
@@ -251,11 +253,11 @@ def primary_regime(by_regime: dict[str, StatBook]) -> str:
     return max(live.items(), key=lambda kv: kv[1].hands)[0]
 
 
-def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, int]]:
+def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, int], dict[str, float]]:
     """Fold every table size into one book on the primary table's scale."""
     live = {r: b for r, b in by_regime.items() if b.hands > 0}
     if not live:
-        return StatBook(), {}
+        return StatBook(), {}, {}
 
     home = primary_regime(live)
     source = live[home]
@@ -266,9 +268,11 @@ def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, in
     merged.last_seen = max((b.last_seen for b in live.values()
                             if b.last_seen is not None), default=None)
 
+    native: dict[str, float] = {}
     for stat, ratio in source.ratios.items():
         merged.ratios[stat].hits = ratio.hits
         merged.ratios[stat].opps = ratio.opps
+        native[stat] = ratio.opps
     for stat, meter in source.meters.items():
         merged.meters[stat].merge(meter)
 
@@ -298,7 +302,7 @@ def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, in
 
     contributions = {r: b.hands for r, b in sorted(
         live.items(), key=lambda kv: -kv[1].hands)}
-    return merged, contributions
+    return merged, contributions, native
 
 
 def _translate_rate(stat: str, ratio: Ratio, source: str, target: str) -> float:
@@ -320,10 +324,10 @@ def _translate_rate(stat: str, ratio: Ratio, source: str, target: str) -> float:
 def build_unified(by_regime: dict[str, StatBook],
                   priors: dict[str, tuple[float, float]] | None = None) -> Profile | None:
     """One profile per player, informed by every table size they have played."""
-    book, contributions = unified_book(by_regime)
+    book, contributions, native = unified_book(by_regime)
     if not contributions:
         return None
-    profile = build_profile(book, priors=priors)
+    profile = build_profile(book, priors=priors, native=native)
     profile.contributions = contributions
     profile.borrowed_from = [r for r in contributions if r != profile.regime]
     return profile

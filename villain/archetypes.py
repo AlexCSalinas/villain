@@ -335,7 +335,15 @@ def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
     for feature in PROFILE_FEATURES:
         est = profile.stats.get(feature)
         if est is not None and est.opps > 0 and est.raw is not None:
-            observed.append((feature, est.raw * est.opps, est.opps))
+            # Score what was actually observed at this player's own table
+            # size. `opps` also carries borrowed cross-regime pseudo-counts
+            # whose rate was already shrunk toward the prior, so scoring those
+            # as if they were observations counts the same uncertainty twice --
+            # the exact failure this module's docstring warns about. On a real
+            # pool 24% of the counts were borrowed, and the players the matcher
+            # got most confidently wrong were the ones borrowing most.
+            n = est.native_opps or est.opps
+            observed.append((feature, est.raw * n, n))
 
     log_posterior = {}
     for arch in ARCHETYPES:

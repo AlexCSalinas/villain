@@ -250,6 +250,12 @@ class Estimate:
     raw: float | None
     prior: float
     weight: float          # how much of the estimate came from data, 0-1
+    #: Opportunities actually observed at this player's own table size, before
+    #: any cross-regime pooling. ``opps`` includes borrowed pseudo-counts whose
+    #: rate was already shrunk toward the prior, so anything that wants to score
+    #: *observations* -- the archetype likelihood does -- has to use this
+    #: instead, or it counts the same uncertainty twice.
+    native_opps: float = 0.0
     alpha: float = 1.0
     beta: float = 1.0
     strength: float = 0.0  # prior weight in pseudo-opportunities
