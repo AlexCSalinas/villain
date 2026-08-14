@@ -45,6 +45,11 @@ MIN_ROWS = 300
 RESIDUAL_PRIOR = 12.0
 
 FEATURES = [
+    # Whether the row's cards were visible regardless of showdown. Without it
+    # the baseline blends two differently-selected samples -- the exporting
+    # player's hands are seen whatever happens, everyone else's only when they
+    # got to showdown -- and treats them as one population.
+    "unbiased",
     "street", "is_bet", "is_raise", "is_call", "is_check",
     "bet_fraction", "aggression_level", "has_initiative", "in_position",
     "pot_bb", "think_s", "players_in",

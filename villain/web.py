@@ -965,13 +965,13 @@ PAGE = r"""<!doctype html>
   :root {
     color-scheme: light;
     --bg: #f6f6f5; --panel: #ffffff; --ink: #111111; --muted: #6b6b68;
-    --line: #e3e2df; --accent: #111111; --accent-soft: #f1f0ee;
+    --line: #e3e2df; --edge: #979590; --accent: #111111; --accent-soft: #f1f0ee;
     --warn: #b4532a; --danger: #b4532a; --red: #b4532a;
     /* Neutral ordinal ramp, validated light->dark on the panel surface:
        light end clears 2:1, monotone lightness, visible step gaps. Shade
        carries confidence, never identity. */
-    --mark-1: #a8a6a2;   /* tentative */
-    --mark-2: #5c5a57;   /* likely */
+    --mark-1: #8f8d89;   /* tentative */
+    --mark-2: #575552;   /* likely */
     --mark-3: #111111;   /* strong */
     --band: #e8e7e4;     /* credible interval wash */
     --grid: #e6e5e2; --axis: #8a8a86; --tick: #6f6e69;
@@ -981,7 +981,7 @@ PAGE = r"""<!doctype html>
     :root:not([data-theme="light"]) {
       color-scheme: dark;
       --bg: #0d0d0d; --panel: #17181a; --ink: #f2f1ee; --muted: #98968f;
-      --line: #2a2b2d; --accent: #f2f1ee; --accent-soft: #202123;
+      --line: #2a2b2d; --edge: #606166; --accent: #f2f1ee; --accent-soft: #202123;
       --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
       --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
       --band: #26272a;
@@ -991,7 +991,7 @@ PAGE = r"""<!doctype html>
   :root[data-theme="dark"] {
     color-scheme: dark;
     --bg: #0d0d0d; --panel: #17181a; --ink: #f2f1ee; --muted: #98968f;
-    --line: #2a2b2d; --accent: #f2f1ee; --accent-soft: #202123;
+    --line: #2a2b2d; --edge: #606166; --accent: #f2f1ee; --accent-soft: #202123;
     --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
     --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
     --band: #26272a;
@@ -1014,7 +1014,7 @@ PAGE = r"""<!doctype html>
     display: inline-block; margin-left: 8px; margin-bottom: 18px;
   }
   .iconbtn {
-    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    border: 1px solid var(--edge); background: transparent; color: var(--muted);
     border-radius: 999px; width: 34px; height: 34px; cursor: pointer;
     display: inline-flex; align-items: center; justify-content: center; padding: 0;
   }
@@ -1116,9 +1116,11 @@ PAGE = r"""<!doctype html>
     /* Padding in em, so it tracks whatever font-size the variant sets and a
        short label is never left rattling around inside a wide pill. flex:none
        stops a flex parent from squeezing the button below its own text. */
+    display: inline-flex; align-items: center; justify-content: center;
+    text-align: center;
     font: inherit; font-size: 13px; line-height: 1.25;
-    padding: 0.46em 0.9em; border-radius: 7px;
-    border: 1px solid var(--line); background: transparent;
+    padding: 0.46em 0.9em; border-radius: 8px;
+    border: 1px solid var(--edge); background: transparent;
     color: var(--ink); cursor: pointer; flex: none;
     /* A label longer than its container wraps rather than running past the
        edge. nowrap plus flex:none is how a button escapes its panel. */
@@ -1166,7 +1168,8 @@ PAGE = r"""<!doctype html>
     .read-grid { grid-template-columns: 1fr; }
   }
   .read-copy .summary { color: var(--muted); margin: 0 0 10px; }
-  .read-copy .plan { margin: 0; max-width: none; }
+  .read-copy .plan { margin: 0; max-width: 72ch; }
+  .read-copy .summary { max-width: 72ch; }
   .read-meta { font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.7; }
   .skill-side { margin: 0; min-width: 0; max-width: none; text-align: left; }
   .skill-side .skill-head {
@@ -1176,7 +1179,7 @@ PAGE = r"""<!doctype html>
   .skill-side .metric { grid-template-columns: 1fr 90px 28px; gap: 8px; margin: 4px 0; }
   .skill-side .metric .small { font-size: 12.5px; }
   .drop {
-    border: 1.5px dashed var(--line); border-radius: 12px; padding: 34px 20px;
+    border: 1.5px dashed var(--edge); border-radius: 12px; padding: 34px 20px;
     text-align: center; color: var(--muted); cursor: pointer; transition: border-color .12s;
   }
   .drop.compact { padding: 14px; margin-bottom: 12px; }
@@ -1212,11 +1215,18 @@ PAGE = r"""<!doctype html>
   .card .r { font-weight: 600; }
   .small-cards .card { font-size: 11.5px; padding: 1px 4px; min-width: 22px; }
   .sess-delta {
-    display: grid; grid-template-columns: 1fr auto 62px auto; gap: 10px;
+    display: grid; grid-template-columns: minmax(0,240px) 56px 62px minmax(0,1fr);
+    gap: 10px;
     align-items: baseline; padding: 5px 0; border-top: 1px solid var(--line);
   }
   .sess-delta:first-child { border-top: 0; }
   .sess-who { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  td.worth { font-variant-numeric: tabular-nums; }
+  td.worth.big { color: var(--red); font-weight: 600; }
+  .detail-body td.label { min-width: 156px; }
+  .sheet { box-shadow: 0 24px 60px rgba(0,0,0,.45); }
+  .cards-row.hole { margin-left: 16px; padding-left: 16px;
+                    border-left: 1px solid var(--edge); }
   tbody tr.on { background: var(--accent-soft); }
   .sess-layout {
     display: grid; grid-template-columns: 260px minmax(0, 1fr);
@@ -1226,13 +1236,17 @@ PAGE = r"""<!doctype html>
   .sess-layout.collapsed .sess-list h2,
   .sess-layout.collapsed #sess-rows { display: none; }
   .sess-list {
-    position: sticky; top: 12px; max-height: calc(100vh - 40px);
+    position: sticky; top: 12px;
+    /* Content-side cap. calc(100vh - 40px) never engaged at 20 sittings, so
+       the list defined the grid row and left a 650px hole beside it. */
+    max-height: min(calc(100vh - 132px), 560px);
     overflow: auto; margin: 0;
   }
   .sess-main { margin: 0; }
   #sess-rows { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
   .sess-item {
-    display: flex; flex-direction: column; gap: 2px; text-align: left;
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    text-align: left;
     font: inherit; background: none; color: var(--ink); cursor: pointer;
     border: 0; border-left: 2px solid transparent; border-radius: 6px;
     padding: 7px 8px;
@@ -1249,7 +1263,7 @@ PAGE = r"""<!doctype html>
   .linkish { cursor: pointer; text-decoration: underline;
              text-underline-offset: 3px; text-decoration-color: var(--axis); }
   select { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 8px;
-           background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+           background: var(--panel); color: var(--ink); border: 1px solid var(--edge); }
   .q.group .members { margin: 8px 0; }
   .q.group .member {
     display: flex; gap: 10px; align-items: baseline; padding: 4px 0;
@@ -1306,7 +1320,7 @@ PAGE = r"""<!doctype html>
     padding-bottom: 2px;
   }
   .ptab {
-    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    border: 1px solid var(--edge); background: transparent; color: var(--muted);
     border-radius: 999px; padding: 6px 13px; font: inherit; font-size: 13px;
     cursor: pointer; display: flex; align-items: center; gap: 7px;
   }
@@ -1321,6 +1335,10 @@ PAGE = r"""<!doctype html>
     vertical-align: 1px; margin-left: 5px; font-style: normal; flex: none;
   }
   .info:hover { color: var(--ink); border-color: var(--accent); }
+  :where(button, [href], input, select, summary, [tabindex]):focus-visible,
+  tr.clickable:focus-visible, .ev:focus-visible, th:focus-visible {
+    outline: 2px solid var(--red); outline-offset: 2px; border-radius: 4px;
+  }
   .tip .hl { color: var(--ink); font-weight: 600; }
   .tip .dir { margin-top: 6px; }
   .tip .dir b { display: inline-block; min-width: 34px; }
@@ -1416,11 +1434,11 @@ PAGE = r"""<!doctype html>
   .street h4 { margin: 0 0 6px; font-size: 11.5px; text-transform: uppercase;
                letter-spacing: .06em; color: var(--muted); font-weight: 600;
                display: flex; gap: 10px; align-items: baseline; }
-  .act { display: grid; grid-template-columns: 44px 1fr auto auto; gap: 10px;
-         padding: 3px 0; font-size: 13.5px; }
-  .act.focus { font-weight: 600; }
-  .act.focus .who::before { content: "\25B8 "; color: var(--accent); }
-  .act .amt { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .street .act { display: grid; grid-template-columns: 44px 1fr auto auto;
+         gap: 10px; padding: 3px 0; font-size: 13.5px; }
+  .street .act.focus { font-weight: 600; }
+  .street .act.focus .who::before { content: "\25B8 "; color: var(--accent); }
+  .street .act .amt { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); }
   .act.post { color: var(--muted); font-size: 12.5px; }
   /* review dialog */
   .veil {
@@ -1441,7 +1459,7 @@ PAGE = r"""<!doctype html>
   }
   .choice { display: flex; gap: 8px; margin-top: 8px; }
   .choice label {
-    border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px;
+    border: 1px solid var(--edge); border-radius: 999px; padding: 4px 12px;
     font-size: 13px; cursor: pointer;
   }
   .choice input { margin-right: 6px; }
@@ -1484,7 +1502,8 @@ const state = {tab: "players", session: null, player: null, glossary: null,
 /* An "i" that explains a term on hover. Everything the tool says in shorthand
    gets one, because a number nobody can interpret is worse than no number. */
 function info(html) {
-  const span = document.createElement("i");
+  const span = document.createElement("button");
+  span.type = "button";
   span.className = "info"; span.textContent = "i";
   span.setAttribute("aria-label", "what this means");
   bindTip(span, html);
@@ -1539,6 +1558,25 @@ function fieldRead(row) {
 /* ---- tooltip ---- */
 const tip = $("#tip");
 function bindTip(el, html) {
+  const place = (x, y) => {
+    tip.innerHTML = html; tip.classList.add("on");
+    const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+    let left = x + pad, top = y + pad;
+    if (left + w > innerWidth - 8) left = x - w - pad;
+    if (top + h > innerHeight - 8) top = y - h - pad;
+    tip.style.left = Math.max(8, left) + "px";
+    tip.style.top = Math.max(8, top) + "px";
+  };
+  const hide = () => tip.classList.remove("on");
+  // Keyboard and touch reach it too: anchored to the element's own box, since
+  // there is no cursor to hang it off.
+  const anchor = () => {
+    const r = el.getBoundingClientRect();
+    place(r.left + r.width / 2, r.bottom - 6);
+  };
+  el.addEventListener("focus", anchor);
+  el.addEventListener("blur", hide);
+  el.addEventListener("touchstart", e => { e.preventDefault(); anchor(); }, {passive: false});
   el.addEventListener("mousemove", e => {
     tip.innerHTML = html; tip.classList.add("on");
     const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
@@ -1634,6 +1672,11 @@ function rosterTable(players, opts) {
       const tr = document.createElement("tr");
       if (opts && opts.onClick && p.player_id != null) {
         tr.className = "clickable";
+        tr.tabIndex = 0;
+        tr.setAttribute("role", "button");
+        tr.onkeydown = e => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); opts.onClick(p); }
+        };
         tr.onclick = () => opts.onClick(p);
       }
       const shown = (p.session_names && p.session_names.length && p.db_name)
@@ -1650,14 +1693,17 @@ function rosterTable(players, opts) {
         <td><span class="tag arch ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
             <div class="small muted">${fmtPct(p.confidence)} sure</div></td>
         <td class="num"></td>
-        <td class="num">${p.exploitability ? p.exploitability.toFixed(1) : "\u2014"}</td>
+        <td class="num worth${p.exploitability > 10 ? " big" : ""}">${
+          p.exploitability ? p.exploitability.toFixed(1) : "\u2014"}</td>
         <td class="small leakcell">${p.top_leak ? esc(p.top_leak)
           : '<span class="muted">nothing yet</span>'}</td>`;
       const holder = document.createElement("div");
       holder.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:flex-end";
       const label = document.createElement("span");
       label.textContent = p.skill.toFixed(0);
-      holder.append(bar(p.skill, 100, "var(--mark-3)", 66), label);
+      // Mapped to the observed domain, not 0-100: anchored at zero the whole
+    // roster looked equally full -- p10 to p90 differed by 14px of bar.
+    holder.append(bar(Math.max(0, p.skill - 40), 55, "var(--mark-3)", 66), label);
       // Sample quality moved onto the hands count as a tooltip: it qualifies
       // that number and nothing else, so it does not need its own line on
       // every row.
@@ -2998,8 +3044,7 @@ async function showEvidence(playerId, stat, headline) {
       <button class="act" id="close">Close</button></div>
     <p class="ev-verdict">${esc(evidenceVerdict(data))}</p>
     <p class="small muted">${data.hits
-      ? `<b>${data.hits}</b> of ${data.count} \u2014 showing the most recent.
-         Click one to replay it.`
+      ? `Showing the most recent \u2014 click one to replay it.`
       : `Never, in ${data.count} chance${data.count === 1 ? "" : "s"}.`}
       ${data.count > data.hits
       ? `<label class="onlyhits"><input type="checkbox" id="show-all">
@@ -3038,6 +3083,13 @@ async function showEvidence(playerId, stat, headline) {
     }
     row.classList.toggle("counted", !!h.hit);
     if (!h.hit) row.hidden = true;
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.onkeydown = e => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault(); showReplay(h.hand_id, playerId, headline);
+      }
+    };
     row.onclick = () => showReplay(h.hand_id, playerId, headline);
     list.appendChild(row);
   }
@@ -3096,7 +3148,14 @@ async function showReplay(handId, playerId, headline) {
 function switchTab(tab) {
   state.tab = tab;
   if (tab === "players") state.player = null;
-  document.querySelectorAll("nav button").forEach(b =>
+  document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  for (const id of ["#modal2", "#modal"]) {
+    const layer = $(id);
+    if (layer && layer.innerHTML.trim()) { layer.innerHTML = ""; return; }
+  }
+});
+document.querySelectorAll("nav button").forEach(b =>
     b.classList.toggle("on", b.dataset.tab === tab));
   $("#meta").textContent = "";
   render();

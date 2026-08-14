@@ -25,6 +25,7 @@ exactly the question the prior strength answers.
 from __future__ import annotations
 
 import math
+
 from dataclasses import dataclass
 
 # Table-size regimes. These are different games, not variations on one: a 55%
@@ -204,8 +205,28 @@ def sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
-def spread_of(feature: str, table_regime: str = "") -> float:
-    """Between-player spread of a stat, in log-odds."""
+def spread_of(feature: str, table_regime: str = "",
+              priors: dict | None = None) -> float:
+    """Between-player spread of a stat, in log-odds.
+
+    Still a global constant, and the arguments are accepted but unused. That is
+    a known inconsistency -- the population *mean* is fitted per regime while
+    the spread it is measured in is not, and the two disagree by up to 3x in
+    both directions on a real pool (fold_to_cbet:flop 0.45 built-in against a
+    fitted 0.14 heads-up; donk:flop 0.70 against 2.80).
+
+    Fitting it was tried and reverted. A Beta(mean, strength) implies a spread
+    of ``1/sqrt(m(1-m)(s+1))``, which comes free from the fitted pair -- but
+    where ``fit_empirical`` cannot separate the pool it returns a large
+    strength, implying a tiny spread, and a tiny spread *amplifies* every
+    deviation measured against it. Ten features hit that on a real pool and
+    drove archetype confidence back to 1.00 by themselves.
+
+    The change is worth making, but only against a validation harness that
+    scores one half of a player's hands against the other. Tuning it against a
+    handful of hand-labelled players is how the prototypes were overfitted
+    twice already.
+    """
     return SPREAD.get(feature, DEFAULT_SPREAD)
 
 

@@ -267,11 +267,20 @@ CONCENTRATION = 40.0
 #: Features are correlated (VPIP with PFR, every fold stat with every other),
 #: so the naive-Bayes product over-counts evidence. Discounting the total
 #: log-likelihood keeps the posterior from reaching false certainty.
-#: 0.35 over-corrected by roughly 2x: a stated 51% came true about 90% of the
-#: time. Some discount is still right -- real players sit between buckets in a
-#: way the prototype-plus-noise check cannot show -- so this is half the
-#: measured gap, not all of it.
-CORRELATION_DISCOUNT = 0.55
+#: Measured rather than guessed. The value should be the effective number of
+#: independent measurements divided by the total importance, and two methods
+#: agree: the eigenvalue participation ratio of the importance-weighted
+#: correlation matrix over a real pool gives n_eff 7.06 of 32.0 (0.221), and
+#: held-out cross-validation -- fit on half a player's hands, score against the
+#: other half -- minimises log loss at 0.15-0.25.
+#:
+#: Earlier values were tuned against a simulation that generated players *from*
+#: the prototypes. In that world the model is correctly specified, so no such
+#: harness can ever detect prototype misfit, and it will always endorse too
+#: much confidence. Against disjoint halves of real players, 0.55 produced a
+#: calibration error of 0.275 and nine players at 1.00; 0.20 gives 0.092 and
+#: none, at no cost in accuracy.
+CORRELATION_DISCOUNT = 0.20
 
 #: How common each archetype is in the wild -- the prior the likelihood updates.
 #: With no hands on a player, this is the answer.
@@ -290,7 +299,8 @@ def deviations(profile: Profile) -> dict[str, float]:
         if est is None or est.opps <= 0:
             continue
         pop = profile.population(feature)
-        out[feature] = (logit(est.value) - logit(pop)) / spread_of(feature)
+        out[feature] = ((logit(est.value) - logit(pop))
+                        / spread_of(feature, profile.regime, profile.priors))
     return out
 
 
@@ -305,7 +315,9 @@ def target_frequency(arch: Archetype, feature: str, table_regime: str,
     """
     pop = profile.population(feature) if profile is not None \
         else population_mean(feature, table_regime)
-    return sigmoid(logit(pop) + arch.deviation(feature) * spread_of(feature))
+    spread = spread_of(feature, table_regime,
+                       profile.priors if profile is not None else None)
+    return sigmoid(logit(pop) + arch.deviation(feature) * spread)
 
 
 def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:

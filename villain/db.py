@@ -501,6 +501,14 @@ class Store:
         return touched
 
     def stored_hands(self, player_id: int | None = None) -> list[Hand]:
+        """Stored hands exactly as recorded, with raw site account ids.
+
+        Deliberately *not* re-keyed: the hands are the source of truth, so a
+        merge must not rewrite what was recorded, and a test enforces it. Any
+        caller that wants to line these up with per-player statistics has to
+        resolve the ids itself -- :meth:`player_hands` does, and anything
+        joining hands to a player id should follow it rather than this.
+        """
         if player_id is None:
             rows = self.conn.execute(
                 "SELECT payload FROM hands ORDER BY started_at").fetchall()
@@ -648,11 +656,29 @@ class Store:
 
     def population_samples(self, stat_filter=None) -> dict[str, dict[str, list[tuple[float, float]]]]:
         """Every player's (hits, opps) per stat, per regime -- input to a prior fit."""
+        from .profile import DERIVED
         out: dict[str, dict[str, list[tuple[float, float]]]] = defaultdict(lambda: defaultdict(list))
-        for row in self.conn.execute("SELECT regime, stat, hits, opps FROM ratios"):
+        raw: dict[tuple[str, int], dict[str, tuple[float, float]]] = defaultdict(dict)
+        for row in self.conn.execute(
+                "SELECT regime, player_id, stat, hits, opps FROM ratios"):
+            raw[(row["regime"], row["player_id"])][row["stat"]] = (row["hits"], row["opps"])
             if stat_filter and not stat_filter(row["stat"]):
                 continue
             out[row["regime"]][row["stat"]].append((row["hits"], row["opps"]))
+        # Derived features are assembled from raw action counters and never
+        # stored as their own ratio rows, so a prior fit over the ratios table
+        # never saw them -- leaving aggression:* (combined importance 4.0, the
+        # heaviest block in the matcher) measured against the built-in online
+        # defaults no matter how much of your own pool there was to fit.
+        for (regime, _pid), stats in raw.items():
+            for stat, (num_keys, den_keys) in DERIVED.items():
+                if stat_filter and not stat_filter(stat):
+                    continue
+                den = sum(stats.get(k, (0.0, 0.0))[0] for k in den_keys)
+                if den <= 0:
+                    continue
+                num = sum(stats.get(k, (0.0, 0.0))[0] for k in num_keys)
+                out[regime][stat].append((num, den))
         return {r: dict(v) for r, v in out.items()}
 
     # -- sessions ---------------------------------------------------------
