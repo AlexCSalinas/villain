@@ -552,7 +552,10 @@ def commit_session(store: Store, token: str, answers: dict) -> dict:
         players = store.conn.execute(
             "SELECT COUNT(DISTINCT player_id) c FROM books").fetchone()["c"]
         priors_fitted = {"regimes": fitted, "players": players}
-        store.rebuild()
+        # No rebuild here. Books are counts; the fitted prior is applied when a
+        # profile is *read*, so refitting takes effect immediately. Rebuilding
+        # recomputed every player from every stored hand for nothing, which on
+        # a 12,000-hand database is most of a minute with the window blocked.
 
     # A confirmed rename means the player is now known by the new name; the old
     # one stays reachable as an alias.

@@ -230,10 +230,9 @@ class Store:
             # back to the built-in online default -- measuring a home game
             # against a field it does not play in. Adding raise_share this way
             # changed 26 of 68 real labels before anyone ran `villain fit`.
-            # Refit first, then rebuild again so the books are shrunk against
-            # the population they are about to be read against.
-            if self.fit_priors():
-                self.rebuild()
+            # Refitting alone is enough: the prior is applied when a profile is
+            # read, not stored in the books, so no second rebuild is needed.
+            self.fit_priors()
         self.conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('definitions_version', ?)",
             (DEFINITIONS_VERSION,))
