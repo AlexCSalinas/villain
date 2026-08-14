@@ -1005,7 +1005,7 @@ PAGE = r"""<!doctype html>
   .wrap { max-width: 1060px; margin: 0 auto; padding: 24px 20px 90px; }
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
   h1 {
-    font-size: 40px; margin: 0; letter-spacing: -0.05em; font-weight: 800;
+    font-size: 38px; margin: 0; letter-spacing: -0.05em; font-weight: 800;
     line-height: 0.95;
   }
   h1 a { color: inherit; text-decoration: none; display: inline-flex; align-items: center; }
@@ -1030,7 +1030,7 @@ PAGE = r"""<!doctype html>
   nav button.on { color: var(--ink); border-bottom-color: var(--red); font-weight: 600; }
   .panel {
     background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 18px; margin: 16px 0;
+    border-radius: 12px; padding: 18px; margin: 16px 0;
   }
   /* Dashboard: tiles sized by content, flowing into as many columns as fit.
      align-items:start stops a tall tile stretching its neighbours. */
@@ -1070,12 +1070,12 @@ PAGE = r"""<!doctype html>
   .dash > .wide { grid-column: 1 / -1; }
   @media (max-width: 700px) { .dash { grid-template-columns: 1fr; } }
   .panel h2 {
-    font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
     color: var(--muted); margin: 0 0 14px; font-weight: 600;
   }
   table { border-collapse: collapse; width: 100%; font-size: 14px; }
   th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
-  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
        color: var(--muted); font-weight: 600; cursor: pointer; white-space: nowrap; }
   th.sorted::after { content: " \25BE"; color: var(--accent); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1090,7 +1090,7 @@ PAGE = r"""<!doctype html>
   .tag.arch:not(.on) { border-style: dashed; }
   .tag {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
-    font-size: 11.5px; border: 1px solid var(--line); color: var(--muted);
+    font-size: 11px; border: 1px solid var(--line); color: var(--muted);
     white-space: nowrap;
   }
   .tag.on { border-color: var(--red); color: var(--ink); }
@@ -1118,7 +1118,7 @@ PAGE = r"""<!doctype html>
        stops a flex parent from squeezing the button below its own text. */
     display: inline-flex; align-items: center; justify-content: center;
     text-align: center;
-    font: inherit; font-size: 13px; line-height: 1.25;
+    font: inherit; font-size: 14px; line-height: 1.25;
     padding: 0.46em 0.9em; border-radius: 8px;
     border: 1px solid var(--edge); background: transparent;
     color: var(--ink); cursor: pointer; flex: none;
@@ -1134,7 +1134,7 @@ PAGE = r"""<!doctype html>
     font-weight: 600;
   }
   button.act.primary:hover:not(:disabled) { opacity: .88; }
-  button.act.small { font-size: 11.5px; }
+  button.act.small { font-size: 11px; }
   button.act:disabled { opacity: .45; cursor: default; }
   button.act.danger { border-color: var(--danger); color: var(--danger); }
   button.act.danger:hover:not(:disabled) {
@@ -1149,6 +1149,8 @@ PAGE = r"""<!doctype html>
   }
   button.linkbtn:hover { text-decoration-color: var(--accent); }
   .hero { font-size: 38px; line-height: 1.05; letter-spacing: -0.03em; }
+  .hero-name { min-width: 0; }
+  .hero-sub { font-size: 15px; color: var(--muted); margin-top: 2px; }
   .hero-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   .skill-badge {
     width: 58px; height: 58px; border-radius: 50%; flex: none;
@@ -1158,7 +1160,7 @@ PAGE = r"""<!doctype html>
     cursor: help; line-height: 1;
   }
   .skill-badge .score { font-size: 20px; font-weight: 800; letter-spacing: -0.03em; }
-  .skill-badge .of { font-size: 9px; font-weight: 600; margin-top: 2px; letter-spacing: .04em;
+  .skill-badge .of { font-size: 11px; font-weight: 600; margin-top: 2px; letter-spacing: .04em;
                      text-transform: uppercase; opacity: .85; }
   .read-grid {
     display: grid; grid-template-columns: 1fr 1fr; gap: 28px 32px;
@@ -1173,7 +1175,7 @@ PAGE = r"""<!doctype html>
   .read-meta { font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.7; }
   .skill-side { margin: 0; min-width: 0; max-width: none; text-align: left; }
   .skill-side .skill-head {
-    font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
     color: var(--muted); font-weight: 600; margin-bottom: 10px;
   }
   .skill-side .metric { grid-template-columns: 1fr 90px 28px; gap: 8px; margin: 4px 0; }
@@ -1192,7 +1194,7 @@ PAGE = r"""<!doctype html>
   .comp { padding: 8px 0; border-top: 1px solid var(--line); }
   .comp:first-child { border-top: 0; }
   .comp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-  .comp-name { font-size: 13.5px; }
+  .comp-name { font-size: 14px; }
   .comp-score { font-variant-numeric: tabular-nums; color: var(--muted); }
   .comp.weak .comp-score { color: var(--red); font-weight: 600; }
   .comp-bar { margin: 5px 0 0; }
@@ -1207,13 +1209,13 @@ PAGE = r"""<!doctype html>
     display: inline-flex; align-items: center; gap: 1px;
     border: 1px solid var(--line); border-radius: 4px;
     background: var(--panel); padding: 2px 5px; line-height: 1;
-    font-size: 13px; font-variant-numeric: tabular-nums; min-width: 26px;
+    font-size: 14px; font-variant-numeric: tabular-nums; min-width: 26px;
     justify-content: center;
   }
   .card.red { color: var(--red); }
   .card.black { color: var(--ink); }
   .card .r { font-weight: 600; }
-  .small-cards .card { font-size: 11.5px; padding: 1px 4px; min-width: 22px; }
+  .small-cards .card { font-size: 11px; padding: 1px 4px; min-width: 22px; }
   .sess-delta {
     display: grid; grid-template-columns: minmax(0,240px) 56px 62px minmax(0,1fr);
     gap: 10px;
@@ -1222,7 +1224,7 @@ PAGE = r"""<!doctype html>
   .sess-delta:first-child { border-top: 0; }
   .sess-who { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .sess-regime {
-    font-size: 12px; color: var(--muted); margin: 10px 0 2px;
+    font-size: 12.5px; color: var(--muted); margin: 10px 0 2px;
     padding-top: 8px; border-top: 1px solid var(--line);
   }
   .sess-regime:first-child { margin-top: 4px; padding-top: 0; border-top: 0; }
@@ -1253,12 +1255,12 @@ PAGE = r"""<!doctype html>
     display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
     text-align: left;
     font: inherit; background: none; color: var(--ink); cursor: pointer;
-    border: 0; border-left: 2px solid transparent; border-radius: 6px;
+    border: 0; border-left: 2px solid transparent; border-radius: 8px;
     padding: 7px 8px;
   }
   .sess-item:hover { background: var(--accent-soft); }
   .sess-item.on { background: var(--accent-soft); border-left-color: var(--red); }
-  .sess-when { font-size: 13px; }
+  .sess-when { font-size: 14px; }
   @media (max-width: 780px) {
     .sess-layout, .sess-layout.collapsed { grid-template-columns: 1fr; }
     .sess-list { position: static; max-height: 240px; }
@@ -1267,7 +1269,7 @@ PAGE = r"""<!doctype html>
   .sess-delta .down { color: var(--muted); }
   .linkish { cursor: pointer; text-decoration: underline;
              text-underline-offset: 3px; text-decoration-color: var(--axis); }
-  select { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 8px;
+  select { font: inherit; font-size: 14px; padding: 5px 8px; border-radius: 8px;
            background: var(--panel); color: var(--ink); border: 1px solid var(--edge); }
   .q.group .members { margin: 8px 0; }
   .q.group .member {
@@ -1304,7 +1306,7 @@ PAGE = r"""<!doctype html>
   .how { margin-top: 8px; }
   .how-body { color: var(--ink); font-size: 14px; line-height: 1.45; }
   .howblock { margin: 10px 0; max-width: 66ch; }
-  .howlabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  .howlabel { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
               color: var(--muted); margin-bottom: 3px; font-weight: 600; }
   svg { display: block; overflow: visible; }
   .tip {
@@ -1316,8 +1318,8 @@ PAGE = r"""<!doctype html>
   .tip.on { opacity: 1; }
   .empty { color: var(--muted); padding: 8px 0; }
   .err { color: var(--warn); }
-  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
-  .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block;
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .swatch { width: 10px; height: 10px; border-radius: 4px; display: inline-block;
             vertical-align: -1px; margin-right: 5px; border: 1px solid var(--line); }
   /* per-player tabs inside a result */
   .ptabs {
@@ -1326,17 +1328,17 @@ PAGE = r"""<!doctype html>
   }
   .ptab {
     border: 1px solid var(--edge); background: transparent; color: var(--muted);
-    border-radius: 999px; padding: 6px 13px; font: inherit; font-size: 13px;
+    border-radius: 999px; padding: 6px 13px; font: inherit; font-size: 14px;
     cursor: pointer; display: flex; align-items: center; gap: 7px;
   }
   .ptab:hover { color: var(--ink); }
   .ptab.on { border-color: var(--red); color: var(--ink); font-weight: 600; }
-  .ptab .meta { font-size: 11.5px; color: var(--muted); font-weight: 400; }
+  .ptab .meta { font-size: 11px; color: var(--muted); font-weight: 400; }
   /* the hover-for-meaning affordance */
   .info {
     display: inline-flex; align-items: center; justify-content: center;
     width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--line);
-    color: var(--muted); font-size: 10px; font-weight: 700; cursor: help;
+    color: var(--muted); font-size: 11px; font-weight: 700; cursor: help;
     vertical-align: 1px; margin-left: 5px; font-style: normal; flex: none;
   }
   .info:hover { color: var(--ink); border-color: var(--accent); }
@@ -1371,14 +1373,14 @@ PAGE = r"""<!doctype html>
     display: inline-flex; align-items: center; justify-content: center;
     width: 14px; height: 14px; margin-left: 6px; border-radius: 50%;
     border: 1px solid var(--red); color: var(--red);
-    font-size: 9.5px; font-weight: 700; cursor: help; vertical-align: 1px;
+    font-size: 11px; font-weight: 700; cursor: help; vertical-align: 1px;
   }
   .flag:hover { background: var(--red); color: var(--panel); }
   .leak.watch { opacity: .82; }
   .leak.weakspots .metric { grid-template-columns: 1fr 150px 30px; }
   .timing-street { margin-top: 14px; }
   .timing-street .street-label {
-    font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
     color: var(--muted); font-weight: 600; margin-bottom: 6px;
   }
   .timing-grid {
@@ -1388,13 +1390,13 @@ PAGE = r"""<!doctype html>
   .timing-grid > * { background: var(--panel); padding: 9px 10px; min-width: 0; }
   .timing-grid .corner { background: var(--accent-soft); }
   .timing-grid .colhead, .timing-grid .rowhead {
-    font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
     color: var(--muted); background: var(--accent-soft); font-weight: 600;
   }
   .timing-grid .rowhead { display: flex; align-items: center; }
   .timing-cell .tell { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
   .timing-cell .read { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
-  .timing-cell .n { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+  .timing-cell .n { font-size: 11px; color: var(--muted); margin-top: 6px; }
   .timing-cell.thin .tell { color: var(--muted); font-weight: 500; font-size: 12.5px; }
   .narration { margin-top: 10px; max-width: none; }
   .narration.hidden { display: none; }
@@ -1436,11 +1438,11 @@ PAGE = r"""<!doctype html>
   .cards { font-family: var(--mono); letter-spacing: .04em; }
   .street { border-top: 1px solid var(--line); padding: 10px 0; }
   .street:first-child { border-top: 0; }
-  .street h4 { margin: 0 0 6px; font-size: 11.5px; text-transform: uppercase;
+  .street h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase;
                letter-spacing: .06em; color: var(--muted); font-weight: 600;
                display: flex; gap: 10px; align-items: baseline; }
   .street .act { display: grid; grid-template-columns: 44px 1fr auto auto;
-         gap: 10px; padding: 3px 0; font-size: 13.5px; }
+         gap: 10px; padding: 3px 0; font-size: 14px; }
   .street .act.focus { font-weight: 600; }
   .street .act.focus .who::before { content: "\25B8 "; color: var(--accent); }
   .street .act .amt { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); }
@@ -1460,12 +1462,12 @@ PAGE = r"""<!doctype html>
   .sides { display: flex; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
   .side {
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
-    font-size: 13px; flex: 1; min-width: 180px;
+    font-size: 14px; flex: 1; min-width: 180px;
   }
   .choice { display: flex; gap: 8px; margin-top: 8px; }
   .choice label {
     border: 1px solid var(--edge); border-radius: 999px; padding: 4px 12px;
-    font-size: 13px; cursor: pointer;
+    font-size: 14px; cursor: pointer;
   }
   .choice input { margin-right: 6px; }
   .choice label:has(input:checked) { border-color: var(--accent); color: var(--ink); font-weight: 600; }
@@ -1760,7 +1762,10 @@ function profileCard(p, opts) {
   head.className = "panel wide";
   head.innerHTML = `
     <div class="hero-row">
-      <div class="hero">${esc(p.archetype)}</div>
+      <div class="hero-name">
+        <div class="hero">${esc(p.name || p.archetype)}</div>
+        <div class="hero-sub">${esc(p.archetype)}</div>
+      </div>
       <div class="skill-badge" id="skill-badge">
         <span class="score">${p.skill.score.toFixed(0)}</span>
         <span class="of">/100</span>
@@ -1974,7 +1979,9 @@ function profileCard(p, opts) {
   }
 
   const tells = p.timing_tells || [];
-  if (tells.some(c => c.n > 0)) {
+  // Render only when some cell actually has a tell -- a grid of "not enough
+  // data" is noise wearing a panel's clothes.
+  if (tells.some(c => c.n >= 5 && !/no clear tell|not enough/i.test(c.label || ""))) {
     const timingBox = document.createElement("div");
     timingBox.className = "panel wide";
     const headRow = document.createElement("div");
@@ -2022,7 +2029,8 @@ function profileCard(p, opts) {
             n: 0, total: 0, share: null, label: "Not enough data",
             read: "Need more timed actions."};
           const div = document.createElement("div");
-          div.className = "timing-cell" + (cell.n < 5 ? " thin" : "");
+          const quiet = cell.n < 5 || /no clear tell/i.test(cell.label || "");
+          div.className = "timing-cell" + (quiet ? " thin" : "");
           const share = cell.share == null ? ""
             : `${Math.round(100 * cell.share)}% of ${cell.total}`;
           const nLine = cell.n

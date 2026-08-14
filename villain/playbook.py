@@ -213,6 +213,46 @@ PLAYBOOK: dict[str, Entry] = {
         ),
         dont="Do not read their flop call as weakness because they usually fold."
     ),
+    "station_flop": Entry(
+        behaviour=(
+            "They call flop bets with far more than the price justifies -- "
+            "any pair, any overcard, any backdoor draw."
+        ),
+        why=(
+            "Below the breakeven fold frequency for the size you are betting, "
+            "so the bet shows a profit on its own. The larger effect is what it "
+            "does to the streets after: they reach the turn and river holding "
+            "hands their line says they folded."
+        ),
+        do=(
+            "Bet every made hand and keep betting. Top pair is a three-street "
+            "value hand, second pair is two. Size up as you go, because the "
+            "calling range does not tighten the way a normal one does."
+        ),
+        dont=(
+            "Do not bluff the flop expecting a fold, and do not slow down on "
+            "the turn -- giving a free card to the widest range at the table "
+            "is how the edge gets handed back."
+        )
+    ),
+    "station_cbet": Entry(
+        behaviour=(
+            "They defend against continuation bets far past the price, calling "
+            "with hands that cannot continue on most turns."
+        ),
+        why=(
+            "Their defence frequency is below what the size demands, so the "
+            "c-bet is profitable with the whole range and the turn is where "
+            "the mistake gets paid for."
+        ),
+        do=(
+            "C-bet every flop and barrel the turn with anything that improved. "
+            "Their turn range is stuffed with hands that should have folded."
+        ),
+        dont=(
+            "Do not read a flop call as strength. It says almost nothing here."
+        )
+    ),
     "station_turn": Entry(
         behaviour=(
             "They do not fold once they have any piece of the board. Middle pair, "
