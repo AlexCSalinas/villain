@@ -10,3 +10,6 @@ __pycache__/
 *.env
 env
 secrets*
+
+# Working notes, not part of the project.
+HANDOFF.md
