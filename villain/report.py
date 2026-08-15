@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from .analyze import enrich
 from .archetypes import ARCHETYPE_BY_NAME, deviations
+from .glossary import versus_behaviour
 from .model import STREET_LABELS
 from .playbook import combinations_for
 from .profile import Profile
@@ -114,6 +115,8 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
             out.append("")
     out.append("")
 
+    out.extend(_against_you(profile, verbose))
+
     # 3. The rating and how it was reached.
     skill = profile.skill
     out.append(f"SKILL: {skill.label}   confidence {skill.confidence:.0%}")
@@ -153,6 +156,32 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
                                f"over {profile.means.get(key + '#n', 0):.0f} actions")
     out.append(RULE)
     return "\n".join(out)
+
+
+def _against_you(profile: Profile, verbose: bool) -> list[str]:
+    """Where they play you differently from everybody else.
+
+    Absent unless there is something to say. Most players against most
+    opponents have no adjustment at all, and a section that appears every time
+    to announce it costs a line of a card that has to fit on one screen. In
+    verbose mode it says so, because there the reader asked for everything.
+    """
+    found = getattr(profile, "adjustments", None)
+    if not found:
+        return ["  no adjustment against you clears the bar yet", ""] if verbose else []
+
+    out = [f"AGAINST YOU  ({len(found)} found)",
+           "  Against their own game, not against the field.",
+           ""]
+    for a in found:
+        # Capped at 99%: this comes out of a normal approximation to a Beta
+        # posterior, which will happily print certainty it cannot have.
+        sure = min(a.confidence, 0.99)
+        otherwise = f"({a.baseline:.0%} otherwise)"
+        out.append(f"    {versus_behaviour(a.stat):28s}{a.versus:5.0%}   "
+                   f"{otherwise:16s} {a.opps:.0f} seen, {sure:.0%} sure")
+    out.append("")
+    return out
 
 
 _HEADLINE_STATS = [

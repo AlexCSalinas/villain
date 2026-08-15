@@ -137,6 +137,30 @@ STATS: dict[str, dict[str, str]] = {
         "high": "The second barrel prints. Keep firing.",
         "low": "They call down. Barrel with hands that improve, not with air.",
     },
+    "fold_to_cbet:river": {
+        "what": "Facing a third barrel from the preflop raiser, how often they fold.",
+        "high": "They give up the river after coming this far. Fire the last one.",
+        "low": "They call the river down. Only bet the third barrel for value.",
+    },
+    "cbet:river": {
+        "what": "Having bet the turn, how often they fire the river as well.",
+        "high": "They triple-barrel too often, so the last bet is frequently air. "
+                "Call down with any hand that beats a bluff.",
+        "low": "They shut down on the river. Their bet there is the real thing — "
+               "fold marginal hands and take the free showdown when they check.",
+    },
+    "raise_vs_bet:turn": {
+        "what": "Facing a bet on the turn, how often they raise.",
+        "high": "Turn raises are rarely bluffs at most frequencies; at this one "
+                "they are. Do not fold the top of your range to them.",
+        "low": "They never raise turns, so a second barrel is close to risk-free.",
+    },
+    "raise_vs_bet:river": {
+        "what": "Facing a bet on the river, how often they raise.",
+        "high": "Raising rivers this often cannot be all value. Call with hands "
+                "that beat a bluff.",
+        "low": "A river raise from them is the nuts. Fold everything else to it.",
+    },
     "check_raise:flop": {
         "what": "Having checked the flop, how often they raise a bet.",
         "high": "Dangerous to bet into. Check back more of your marginal hands.",
@@ -313,6 +337,20 @@ TERMS: dict[str, str] = {
                  "break even, so anything above that is profit.",
     "field": "What a typical player at this table size does — context for "
              "whether a number is unusual, not a target to aim at.",
+    "against you": "The same statistic counted only on the decisions where you "
+                   "were the one they were facing. Read against their own game "
+                   "rather than the field: the interesting thing is not that "
+                   "they fold 70% to your rivers, it is that they fold 45% to "
+                   "everybody else's.",
+    "otherwise": "The same statistic on every decision that was not against "
+                 "you. Your own hands are taken out of it, because a number "
+                 "compared with a total that contains it can only ever "
+                 "understate the difference.",
+    "adjustment": "A statistic where they treat you differently from everyone "
+                  "else, by enough to change what you should do and with "
+                  "enough hands behind it to believe. Most players, most of "
+                  "the time, have none — that is the normal result, not a "
+                  "missing feature.",
     "estimate": "The frequency after accounting for sample size. A player who "
                 "folded 3 of 3 is not a 100% folder, and this pulls that back "
                 "toward reality.",
@@ -452,6 +490,37 @@ def stat_help(stat: str) -> dict[str, str] | None:
         return STATS[stat]
     base = stat.rsplit(":", 1)[0]
     return STATS.get(base)
+
+
+#: The same statistics said as something one player does to another.
+#:
+#: An adjustment is not a frequency, it is a person reacting to you, and "fold
+#: vs turn bet, 19%" does not read as one. The exploit layer already prefers
+#: behaviour to statistics for the same reason; this is that sentence with
+#: *you* in it, which is the whole difference between the two sections.
+#: Kept short enough to sit in a column beside the numbers: the terminal card
+#: has to fit on one screen, and a phrase that wraps costs more than the extra
+#: words are worth.
+VERSUS_BEHAVIOUR: dict[str, str] = {
+    "fold_vs_bet": "folds to your {street} bets",
+    "call_vs_bet": "calls your {street} bets",
+    "raise_vs_bet": "raises your {street} bets",
+    "fold_to_cbet": "folds to your {street} c-bet",
+    "cbet": "c-bets into you on the {street}",
+    "three_bet": "re-raises your opens",
+    "fold_to_three_bet": "folds to your three-bets",
+    "fold_to_steal": "folds their blinds to you",
+    "bb_defend": "defends their blind vs you",
+}
+
+
+def versus_behaviour(stat: str) -> str:
+    """How to say ``stat`` as a thing this player does to you."""
+    base, _, street = stat.partition(":")
+    phrase = VERSUS_BEHAVIOUR.get(base)
+    if phrase is None:
+        return stat
+    return phrase.format(street=street) if street else phrase
 
 
 def payload() -> dict:

@@ -30,6 +30,7 @@ from typing import Iterable
 
 from .features import record_hands
 from .model import Hand, hand_from_dict, hand_to_dict
+from .dynamics import adjustments
 from .stats import VS_HERO, Meter, Ratio, StatBook
 
 SCHEMA = """
@@ -875,8 +876,14 @@ class Store:
         if not books:
             return []
         regime = max(books.values(), key=lambda b: b.hands).regime
-        return build_profiles(books, min_hands=min_hands,
-                              priors=self.fitted_priors(regime) or None)
+        priors = self.fitted_priors(regime) or None
+        built = build_profiles(books, min_hands=min_hands, priors=priors)
+        for profile in built:
+            # This view is split by table size, so each profile gets only its
+            # own -- pooling here would undo the split it exists to show.
+            profile.adjustments = adjustments(
+                {profile.regime: books[profile.regime]}, priors=priors)
+        return built
 
     def profile(self, player_id: int):
         """The single profile for a player, pooled across table sizes.
@@ -888,8 +895,11 @@ class Store:
         books = self.books(player_id)
         if not books:
             return None
-        return build_unified(books,
-                             priors=self.fitted_priors(primary_regime(books)) or None)
+        priors = self.fitted_priors(primary_regime(books)) or None
+        profile = build_unified(books, priors=priors)
+        if profile is not None:
+            profile.adjustments = adjustments(books, priors=priors)
+        return profile
 
     def player_hands(self, player_id: int | None = None) -> list[Hand]:
         """Stored hands, keyed to internal ids.

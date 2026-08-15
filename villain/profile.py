@@ -71,6 +71,12 @@ class Profile:
     archetype_confidence: float = 0.0
     archetype_mix: list[tuple[str, float]] = field(default_factory=list)
     tags: list = field(default_factory=list)
+    #: Statistics on which this player treats you differently from everybody
+    #: else. Attached by whoever built the profile rather than derived here:
+    #: the against-you counters are deliberately not part of the shrunk stats
+    #: (they have no population to shrink toward), so they are read from the
+    #: books by :mod:`villain.dynamics` and hung here for the surfaces.
+    adjustments: list = field(default_factory=list)
     skill: object | None = None
     first_seen: int | None = None
     last_seen: int | None = None
