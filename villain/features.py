@@ -26,9 +26,10 @@ import numpy as np
 
 from .cards import card_ids, evaluate
 from .equity import equities
+from .hero import hero_of
 from .model import Act, Hand, Street
 from .priors import regime as regime_of
-from .stats import HandView, StatBook, size_bucket
+from .stats import VS_HERO, HandView, StatBook, size_bucket
 
 #: player id -> table-size regime -> book
 Books = dict[str, dict[str, StatBook]]
@@ -65,22 +66,34 @@ def record_hands(hands: Iterable[Hand], books: Books | None = None) -> Books:
     for pid, by_regime in scratch.items():
         for reg, book in by_regime.items():
             locks[(pid, reg)] = _pace_thresholds(book)
+    # Resolved over the whole batch, because a single hand cannot say who
+    # exported it.
+    hero = hero_of(hands)
     for hand in hands:
-        record_hand(hand, books, pace_locks=locks)
+        record_hand(hand, books, pace_locks=locks, hero=hero)
     return books
 
 
 def record_hand(hand: Hand, books: Books,
-                pace_locks: PaceLocks | None = None) -> None:
+                pace_locks: PaceLocks | None = None,
+                hero: str | None = None) -> None:
     """Fold one hand into every participating player's book for this regime.
 
     ``pace_locks`` freezes snap/tank cutoffs (from :func:`record_hands`).
     Without locks, thresholds follow the running mean (streaming / evidence).
+
+    ``hero`` is the player id of whoever exported the hands, from
+    :func:`villain.hero.hero_of`. Given one, the decisions with that player on
+    the other side are counted a second time under :data:`VS_HERO`. Without
+    one, nothing changes and no ``vs:`` counter is written -- a database whose
+    hands came from somebody else's export has no against-you slice to record,
+    and inventing one from an arbitrary seat would be worse than having none.
     """
     if "pot_mismatch" in hand.flags or hand.big_blind <= 0:
         return
     view = HandView(hand)
     reg = regime_of(len(hand.seats))
+    hero_seat = next((s.seat for s in hand.seats if s.player_id == hero), None)
 
     for seat in hand.seats:
         book = book_for(books, seat.player_id, reg, seat.name)
@@ -97,8 +110,9 @@ def record_hand(hand: Hand, books: Books,
     # player with a VPIP, RFI and limp *opportunity* they were never given, and
     # home games run them. The postflop streets are real and still counted.
     if "bomb_pot" not in hand.flags:
-        _preflop(hand, view, books, reg, pace_locks=pace_locks)
-    pace_events = _postflop(hand, view, books, reg, pace_locks=pace_locks)
+        _preflop(hand, view, books, reg, pace_locks=pace_locks, hero_seat=hero_seat)
+    pace_events = _postflop(hand, view, books, reg, pace_locks=pace_locks,
+                            hero_seat=hero_seat)
     _results(hand, view, books, reg, pace_events)
 
 
@@ -134,7 +148,8 @@ def _think_pass(hand: Hand, books: Books) -> None:
 # ---------------------------------------------------------------------------
 
 def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
-             pace_locks: PaceLocks | None = None) -> None:
+             pace_locks: PaceLocks | None = None,
+             hero_seat: int | None = None) -> None:
     opener: int | None = None
     three_bettor: int | None = None
     open_size = 0
@@ -192,11 +207,24 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
                 book.count("limp_raise", raised)
             if raised and open_size:
                 book.measure("three_bet_ratio", a.to_amount / open_size)
+            # The same decisions, sliced to the ones where the raise was yours.
+            # Recorded alongside the pooled counter, never instead of it: the
+            # pooled rate is the baseline this slice only means anything
+            # against.
+            if opener is not None and opener == hero_seat:
+                book.count(f"{VS_HERO}three_bet", raised)
+                if pos == "BB":
+                    book.count(f"{VS_HERO}bb_defend", raised or called)
+                if hand.seat(opener).position in ("CO", "BTN", "SB") \
+                        and pos in ("SB", "BB"):
+                    book.count(f"{VS_HERO}fold_to_steal", folded)
 
         elif d.aggression_level == 2:
             if d.seat == opener:
                 book.count("fold_to_three_bet", folded)
                 book.count("four_bet", raised)
+                if three_bettor is not None and three_bettor == hero_seat:
+                    book.count(f"{VS_HERO}fold_to_three_bet", folded)
             else:
                 book.count("cold_four_bet", raised)
 
@@ -236,7 +264,8 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
 # ---------------------------------------------------------------------------
 
 def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
-              pace_locks: PaceLocks | None = None
+              pace_locks: PaceLocks | None = None,
+              hero_seat: int | None = None
               ) -> dict[tuple[int, str], tuple[str, str]]:
     """Postflop frequencies plus pace tags for timing-outcome resolution.
 
@@ -249,6 +278,9 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
     checked: set[int] = set()
     declined_initiative: set[int] = set()   # aggressors who checked on an earlier street
     faced_bet_size: dict[int, float] = {}
+    # Who put in the bet each seat is facing. The size was already tracked; the
+    # bettor is what says whether the decision was against you.
+    faced_bet_from: dict[int, int] = {}
     # Fold-vs-bet / c-bet once per street: raise wars must not manufacture
     # independent opportunities (and confidence) from the same pot.
     faced_bet_already: set[int] = set()
@@ -264,6 +296,7 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
             street = d.street
             first_bettor, bettor_had_initiative = None, False
             checked, faced_bet_size, faced_bet_already = set(), {}, set()
+            faced_bet_from = {}
             for seat in view.saw[street]:
                 _book(hand, books, seat, reg).count(f"saw:{street.label}", True)
 
@@ -312,6 +345,14 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
                     book.count(f"cbet:{s}", bet)
                     if bet:
                         book.measure(f"cbet_size:{s}", d.bet_fraction)
+                    # Only heads-up against you. In a multiway pot a c-bet is
+                    # aimed at the field, so crediting it as a decision made
+                    # against you would read three opponents' pressure as one
+                    # player's adjustment.
+                    if (d.players_in <= 2 and hero_seat is not None
+                            and d.seat != hero_seat
+                            and hero_seat in view.saw[street]):
+                        book.count(f"{VS_HERO}cbet:{s}", bet)
                 if not bet:
                     declined_initiative.add(d.seat)
             elif initiative is not None and initiative not in declined_initiative:
@@ -350,6 +391,17 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
                     book.count(f"fold_to_cbet:{s}", folded)
                     book.count(f"raise_cbet:{s}", raised)
                     book.count(f"call_cbet:{s}", called)
+                # The same decisions again, sliced to the bets that were yours.
+                # Under first_face for the reason the pooled counters are: a
+                # raise war must not manufacture extra opportunities, and this
+                # slice is the thinnest sample in the tool -- it can least
+                # afford a denominator that flatters itself.
+                if faced_bet_from.get(d.seat) == hero_seat and hero_seat is not None:
+                    book.count(f"{VS_HERO}fold_vs_bet:{s}", folded)
+                    book.count(f"{VS_HERO}call_vs_bet:{s}", called)
+                    book.count(f"{VS_HERO}raise_vs_bet:{s}", raised)
+                    if first_bettor is not None and bettor_had_initiative:
+                        book.count(f"{VS_HERO}fold_to_cbet:{s}", folded)
                 if d.seat in checked:
                     # Guarded by first_face for the same reason the fold
                     # counters above are: in a raise war a player faces a bet,
@@ -382,6 +434,7 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
             for seat in view.saw[street]:
                 if seat != d.seat:
                     faced_bet_size[seat] = d.bet_fraction
+                    faced_bet_from[seat] = d.seat
 
     return pace_events
 

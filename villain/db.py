@@ -30,7 +30,7 @@ from typing import Iterable
 
 from .features import record_hands
 from .model import Hand, hand_from_dict, hand_to_dict
-from .stats import Meter, Ratio, StatBook
+from .stats import VS_HERO, Meter, Ratio, StatBook
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS players (
@@ -136,7 +136,7 @@ SPURIOUS_OVERLAP = 2
 
 #: Feature / display-stat definition stamp. Bump when ``rebuild`` is required
 #: for existing databases to grow new counters or fix old ones.
-DEFINITIONS_VERSION = "2026-08-14.fitted-priors"
+DEFINITIONS_VERSION = "2026-08-15.vs-hero"
 
 
 def split_key(account: str, name: str) -> str:
@@ -661,6 +661,12 @@ class Store:
         for row in self.conn.execute(
                 "SELECT regime, player_id, stat, hits, opps FROM ratios"):
             raw[(row["regime"], row["player_id"])][row["stat"]] = (row["hits"], row["opps"])
+            # A vs: counter is one player's behaviour against one opponent, so
+            # the spread across players measures the opponent as much as the
+            # pool. Fitting a population from it would feed that back into
+            # everyone's shrinkage.
+            if row["stat"].startswith(VS_HERO):
+                continue
             if stat_filter and not stat_filter(row["stat"]):
                 continue
             out[row["regime"]][row["stat"]].append((row["hits"], row["opps"]))
