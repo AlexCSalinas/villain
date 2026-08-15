@@ -25,7 +25,7 @@ python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
 
-pytest                             # 207 tests
+pytest                             # 305 tests
 ```
 
 That installs two commands, `villain` and `villain-ui`. The parser suite checks
@@ -188,6 +188,11 @@ EXPLOITS  (1 found)
       Bluff every river you reach with a busted hand, and size up -- they are
       folding to the decision rather than to the price.
 
+AGAINST YOU  (1 found)
+  Against their own game, not against the field.
+
+    re-raises your opens          19%   (3% otherwise)   32 seen, 99% sure
+
 SKILL: strong (69/100)   confidence 54%
     showdown judgement         ##############....  77.3
     hand selection             ###############...  81.5
@@ -327,6 +332,43 @@ from that player's own pot sizes and how often the spot comes up, scaled by
 assumption stated in the source rather than buried, so severities are best read
 as a ranking of what to attack first.
 
+### Against you
+
+Every frequency above is measured against a population: how they play
+everybody. **Against you** is the same counter sliced to the decisions where
+you were the one they were facing, and it is the number that says they have a
+read on you rather than a tendency. Folding 70% to your river bets is not
+interesting because 70% is high. It is interesting because they fold 45% to
+everybody else's.
+
+So the prior is not the field, which has never played you — it is the player.
+Population, then the player, then the player against you, all the same
+arithmetic one level deeper. The baseline **subtracts the slice out of the
+pooled counter first**: the slice sits inside that total, so reading it against
+the total compares a number with something that contains it, and the difference
+vanishes exactly when the sample grows enough to be worth reading.
+
+Table size is the confound this would otherwise invent. Somebody you have only
+played heads-up folds far more there than at their six-handed table, and
+pooling raw counts reports that as thirty points of adjustment when they are
+merely playing a shorter table. Each table size's slice is therefore measured
+against *that* table's baseline, and only the deviation is carried over,
+re-expressed on the primary table's scale and discounted.
+
+Two refusals worth knowing about. If every decision they made was against you —
+a heads-up database — the baseline is a number subtracted from itself, and
+nothing is reported rather than the population deviation twice. And a
+difference has to be big enough to change a decision, not merely certain,
+because enough hands make any difference certain. Most players, most of the
+time, have no adjustment at all; that is the normal result.
+
+Scoped to you and nobody else. Every pair would be quadratic in players and
+starved in every cell, while you are the one opponent with enough shared hands
+to say anything. Which seat is yours comes from the export itself — PokerNow
+names the exporter — falling back to whose cards are visible without having
+been shown, since an export shows you your own hand every time and everybody
+else's only at a showdown.
+
 ### Skill
 
 Rating a player by results is rating their luck, so results carry the smallest
@@ -371,7 +413,13 @@ returning something authoritative-looking and wrong.
   cards are visible on every hand and those rows are marked unbiased, but the
   bias is reduced, not removed.
 * **Severity constants are assumptions.** The breakeven thresholds are derived;
-  the capture fractions are judgement calls.
+  the capture fractions are judgement calls. So is `ADJUSTMENT_PRIOR` in
+  `dynamics.py`, which decides how much evidence it takes to believe somebody
+  is playing you differently: fitting it would need pairwise samples across
+  many players, and a home game has one pair worth counting.
+* **Adjustments are never priced.** A leak is worth a stated bb/100; an
+  against-you shift is not, because what it is worth depends on how you were
+  playing when they made it, and that is not in the hand history.
 * **Side pots are approximate.** Each player's equity is capped at the pot they
   were actually eligible for, so a short all-in is no longer credited with money
   it could never have won, but the split between layered pots is not modelled
@@ -392,6 +440,7 @@ returning something authoritative-looking and wrong.
 | `stats.py`, `features.py` | additive sufficient statistics per hand |
 | `priors.py`, `profile.py` | shrinkage, per-regime and cross-regime priors |
 | `archetypes.py`, `exploits.py`, `skill.py` | buckets, priced leaks, rating |
+| `dynamics.py` | how a player plays you differently from everybody else |
 | `playbook.py`, `narrate.py` | written advice, optional LLM summary |
 | `evidence.py`, `replay.py` | the hands behind a number |
 | `cluster.py`, `reads.py` | models learned from your own database |
