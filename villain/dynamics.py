@@ -70,6 +70,14 @@ MIN_CONFIDENCE = 0.85
 #: certain given enough hands and still not change a single decision.
 MIN_GAP = 0.08
 
+#: Facing a bet a player folds, calls or raises: one decision and three
+#: counters that add to one. A shift in any of them is the same shift seen from
+#: another side, so reporting all three would say one thing three times and
+#: then sort it to the top by weight of numbers. Only the largest is kept.
+#: :func:`villain.exploits.dedupe_leaks` collapses overlapping leaks for the
+#: same reason.
+ONE_DECISION = ("fold_vs_bet", "call_vs_bet", "raise_vs_bet")
+
 #: Regularisation on another table size's slice before its deviation is
 #: measured -- just enough to keep the log-odds finite when somebody folded to
 #: none of thirty bets. Deliberately tiny: :data:`ADJUSTMENT_PRIOR` is applied
@@ -126,7 +134,25 @@ def adjustments(by_regime: dict[str, StatBook],
         if found is not None:
             out.append(found)
     out.sort(key=lambda a: -abs(a.gap))
+    return _one_per_decision(out)
+
+
+def _one_per_decision(found: list[Adjustment]) -> list[Adjustment]:
+    """Keep the clearest view of each decision, drop the other sides of it."""
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for adjustment in found:                    # widest gap first
+        key = _decision(adjustment.stat)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(adjustment)
     return out
+
+
+def _decision(stat: str) -> tuple[str, str]:
+    base, _, street = stat.partition(":")
+    return ("vs_bet" if base in ONE_DECISION else base), street
 
 
 def _sliced_stats(live: dict[str, StatBook]) -> list[str]:

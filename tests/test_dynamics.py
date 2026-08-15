@@ -119,6 +119,27 @@ def test_the_biggest_shift_comes_first():
     assert abs(found[0].gap) >= abs(found[1].gap)
 
 
+def test_one_decision_is_reported_once():
+    """Fold, call and raise against a bet add to one, so a shift in one is a
+    shift in the others. Reporting all three says the same thing three times
+    and then wins the ordering by weight of numbers."""
+    found = adjustments({"6max": book("6max", {
+        "fold_vs_bet:flop": (45, 100), VS_HERO + "fold_vs_bet:flop": (2, 40),
+        "call_vs_bet:flop": (40, 100), VS_HERO + "call_vs_bet:flop": (30, 40),
+        "raise_vs_bet:flop": (15, 100), VS_HERO + "raise_vs_bet:flop": (8, 40),
+    })})
+    assert len(found) == 1
+    assert found[0].stat == "fold_vs_bet:flop"       # the widest of the three
+
+
+def test_the_same_decision_on_another_street_is_its_own_read():
+    found = adjustments({"6max": book("6max", {
+        "fold_vs_bet:flop": (45, 100), VS_HERO + "fold_vs_bet:flop": (2, 40),
+        "fold_vs_bet:turn": (45, 100), VS_HERO + "fold_vs_bet:turn": (38, 40),
+    })})
+    assert {a.stat for a in found} == {"fold_vs_bet:flop", "fold_vs_bet:turn"}
+
+
 # -- table size -------------------------------------------------------------
 
 
