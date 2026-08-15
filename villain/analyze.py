@@ -15,6 +15,7 @@ from .glossary import (component_entry, component_help, component_reading,
 from .playbook import combinations_for
 from .profile import Profile
 from .skill import WEAK_COMPONENT, rate, weaknesses
+from .stats import VS_HERO
 
 #: Internal counters. They exist so aggression frequencies can be derived from
 #: raw action mixes; as standalone frequencies they mean nothing, so they are
@@ -103,6 +104,9 @@ def as_dict(profile: Profile) -> dict:
         # they made it, which is not in the hand history.
         "adjustments": [
             {"stat": a.stat, "behaviour": versus_behaviour(a.stat),
+             # The counter the evidence panel opens on: the against-you slice,
+             # not its parent, so the hands shown are the ones being described.
+             "evidence_stat": VS_HERO + a.stat,
              "versus": round(a.versus, 4), "baseline": round(a.baseline, 4),
              "gap": round(a.gap, 4), "direction": a.direction,
              "sample": a.opps, "baseline_sample": a.baseline_opps,

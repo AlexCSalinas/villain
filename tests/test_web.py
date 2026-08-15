@@ -420,3 +420,49 @@ def test_a_database_merge_shows_up_in_a_loaded_session(tmp_path, hands):
     assert merges, "the merged accounts should be pooled in the session"
     assert len(after) < len(before)
     assert sum(after.values()) == sum(before.values()), "no hands lost"
+
+
+# -- against you ------------------------------------------------------------
+
+
+def _seeded(store, counts, name="villain"):
+    """A player whose books say what we need. Twenty fixture hands clear no
+    sample floor, and the point here is the wiring, not the arithmetic."""
+    from villain.stats import StatBook
+
+    player_id = int(store.players()[0]["id"])
+    book = StatBook(player_id=str(player_id), name=name, regime="6max", hands=420)
+    for stat, (hits, opps) in counts.items():
+        book.ratios[stat].hits, book.ratios[stat].opps = float(hits), float(opps)
+    book.meters["table_size"].add(6.0)
+    store._write_books(player_id, {"6max": book}, name)
+    store.conn.commit()
+    return player_id
+
+
+ADJUSTED = {
+    "vpip": (126, 420), "pfr": (79, 420), "fold_vs_bet:river": (26, 47),
+    "three_bet": (14, 150), "wtsd": (44, 160), "wsd": (26, 44),
+    "vs:fold_vs_bet:river": (2, 21), "vs:three_bet": (11, 32),
+}
+
+
+def test_the_payload_points_evidence_at_the_slice(tmp_path, hands):
+    """Not at the pooled counter: the hands shown have to be the hands the
+    read is about."""
+    with Store(tmp_path / "v.db") as store:
+        store.add_hands(hands)
+        player_id = _seeded(store, ADJUSTED)
+        payload = profile_payload(store.profile(player_id), player_id)
+    assert payload["adjustments"]
+    for a in payload["adjustments"]:
+        assert a["evidence_stat"] == "vs:" + a["stat"]
+        assert a["behaviour"] != a["stat"]
+
+
+def test_an_uploaded_session_shows_them_too(session):
+    """A preview that drops a section the same hands produce once saved is a
+    preview of something else."""
+    payload = session_payload(session)
+    for profile in payload["profiles"]:
+        assert "adjustments" in profile
