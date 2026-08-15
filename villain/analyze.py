@@ -104,7 +104,7 @@ def as_dict(profile: Profile) -> dict:
             {"id": l.id, "headline": l.headline, "value": round(l.value, 4),
              "breakeven": round(l.threshold, 4), "sample": l.opps,
              "confidence": round(l.confidence, 3), "in_words": l.in_words,
-             "do": l.do, "stat": l.stat}
+             "do": l.do, "stat": l.stat, "confirms_in": l.confirms_in}
             for l in find_watchlist(profile)
         ],
         # Where their game is thinnest. This is what the rating is built on,

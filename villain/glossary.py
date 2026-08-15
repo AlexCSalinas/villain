@@ -322,6 +322,11 @@ TERMS: dict[str, str] = {
                  "big blinds per 100 hands, if they attacked every one.",
     "confidence": "How much of this read comes from their actual hands rather "
                   "than from assumptions about players in general.",
+    "percentile": "The share of every possible hole-card combination on that "
+                  "board your hand beats -- not your chance to win the pot, "
+                  "which depends on what the other hand actually is. "
+                  "\"Usually X%\" is what a model fit on this database's own "
+                  "revealed hands says a line like that typically represents.",
 }
 
 #: What a low score in each rated area means for you. The rating knows these

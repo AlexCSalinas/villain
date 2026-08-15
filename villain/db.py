@@ -774,6 +774,11 @@ class Store:
         out = []
         for pid, by_regime in books.items():
             hands = sum(b.hands for b in by_regime.values())
+            # Summed across every table size played this sitting -- unlike
+            # the deltas below, a result does not need a same-regime baseline
+            # to mean something, it just needs adding up.
+            net_bb = sum(b.meters["net_bb"].total for b in by_regime.values()
+                        if "net_bb" in b.meters)
             stored = self.books(int(pid))
             deltas = []
             # Compared inside a table size, never across one. 55% VPIP is tight
@@ -815,7 +820,7 @@ class Store:
             snap.skill = rate(snap)
             arch, conf, _mix = match(snap)
             out.append({"player_id": int(pid), "name": names.get(pid, pid),
-                        "hands": hands, "deltas": deltas,
+                        "hands": hands, "net_bb": round(net_bb, 1), "deltas": deltas,
                         "regimes": sorted(by_regime),
                         "archetype": arch, "confidence": round(conf, 3),
                         "skill": round(snap.skill.score, 1),
@@ -880,11 +885,16 @@ class Store:
         return build_unified(books,
                              priors=self.fitted_priors(primary_regime(books)) or None)
 
-    def player_hands(self, player_id: int) -> list[Hand]:
-        """Stored hands this player was dealt into, keyed to internal ids.
+    def player_hands(self, player_id: int | None = None) -> list[Hand]:
+        """Stored hands, keyed to internal ids.
 
         The same re-keying ``rebuild`` does, so anything computed from these
-        hands lines up with the statistics computed from them.
+        hands lines up with the statistics computed from them. With
+        ``player_id`` set, only the hands that player was dealt into; with it
+        omitted, every hand -- for callers (like the hand-strength model) that
+        need every seat resolved to the id used elsewhere, not just one
+        player's. Prefer this over :meth:`stored_hands`, whose ids are the raw
+        site accounts on purpose.
         """
         accounts = {
             (r["site"], r["account"]): int(r["player_id"])
@@ -905,7 +915,7 @@ class Store:
                 pid = resolve(hand.site, seat.player_id, seat.name)
                 seat.player_id = str(pid) if pid is not None else seat.player_id
                 ids.append(pid)
-            if player_id in ids:
+            if player_id is None or player_id in ids:
                 out.append(hand)
         return out
 

@@ -621,6 +621,217 @@ def leaderboard_payload(store: Store) -> dict:
     return {"players": sorted(ranked, key=lambda r: -r["skill"])}
 
 
+# ---------------------------------------------------------------------------
+# hero: what only your own hand history can show
+# ---------------------------------------------------------------------------
+# Grading every fold means fitting the population hand-strength model first
+# (villain.reads.fit) and walking hero's several thousand hands through the
+# 7-card evaluator -- tens of seconds on a database this size, and unchanged
+# from one request to the next unless new hands were imported. An in-memory
+# cache alone only pays that once *per running server*, and this UI gets
+# stopped and restarted often -- so the finished payload (JSON-safe: no
+# sklearn object in it) is also persisted next to the database, keyed by hand
+# count rather than time, the same as the in-memory layer. The model itself
+# is cheap to refit inside one process and expensive to pickle safely across
+# versions, so only the memory layer holds it.
+_HERO_MODEL_CACHE: dict[str, tuple[int, object]] = {}
+_HERO_PAYLOAD_CACHE: dict[tuple[str, int | None], tuple[int, dict | None]] = {}
+#: The server handles requests on their own thread, so two Hero tab loads
+#: landing close together used to each start their own fit -- the actual
+#: incident this guards against: two ~40s fits running at once pegged every
+#: core for minutes and starved every other tab's requests, not just Hero's.
+#: One lock serialises fitting; the cache re-check after acquiring it means
+#: the second request pays nothing once the first finishes.
+_HERO_LOCK = threading.Lock()
+
+
+def _hand_count(store: Store) -> int:
+    return store.conn.execute("SELECT COUNT(*) c FROM hands").fetchone()["c"]
+
+
+#: find_hero() itself is cheap (no model fit, just a scan of every seat), but
+#: the roster loads on every visit to the Database tab, so it is cached the
+#: same way -- by hand count -- rather than re-scanning every hand each time.
+_HERO_ID_CACHE: dict[str, tuple[int, int | None]] = {}
+
+
+def _cached_hero_id(store: Store) -> int | None:
+    from .hero import find_hero
+
+    key = str(store.path)
+    hand_count = _hand_count(store)
+    cached = _HERO_ID_CACHE.get(key)
+    if cached and cached[0] == hand_count:
+        return cached[1]
+    hero_id = find_hero(store)
+    _HERO_ID_CACHE[key] = (hand_count, hero_id)
+    return hero_id
+
+
+def _hero_model(store: Store):
+    from .hero import fit_population_model
+
+    key = str(store.path)
+    hand_count = _hand_count(store)
+    cached = _HERO_MODEL_CACHE.get(key)
+    if cached and cached[0] == hand_count:
+        return cached[1]
+    model = fit_population_model(store)
+    _HERO_MODEL_CACHE[key] = (hand_count, model)
+    return model
+
+
+#: Bump whenever _build_hero_payload's returned shape changes, so an old
+#: cache file from a previous version of this module is a miss rather than a
+#: served-stale response with fields the current frontend does not expect.
+_HERO_CACHE_VERSION = 4
+
+
+def _hero_disk_cache_path(store: Store) -> Path:
+    return store.path.with_name(store.path.name + ".hero-cache.json")
+
+
+def _hero_disk_cache_load(store: Store, hero_id: int | None,
+                          hand_count: int) -> tuple[bool, dict | None]:
+    """(hit, payload). ``hit`` is separate from ``payload`` because a cached
+    "no hero found" answer is a legitimate ``None`` that should not trigger
+    a recompute -- only a genuine cache miss should."""
+    path = _hero_disk_cache_path(store)
+    if not path.exists():
+        return False, None
+    try:
+        saved = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False, None
+    entry = saved.get(str(hero_id))
+    if (entry and entry.get("hand_count") == hand_count
+            and entry.get("version") == _HERO_CACHE_VERSION):
+        return True, entry.get("payload")
+    return False, None
+
+
+def _hero_disk_cache_save(store: Store, hero_id: int | None, hand_count: int,
+                          payload: dict | None) -> None:
+    path = _hero_disk_cache_path(store)
+    try:
+        saved = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        saved = {}
+    saved[str(hero_id)] = {
+        "hand_count": hand_count, "version": _HERO_CACHE_VERSION, "payload": payload,
+    }
+    try:
+        path.write_text(json.dumps(saved))
+    except OSError:
+        pass    # a stale/missing cache costs time next request, not correctness
+
+
+def hero_payload(store: Store, hero_id: int | None = None) -> dict | None:
+    key = (str(store.path), hero_id)
+    hand_count = _hand_count(store)
+
+    cached = _HERO_PAYLOAD_CACHE.get(key)
+    if cached and cached[0] == hand_count:
+        return cached[1]
+
+    with _HERO_LOCK:
+        # Re-check both caches: another thread may have finished this exact
+        # computation while this one was waiting for the lock.
+        cached = _HERO_PAYLOAD_CACHE.get(key)
+        if cached and cached[0] == hand_count:
+            return cached[1]
+        hit, payload = _hero_disk_cache_load(store, hero_id, hand_count)
+        if not hit:
+            payload = _build_hero_payload(store, hero_id)
+            _hero_disk_cache_save(store, hero_id, hand_count, payload)
+        _HERO_PAYLOAD_CACHE[key] = (hand_count, payload)
+        return payload
+
+
+def _build_hero_payload(store: Store, hero_id: int | None) -> dict | None:
+    from .hero import (NotEnoughData, combined_grid, fold_grades, hero_visibility,
+                       missed_value, preflop_range, range_narrowing, sizing_tell,
+                       timing_tell)
+    from .model import STREET_LABELS
+
+    if hero_id is None:
+        hero_id = _cached_hero_id(store)
+    if hero_id is None:
+        return None
+    row = next((r for r in store.players() if int(r["id"]) == hero_id), None)
+    if row is None:
+        return None
+
+    hero_hands = store.player_hands(hero_id)
+    ranges = preflop_range(hero_hands, hero_id)
+    seen, total = hero_visibility(hero_hands, hero_id)
+    sizing = sizing_tell(hero_hands, hero_id)
+    timing = timing_tell(hero_hands, hero_id)
+    narrowing = range_narrowing(hero_hands, hero_id)
+
+    try:
+        model = _hero_model(store)
+        report = fold_grades(hero_hands, hero_id, model)
+        missed_report = missed_value(hero_hands, hero_id, model)
+        grade_error = None
+    except NotEnoughData as exc:
+        report = missed_report = None
+        grade_error = str(exc)
+
+    def _fold_json(g):
+        return {"hand_id": g.hand_id, "street": STREET_LABELS.get(g.street, g.street),
+               "hole_cards": list(g.hole_cards), "board": g.board, "texture": g.texture,
+               "summary": g.summary, "in_words": g.in_words}
+
+    def _bucketed_json(report, mistakes_attr, rate_attr):
+        return {
+            "graded": report.graded, "flagged": len(getattr(report, mistakes_attr)),
+            "rate": getattr(report, rate_attr),
+            "by_street": {STREET_LABELS.get(s, s): {"flagged": m, "graded": n}
+                         for s, (m, n) in sorted(report.by_street().items())},
+            "by_texture": {t: {"flagged": m, "graded": n}
+                          for t, (m, n) in sorted(report.by_texture().items())},
+            "worst": [_fold_json(g) for g in report.worst()],
+        }
+
+    def _tell_json(tell, avg_attr):
+        tell_streets = {s for s, _ in tell.tells()}
+        return {
+            STREET_LABELS.get(street, street): {
+                "strong": {"hands": strong.hands, "avg": getattr(strong, avg_attr)},
+                "weak": {"hands": weak.hands, "avg": getattr(weak, avg_attr)},
+                "in_words": tell.describe(street, lead=False),
+                "is_tell": street in tell_streets,
+            }
+            for street, (strong, weak) in sorted(tell.by_street.items())
+            if strong.hands or weak.hands
+        }
+
+    return {
+        "hero_id": hero_id, "name": row["display_name"],
+        "visibility": round(seen / total, 4) if total else 0.0, "hands": row["hands"] or 0,
+        "ranges": [
+            {"position": p.position, "hands": p.hands, "raised": p.raised,
+             "called": p.called, "checked": p.checked, "folded": p.folded}
+            for p in ranges.values()
+        ],
+        "grid": {cls: {"played": played, "dealt": dealt}
+                for cls, (played, dealt) in combined_grid(ranges).items()},
+        "fold_grades": None if report is None else _bucketed_json(
+            report, "mistakes", "mistake_rate"),
+        "missed_value": None if missed_report is None else _bucketed_json(
+            missed_report, "missed", "missed_rate"),
+        "grade_error": grade_error,
+        "sizing": _tell_json(sizing, "avg_size"),
+        "timing": _tell_json(timing, "avg_think_s"),
+        "narrowing": [
+            {"street": STREET_LABELS.get(s.street, s.street), "hands": s.hands,
+             "avg_strength": round(s.avg_strength, 4)}
+            for s in sorted(narrowing, key=lambda s: s.street)
+        ],
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     db_path = DEFAULT_PATH
 
@@ -668,6 +879,7 @@ class Handler(BaseHTTPRequestHandler):
                         "db": str(self.db_path),
                         "hands": store.conn.execute(
                             "SELECT COUNT(*) c FROM hands").fetchone()["c"],
+                        "hero_id": _cached_hero_id(store),
                         "fit_priors": {
                             "suggested": n_players >= 8 and n_fitted == 0,
                             "players": n_players,
@@ -709,6 +921,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/leaderboard":
                 with Store(self.db_path) as store:
                     return self._send(200, leaderboard_payload(store))
+            if path == "/api/hero":
+                with Store(self.db_path) as store:
+                    payload = hero_payload(store)
+                    if payload is None:
+                        return self._send(404, {
+                            "error": "Could not identify hero automatically -- "
+                                     "no player has cards known on enough of their "
+                                     "own hands."})
+                    return self._send(200, payload)
             if path == "/api/evidence":
                 query = parse_qs(route.query)
                 player_id = int(query.get("player", ["0"])[0])
@@ -1080,7 +1301,8 @@ PAGE = r"""<!doctype html>
   th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
   th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
        color: var(--muted); font-weight: 600; cursor: pointer; white-space: nowrap; }
-  th.sorted::after { content: " \25BE"; color: var(--accent); }
+  th.sorted::after { content: " \25B4"; color: var(--accent); }
+  th.sorted.desc::after { content: " \25BE"; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   tbody tr.clickable { cursor: pointer; }
   tbody tr.clickable:hover { background: var(--accent-soft); }
@@ -1097,6 +1319,10 @@ PAGE = r"""<!doctype html>
     white-space: nowrap;
   }
   .tag.on { border-color: var(--red); color: var(--ink); }
+  /* Same accent the archetype pill and sort caret already use for "this one
+     is notable" -- not a new colour for a new meaning. */
+  .hero-row-marker { background: var(--accent-soft); }
+  .hero-tag { margin-left: 6px; border-color: var(--red); color: var(--ink); font-weight: 600; }
   .scroller { overflow-x: auto; }
   .muted { color: var(--muted); }
   .small { font-size: 12.5px; }
@@ -1165,22 +1391,11 @@ PAGE = r"""<!doctype html>
   .skill-badge .score { font-size: 20px; font-weight: 800; letter-spacing: -0.03em; }
   .skill-badge .of { font-size: 11px; font-weight: 600; margin-top: 2px; letter-spacing: .04em;
                      text-transform: uppercase; opacity: .85; }
-  .read-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 28px 32px;
-    margin-top: 18px; align-items: start;
-  }
-  @media (max-width: 720px) {
-    .read-grid { grid-template-columns: 1fr; }
-  }
   .read-copy .summary { color: var(--muted); margin: 0 0 10px; }
   .read-copy .plan { margin: 0; max-width: 72ch; }
   .read-copy .summary { max-width: 72ch; }
   .read-meta { font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.7; }
   .skill-side { margin: 0; min-width: 0; max-width: none; text-align: left; }
-  .skill-side .skill-head {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: var(--muted); font-weight: 600; margin-bottom: 10px;
-  }
   .skill-side .metric { grid-template-columns: 1fr 90px 28px; gap: 8px; margin: 4px 0; }
   .skill-side .metric .small { font-size: 12.5px; }
   .drop {
@@ -1226,11 +1441,14 @@ PAGE = r"""<!doctype html>
   }
   .sess-delta:first-child { border-top: 0; }
   .sess-who { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .sess-regime {
-    font-size: 12.5px; color: var(--muted); margin: 10px 0 2px;
-    padding-top: 8px; border-top: 1px solid var(--line);
+  .sess-regime-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 8px; }
+  .sess-regime-tab {
+    border: 1px solid var(--edge); background: transparent; color: var(--muted);
+    border-radius: 999px; padding: 3px 11px; font: inherit; font-size: 12.5px;
+    cursor: pointer;
   }
-  .sess-regime:first-child { margin-top: 4px; padding-top: 0; border-top: 0; }
+  .sess-regime-tab:hover { color: var(--ink); }
+  .sess-regime-tab.on { border-color: var(--red); color: var(--ink); font-weight: 600; }
   td.worth { font-variant-numeric: tabular-nums; }
   td.worth.big { color: var(--red); font-weight: 600; }
   .detail-body td.label { min-width: 156px; }
@@ -1311,6 +1529,37 @@ PAGE = r"""<!doctype html>
   .howblock { margin: 10px 0; max-width: 66ch; }
   .howlabel { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
               color: var(--muted); margin-bottom: 3px; font-weight: 600; }
+  /* hero: preflop range chart. Magnitude (how often a hand is played) is
+     shade of the same neutral ink ramp the skill bars use elsewhere --
+     shade already carries confidence/frequency in this app, never identity,
+     so this is the existing convention, not a new one. */
+  .range-grid {
+    display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px;
+    margin: 12px 0; max-width: 480px;
+  }
+  .range-cell {
+    aspect-ratio: 1; border-radius: 3px; border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .range-cell.dark-text { color: var(--panel); }
+  .range-legend {
+    display: flex; align-items: center; gap: 8px; font-size: 12px;
+    color: var(--muted); margin: 6px 0 18px;
+  }
+  .range-legend .ramp {
+    width: 120px; height: 10px; border-radius: 4px; border: 1px solid var(--line);
+    background: linear-gradient(to right, var(--panel), var(--ink));
+  }
+  .hero-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .fold-row {
+    display: grid; grid-template-columns: 56px 70px minmax(0,1fr) auto;
+    gap: 12px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line);
+    font-size: 13.5px; cursor: pointer;
+  }
+  .fold-row:first-child { border-top: 0; }
+  .fold-row:hover { background: var(--accent-soft); }
   svg { display: block; overflow: visible; }
   .tip {
     position: fixed; pointer-events: none; z-index: 40; max-width: 270px;
@@ -1321,9 +1570,6 @@ PAGE = r"""<!doctype html>
   .tip.on { opacity: 1; }
   .empty { color: var(--muted); padding: 8px 0; }
   .err { color: var(--warn); }
-  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
-  .swatch { width: 10px; height: 10px; border-radius: 4px; display: inline-block;
-            vertical-align: -1px; margin-right: 5px; border: 1px solid var(--line); }
   /* per-player tabs inside a result */
   .ptabs {
     display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px;
@@ -1438,7 +1684,6 @@ PAGE = r"""<!doctype html>
   .ev:hover { background: var(--accent-soft); }
   .ev:last-child { border-bottom: 0; }
   .mono { font-family: var(--mono); font-size: .95em; }
-  .cards { font-family: var(--mono); letter-spacing: .04em; }
   .street { border-top: 1px solid var(--line); padding: 10px 0; }
   .street:first-child { border-top: 0; }
   .street h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase;
@@ -1458,6 +1703,12 @@ PAGE = r"""<!doctype html>
   .sheet {
     background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
     max-width: 640px; width: 100%; max-height: 86vh; overflow-y: auto; padding: 22px;
+  }
+  /* Keeps Close reachable over a long hand or evidence list instead of
+     scrolling off with the content. */
+  .sheet > .spread:first-child {
+    position: sticky; top: 0; z-index: 1; background: var(--panel);
+    padding-bottom: 10px; margin-bottom: 4px;
   }
   .q { border-top: 1px solid var(--line); padding: 14px 0; }
   .q:first-of-type { border-top: 0; }
@@ -1494,6 +1745,7 @@ PAGE = r"""<!doctype html>
   <nav>
     <button data-tab="players" class="on">Database</button>
     <button data-tab="sessions">Sessions</button>
+    <button data-tab="hero">Hero</button>
   </nav>
   <div id="view"></div>
 </div>
@@ -1680,8 +1932,10 @@ function rosterTable(players, opts) {
     body.innerHTML = "";
     for (const p of rows) {
       const tr = document.createElement("tr");
+      const isHero = opts && opts.heroId != null && p.player_id === opts.heroId;
+      if (isHero) tr.className = "hero-row-marker";
       if (opts && opts.onClick && p.player_id != null) {
-        tr.className = "clickable";
+        tr.className = (tr.className ? tr.className + " " : "") + "clickable";
         tr.tabIndex = 0;
         tr.setAttribute("role", "button");
         tr.onkeydown = e => {
@@ -1696,7 +1950,8 @@ function rosterTable(players, opts) {
       else if (p.session_names && p.session_names.length)
         linkBits.push(`as ${p.session_names.map(n => `\u201c${esc(n)}\u201d`).join(", ")}`);
       tr.innerHTML = `
-        <td><span class="name">${esc(shown)}</span>
+        <td><span class="name">${esc(shown)}</span>${
+            isHero ? '<span class="tag hero-tag">you</span>' : ""}
             ${linkBits.length
               ? `<div class="small muted">${linkBits.join(" \u00b7 ")}</div>` : ""}</td>
         <td class="num">${p.hands}</td>
@@ -1741,7 +1996,10 @@ function rosterTable(players, opts) {
         <span class="muted">confidence ${fmtPct(p.skill_confidence)}</span>`);
       body.appendChild(tr);
     }
-    wrap.querySelectorAll("th").forEach(th => th.classList.toggle("sorted", th.dataset.k === sort.key));
+    wrap.querySelectorAll("th").forEach(th => {
+      th.classList.toggle("sorted", th.dataset.k === sort.key);
+      th.classList.toggle("desc", th.dataset.k === sort.key && sort.dir < 0);
+    });
   }
   wrap.querySelectorAll("th").forEach(th => th.onclick = () => {
     const k = th.dataset.k;
@@ -2387,37 +2645,38 @@ async function drawSession(id) {
   for (const p of data.players) {
     const div = document.createElement("div");
     div.className = "leak";
+    const netTxt = p.net_bb > 0 ? `+${p.net_bb}` : `${p.net_bb}`;
     div.innerHTML = `<div class="leak-head">
         <div class="sess-who"><b class="linkish">${esc(p.name)}</b>
           <span class="tag arch ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
           <span class="small muted">${p.hands} hands \u00b7 ${esc(p.regime_label || "")}</span>
         </div>
-        <div class="num small muted">${p.skill} <span class="muted">skill</span></div></div>
+        <div class="num small"><b>${netTxt}</b> <span class="muted">bb \u00b7 ${p.skill} skill</span></div></div>
       <div class="sess-deltas"></div>`;
-    $("b", div).onclick = () => { state.player = p.player_id; switchTab("players"); };
+    $("b", div).onclick = () => switchTab("players", p.player_id);
     const box = $(".sess-deltas", div);
     if (!p.deltas.length) {
       box.innerHTML = `<div class="small muted">No trend yet \u2014 not enough
         hands at this table size outside this sitting to say what is usual.</div>`;
     } else {
-      // Grouped under one heading per table size. Rendering a row per
-      // (stat, regime) put VPIP on screen two or three times with the table
-      // size in small print, which reads as a duplicate rather than as two
-      // different games.
+      // One table size at a time, picked with a tab, rather than every table
+      // size stacked under its own heading. Rendering a row per (stat,
+      // regime) put VPIP on screen two or three times with the table size in
+      // small print, which read as a duplicate rather than as two different
+      // games -- stacked headings fixed the duplication but still made you
+      // scroll past every table size to find the one you sat at. A player
+      // who only played one table size gets no tabs at all.
       const byRegime = new Map();
       for (const d of p.deltas) {
         const key = d.regime_label || d.regime || "";
         if (!byRegime.has(key)) byRegime.set(key, []);
         byRegime.get(key).push(d);
       }
-      for (const [label, deltas] of byRegime) {
-        if (byRegime.size > 1 || label) {
-          const head = document.createElement("div");
-          head.className = "sess-regime";
-          head.textContent = label;
-          box.appendChild(head);
-        }
-        for (const d of deltas) {
+      const regimes = [...byRegime.keys()];
+      const rows = document.createElement("div");
+      const drawRows = label => {
+        rows.innerHTML = "";
+        for (const d of byRegime.get(label)) {
           const row = document.createElement("div");
           row.className = "sess-delta";
           const up = d.delta > 0;
@@ -2426,11 +2685,273 @@ async function drawSession(id) {
             <span class="small ${up ? "up" : "down"}">${up ? "\u25b2" : "\u25bc"}${
               Math.abs(Math.round(d.delta * 100))}pp</span>
             <span class="small muted">usually ${fmtPct(d.usual)}</span>`;
-          box.appendChild(row);
+          rows.appendChild(row);
         }
+      };
+      if (regimes.length > 1) {
+        const tabs = document.createElement("div");
+        tabs.className = "sess-regime-tabs";
+        regimes.forEach((label, i) => {
+          const b = document.createElement("button");
+          b.className = "sess-regime-tab" + (i === 0 ? " on" : "");
+          b.textContent = label;
+          b.onclick = () => {
+            tabs.querySelectorAll(".sess-regime-tab").forEach(x => x.classList.remove("on"));
+            b.classList.add("on");
+            drawRows(label);
+          };
+          tabs.appendChild(b);
+        });
+        box.appendChild(tabs);
       }
+      box.appendChild(rows);
+      drawRows(regimes[0]);
     }
     body.appendChild(div);
+  }
+}
+
+/* ---- tab 3: hero ---- */
+const RANK_ORDER = "AKQJT98765432";
+
+function rangeGrid(grid) {
+  const wrap = document.createElement("div");
+  wrap.className = "range-grid";
+  for (let i = 0; i < 13; i++) {
+    for (let j = 0; j < 13; j++) {
+      const hi = RANK_ORDER[i], lo = RANK_ORDER[j];
+      const cls = i === j ? hi + lo : i < j ? hi + lo + "s" : lo + hi + "o";
+      const g = (grid || {})[cls];
+      const dealt = g ? g.dealt : 0, played = g ? g.played : 0;
+      const pct = dealt ? played / dealt : 0;
+      const cell = document.createElement("div");
+      cell.className = "range-cell" + (pct > 0.5 ? " dark-text" : "");
+      cell.style.background =
+        `color-mix(in oklab, var(--ink) ${Math.round(pct * 100)}%, var(--panel))`;
+      cell.textContent = cls;
+      bindTip(cell, `<b>${cls}</b><br>played ${dealt ? fmtPct(pct) : "—"}` +
+        (dealt ? ` (${played} of ${dealt})` : " -- never dealt"));
+      wrap.appendChild(cell);
+    }
+  }
+  return wrap;
+}
+
+const POSITION_ORDER =
+  ["UTG", "UTG1", "UTG2", "MP", "MP1", "MP2", "LJ", "HJ", "CO", "BTN", "SB", "BB"];
+
+/* A graded report (fold grades / missed value) shares one shape: graded,
+   flagged, rate, by_street, by_texture, worst[]. One renderer for both. */
+function renderGradedSection(el, section, opts) {
+  if (!section || !section.graded) {
+    el.innerHTML = `<div class="small muted">${esc(opts.emptyText)}</div>`;
+    return;
+  }
+  const summary = document.createElement("p");
+  summary.innerHTML = `<b>${section.graded}</b> ${esc(opts.noun)} graded, <b>${
+      section.flagged}</b> (${fmtPct(section.rate)}) ${esc(opts.verdict)}`;
+  el.appendChild(summary);
+
+  const streets = document.createElement("p");
+  streets.className = "small muted";
+  streets.textContent = "by street:   " + Object.entries(section.by_street)
+    .map(([s, v]) => `${s} ${fmtPct(v.flagged / v.graded)}`).join("   ");
+  el.appendChild(streets);
+
+  const textures = document.createElement("p");
+  textures.className = "small muted";
+  textures.textContent = "by texture:  " + Object.entries(section.by_texture)
+    .map(([t, v]) => `${t} ${fmtPct(v.flagged / v.graded)}`).join("   ");
+  el.appendChild(textures);
+
+  for (const g of section.worst) {
+    const row = document.createElement("div");
+    row.className = "fold-row";
+    row.innerHTML = `
+      <span class="small muted">${esc(g.street)}</span>
+      <span class="mono">${g.hole_cards.map(esc).join(" ")}</span>
+      <span class="small fold-summary">${esc(g.summary)}</span>
+      <span class="small muted">${esc(g.texture)} board</span>`;
+    bindTip($(".fold-summary", row), esc(g.in_words));
+    row.onclick = () => showReplay(g.hand_id, opts.heroId,
+      `${g.street} ${opts.noun.replace(/s$/, "")} -- ${g.hole_cards.join(" ")}`);
+    el.appendChild(row);
+  }
+}
+
+//: Shared by sizing and timing -- both need bets/raises, so a thin sample
+//: reads the same way in either one.
+const TELL_EMPTY_TEXT = "Not enough postflop bets or raises with a clean line to compare yet.";
+
+/* sizing_tell and timing_tell share a shape too: street -> {strong, weak,
+   in_words}. One renderer for both. */
+function renderTellSection(el, section) {
+  const rows = Object.entries(section || {});
+  if (!rows.length) {
+    el.innerHTML = `<div class="small muted">${esc(TELL_EMPTY_TEXT)}</div>`;
+    return;
+  }
+  for (const [street, v] of rows) {
+    const row = document.createElement("div");
+    row.className = "metric";
+    row.innerHTML = `<span>${esc(street)}${
+        v.is_tell ? '<span class="tag hero-tag" style="margin-left:8px">tell</span>' : ""
+      }</span><span class="small">${esc(v.in_words || "")}</span>`;
+    el.appendChild(row);
+  }
+}
+
+async function viewHero() {
+  const view = $("#view");
+  view.innerHTML = `<div class="panel"><div class="empty">reading your own hands…
+    the first pass fits a model and can take a while -- after that it is
+    instant until you import more hands.</div></div>`;
+  let data;
+  try {
+    data = await get("/api/hero");
+  } catch (err) {
+    view.innerHTML = `<div class="panel"><h2>hero</h2>
+      <p class="err">${esc(err.message)}</p></div>`;
+    return;
+  }
+
+  const dash = document.createElement("div");
+  dash.className = "dash";
+
+  const head = document.createElement("div");
+  head.className = "panel wide";
+  head.innerHTML = `
+    <div class="hero-head">
+      <h2 style="margin:0">${esc(data.name)}</h2>
+      <span class="small muted">cards known on ${fmtPct(data.visibility)} of ${data.hands} hands</span>
+    </div>`;
+  dash.appendChild(head);
+
+  // Grid and position breakdown side by side: two views of the same range,
+  // one by hand the other by seat. dash-cols is the two-panel layout the
+  // skill/read split already uses on a player's own page.
+  const rangeCols = document.createElement("div");
+  rangeCols.className = "dash-cols wide";
+  const gridCol = document.createElement("div");
+  gridCol.className = "col";
+  gridCol.innerHTML = `<div class="panel">
+    <h2 id="hero-range-head">preflop range</h2>
+    <div id="hero-grid"></div>
+    <div class="range-legend"><span>never</span><span class="ramp"></span><span>always</span></div>
+  </div>`;
+  const posCol = document.createElement("div");
+  posCol.className = "col";
+  posCol.innerHTML = `<div class="panel">
+    <h2>by position</h2>
+    <div id="hero-positions"></div>
+  </div>`;
+  rangeCols.append(gridCol, posCol);
+  dash.appendChild(rangeCols);
+
+  const gradesPanel = document.createElement("div");
+  gradesPanel.className = "panel wide";
+  gradesPanel.innerHTML = `
+    <h2 id="hero-grades-head">fold grades &amp; missed value</h2>
+    <h3>fold grades</h3>
+    <div id="hero-folds"></div>
+    <h3>missed value</h3>
+    <div id="hero-missed"></div>`;
+  dash.appendChild(gradesPanel);
+
+  const tellsPanel = document.createElement("div");
+  tellsPanel.className = "panel wide";
+  tellsPanel.innerHTML = `
+    <h2 id="hero-tells-head">sizing &amp; timing tells</h2>
+    <h3>sizing</h3>
+    <div id="hero-sizing"></div>
+    <h3>timing</h3>
+    <div id="hero-timing"></div>`;
+  dash.appendChild(tellsPanel);
+
+  const narrowingPanel = document.createElement("div");
+  narrowingPanel.className = "panel wide";
+  narrowingPanel.innerHTML = `
+    <h2 id="hero-narrowing-head">range narrowing</h2>
+    <div id="hero-narrowing"></div>`;
+  dash.appendChild(narrowingPanel);
+
+  view.innerHTML = "";
+  view.appendChild(dash);
+
+  $("#hero-range-head", dash).appendChild(info(
+    `Every hand you were ever dealt, not just the ones you played -- something
+    only your own export can show. Darker means played (raised or called)
+    more often.`));
+  $("#hero-grades-head", dash).appendChild(info(
+    `${termTip("percentile")}<br><br><span class="hl">fold grades</span> --
+    postflop folds, graded against what a bet like that one usually turns out
+    to be.<br><br><span class="hl">missed value</span> -- the mirror question,
+    asked of checks that could have bet instead.`));
+  $("#hero-tells-head", dash).appendChild(info(
+    `Does your bet size, or think time, change with the hand behind it?
+    Nobody's hand strength is known often enough to ask a villain this --
+    yours is known on every bet, not just the ones that reached showdown.`));
+  $("#hero-narrowing-head", dash).appendChild(info(
+    `A continuing range is supposed to get stronger street by street, as the
+    wide ones give up along the way. Average hand strength among hands still
+    live, by street, says whether yours does.`));
+
+  $("#hero-grid", dash).appendChild(rangeGrid(data.grid));
+
+  const positions = $("#hero-positions", dash);
+  const ranges = [...(data.ranges || [])].sort(
+    (a, b) => POSITION_ORDER.indexOf(a.position) - POSITION_ORDER.indexOf(b.position));
+  for (const r of ranges) {
+    if (!r.hands) continue;
+    const row = document.createElement("div");
+    row.className = "metric";
+    row.innerHTML = `<span>${esc(r.position)} <span class="small muted">${r.hands}h</span></span>`;
+    row.append(bar(r.raised + r.called, r.hands, "var(--mark-3)", 150));
+    const val = document.createElement("span");
+    val.className = "small muted";
+    val.textContent = `${fmtPct((r.raised + r.called) / r.hands)} played`;
+    row.appendChild(val);
+    positions.appendChild(row);
+  }
+
+  if (data.grade_error) {
+    $("#hero-folds", dash).innerHTML = `<div class="small muted">${esc(data.grade_error)}</div>`;
+    $("#hero-missed", dash).innerHTML = "";
+  } else {
+    renderGradedSection($("#hero-folds", dash), data.fold_grades, {
+      noun: "folds", heroId: data.hero_id,
+      verdict: "had more edge than the bet typically shows",
+      emptyText: "Not enough postflop folds with a clean line to grade yet.",
+    });
+    renderGradedSection($("#hero-missed", dash), data.missed_value, {
+      noun: "checks", heroId: data.hero_id,
+      verdict: "had more edge than the check typically shows",
+      emptyText: "Not enough postflop checks with a clean line to grade yet.",
+    });
+  }
+
+  renderTellSection($("#hero-sizing", dash), data.sizing);
+  renderTellSection($("#hero-timing", dash), data.timing);
+
+  const narrowing = $("#hero-narrowing", dash);
+  if (!data.narrowing || !data.narrowing.length) {
+    narrowing.innerHTML = `<div class="small muted">Not enough hands reaching
+      each street yet.</div>`;
+  } else {
+    const row = document.createElement("p");
+    row.textContent = data.narrowing
+      .map(s => `${s.street} ${fmtPct(s.avg_strength)} (${s.hands})`).join("   ");
+    narrowing.appendChild(row);
+    const strengths = data.narrowing.map(s => s.avg_strength);
+    if (strengths.length >= 2) {
+      const monotone = strengths.every((v, i) => i === 0 || v >= strengths[i - 1]);
+      const note = document.createElement("p");
+      note.className = "small muted";
+      note.textContent = monotone
+        ? "Narrows street by street, as a continuing range should."
+        : "Does not narrow monotonically -- worth a look at which street gives it back.";
+      narrowing.appendChild(note);
+    }
   }
 }
 
@@ -2909,6 +3430,7 @@ async function viewPlayers() {
   wireImport();
   $("#db-roster").appendChild(rosterTable(data.players, {
     onClick: p => { state.player = p.player_id; viewPlayer(p.player_id); },
+    heroId: data.hero_id,
   }));
   $("#reset").onclick = () => confirmReset(data);
 
@@ -3132,8 +3654,9 @@ async function showReplay(handId, playerId, headline) {
   // through, so the hand you clicked ended up off screen.
   const layer = $("#modal2");
   layer.innerHTML = `<div class="veil"><div class="sheet">
-    <div class="spread"><h2 style="margin:0">${esc(headline || "hand replay")}</h2>
+    <div class="spread"><h2 style="margin:0">Hand replay</h2>
       <button class="act" id="close-replay">Back</button></div>
+    ${headline ? `<p class="small muted" style="margin:4px 0 0">${esc(headline)}</p>` : ""}
     <div id="replay"><div class="empty">loading hand\u2026</div></div>
   </div></div>`;
   $("#close-replay").onclick = () => { layer.innerHTML = ""; };
@@ -3149,8 +3672,7 @@ async function showReplay(handId, playerId, headline) {
     seatLine.appendChild(chunk);
   }
   box.innerHTML = `<div class="panel" style="margin-top:14px">
-    <div class="spread"><h2 style="margin:0">hand replay</h2>
-      <span class="small muted">${r.pot_bb} bb pot \u00b7 won by ${esc(r.winners.join(", ") || "\u2014")}</span></div>
+    <div class="small muted">${r.pot_bb} bb pot \u00b7 won by ${esc(r.winners.join(", ") || "\u2014")}</div>
     <div id="seats"></div>
     <div id="streets"></div></div>`;
   $("#seats").appendChild(seatLine);
@@ -3177,9 +3699,12 @@ async function showReplay(handId, playerId, headline) {
 }
 
 /* ---- tabs ---- */
-function switchTab(tab) {
+function switchTab(tab, playerId) {
   state.tab = tab;
-  if (tab === "players") state.player = null;
+  // Bare "go to the database tab" clears which player was open; a link that
+  // names a specific player (from Sessions, say) opens straight to them
+  // instead of dropping back to the general roster.
+  if (tab === "players") state.player = playerId != null ? playerId : null;
   document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   for (const id of ["#modal2", "#modal"]) {
@@ -3197,6 +3722,7 @@ async function render() {
     if (!state.glossary) state.glossary = await get("/api/glossary");
     if (state.tab === "session") viewSession();
     else if (state.tab === "sessions") await viewSessions();
+    else if (state.tab === "hero") await viewHero();
     else await viewPlayers();
   } catch (err) {
     $("#view").innerHTML = `<div class="panel err">${esc(err.message)}</div>`;

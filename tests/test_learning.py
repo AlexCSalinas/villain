@@ -11,7 +11,7 @@ import pytest
 from villain.archetypes import ARCHETYPE_BY_NAME, target_frequency
 from villain.cluster import MIN_PROFILES, NotEnoughData, fit_clusters
 from villain.profile import PROFILE_FEATURES, build_profile
-from villain.reads import MIN_ROWS, _texture, build_dataset, fit
+from villain.reads import MIN_ROWS, texture, build_dataset, fit
 from villain.reads import NotEnoughData as ReadsNotEnoughData
 from villain.stats import StatBook
 
@@ -65,7 +65,7 @@ def test_strength_dataset_labels_only_known_cards(hands):
     rows = build_dataset(hands)
     assert rows
     assert all(0.0 <= r.strength <= 1.0 for r in rows)
-    assert all(len(r.features) == 16 for r in rows)
+    assert all(len(r.features) == 17 for r in rows)
     # Folds are excluded: a folded hand has no strength worth predicting.
     assert "fold" not in {r.action for r in rows}
 
@@ -99,4 +99,4 @@ def test_unbiased_rows_are_marked(hands):
     (["Ac", "8d", "2h"], (0.0, 0.0, 0.0, 1.0)),
 ])
 def test_board_texture(board, expected):
-    assert _texture(board) == expected
+    assert texture(board) == expected

@@ -7,10 +7,11 @@ model, and they are named for the mistake rather than the fix.
 import pytest
 
 from villain.archetypes import ARCHETYPES, IMPORTANCE, match, target_frequency
-from villain.exploits import (MIN_OPPS, SHOWDOWN_MIN_OPPS, breakeven_fold,
-                              dedupe_leaks, find_leaks, measured_bluff_size)
-from villain.priors import (HEADS_UP, POPULATION, REGIMES, THREE, prior_for,
-                            population_mean, regime, shrink)
+from villain.exploits import (MIN_CONFIDENCE, MIN_OPPS, SHOWDOWN_MIN_OPPS,
+                              breakeven_fold, dedupe_leaks, find_leaks,
+                              measured_bluff_size, spots_to_confirm)
+from villain.priors import (HEADS_UP, POPULATION, REGIMES, THREE, Estimate,
+                            prior_for, population_mean, regime, shrink)
 from villain.profile import PROFILE_FEATURES, build_profile, build_profiles
 from villain.skill import deduped_exploitability, rate
 from villain.stats import StatBook
@@ -164,6 +165,29 @@ def test_stations_get_the_opposite_advice(synth_profile):
 def test_leaks_are_sorted_by_money(synth_profile):
     leaks = find_leaks(synth_profile("overfolder", regime="hu", opps=150))
     assert leaks == sorted(leaks, key=lambda l: -l.severity)
+
+
+def test_spots_to_confirm_says_never_on_the_wrong_side():
+    """More hands at the same rate cannot rescue a leak that isn't real:
+    the posterior concentrates away from the trigger, not toward it."""
+    est = Estimate(value=0.30, lo=0.20, hi=0.40, opps=50, raw=0.30, prior=0.35,
+                   weight=0.8, alpha=15.0, beta=35.0)
+    assert spots_to_confirm(est, 0.40, "high") is None
+
+
+def test_spots_to_confirm_gives_a_number_for_a_thin_real_leak(synth_profile):
+    """A leak that already clears the trigger but is too thin to confirm gets
+    a finite spot count; one that has already cleared MIN_CONFIDENCE needs no
+    more."""
+    thin = find_leaks(synth_profile("overfolder", regime="hu", opps=13),
+                      min_confidence=0.55)
+    watch = [l for l in thin if l.confidence < MIN_CONFIDENCE]
+    assert watch
+    assert all(l.confirms_in is not None and l.confirms_in > 0 for l in watch)
+
+    confirmed = find_leaks(synth_profile("overfolder", regime="hu", opps=150))
+    assert confirmed
+    assert all(l.confirms_in == 0 for l in confirmed)
 
 
 # -- skill ------------------------------------------------------------------

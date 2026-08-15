@@ -65,6 +65,12 @@ from .profile import PROFILE_FEATURES, Profile
 #: archetype would make the scores incomparable.
 IMPORTANCE = {
     "vpip": 2.0, "pfr": 1.3, "raise_share": 2.6, "three_bet": 2.2, "fold_to_three_bet": 0.9,
+    # fold_vs_bet:river's 3.4 was flagged as tuned on four players and
+    # deciding 89% of one player's entire margin -- worth re-checking, not
+    # worth trusting on sight. Swept 0.8-3.4 against villain.validate: log
+    # loss improves monotonically up to ~3.0 and is flat within noise from
+    # 2.4 on, accuracy plateaus at its current value from 2.4 on. 3.4 is a
+    # defensible point on that curve, not an outlier to fix.
     "fold_vs_bet:flop": 1.4, "fold_vs_bet:turn": 1.6, "fold_vs_bet:river": 3.4,
     "fold_to_cbet:flop": 1.2, "fold_to_cbet:turn": 1.0,
     "aggression:flop": 1.4, "aggression:turn": 1.4, "aggression:river": 1.2,
@@ -146,9 +152,15 @@ ARCHETYPES: list[Archetype] = [
         "strong hands so they keep firing into them. Never bluff and never "
         "raise as a bluff: that is the one part of their game already "
         "working. Expect variance; the money arrives in lumps.",
+        # maniac used to differ from lag only in degree -- same shape, turned
+        # up -- which put them 1.9 nats apart and made maniac the thing lag
+        # collapses into once the volume numbers run hot. The kind of
+        # difference is whether the aggression works: lag's wwsf is positive,
+        # so give maniac the mirror image. They get to showdown more (wtsd)
+        # and win it less (wsd) -- the same shove, aimed worse.
         {"raise_share": +0.5, "vpip": +1.6, "pfr": +1.8, "three_bet": +1.8, "cbet:flop": +1.3,
          "cbet:turn": +1.3, "aggression:flop": +1.7, "aggression:turn": +1.7,
-         "aggression:river": +1.5, "wtsd": +0.4},
+         "aggression:river": +1.5, "wtsd": +0.4, "wwsf": -0.6, "wsd": -0.7},
     ),
     Archetype(
         "lag",
@@ -270,18 +282,23 @@ DISCIPLINE = {
 }
 DISCIPLINE_SPREAD = 0.035
 
-#: Measured but *not* wired into :func:`match` yet, and the reason is worth
-#: recording. The signal is real -- on players with known labels it separates
-#: cleanly where no single frequency does -- but the penalty it produces is
-#: about half a nat, against archetype margins many times that, so it changes
-#: nothing at a defensible weight. Turned up far enough to move those players
-#: it stops the prototypes recovering their own frequencies, which is the test
-#: that guards against exactly this kind of forcing.
+#: Wired into :func:`match` as an independent Gaussian term over
+#: :meth:`Profile.fold_accuracy`, added after the correlation discount rather
+#: than inside it -- it is not one of the correlated frequency features, so
+#: discounting it alongside them would be double-counting the discount rather
+#: than the evidence.
 #:
-#: The next honest step is not a bigger weight. It is to score it through
-#: villain.validate, which can say whether the term helps on hands the matcher
-#: has not seen, rather than whether it moves six players somebody labelled.
-DISCIPLINE_WEIGHT = 2.4
+#: Chosen by sweeping against villain.validate rather than the six labels, the
+#: same standard CORRELATION_DISCOUNT was set by. Calibration error bottoms
+#: out near 0.4 (0.041 -> 0.012), but every weight above 0.2 fails the
+#: recovery test below: maniac's own trait vector implies a near-population
+#: fold_vs_bet (it names no fold feature), while its measured DISCIPLINE entry
+#: is 0.12, so a strong-enough weight moves synthetic maniac onto lag before
+#: it moves any real player -- the exact forcing the guard exists to catch. At
+#: 0.2 calibration error is still 0.041 -> 0.014, three times better, at a
+#: smaller accuracy cost than 0.4 (0.556 vs 0.537) and with every prototype
+#: still recovering its own frequencies.
+DISCIPLINE_WEIGHT = 0.2
 
 #: Beta-Binomial concentration. Low values mean an archetype tolerates a wide
 #: band of frequencies; high values demand players hit the prototype exactly.
@@ -371,6 +388,8 @@ def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
             n = est.native_opps or est.opps
             observed.append((feature, est.raw * n, n))
 
+    fold_accuracy = profile.fold_accuracy()
+
     log_posterior = {}
     for arch in ARCHETYPES:
         total = 0.0
@@ -381,6 +400,14 @@ def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
         log_posterior[arch.name] = (
             CORRELATION_DISCOUNT * total + math.log(POPULATION_MIX.get(arch.name, 0.05))
         )
+        # "Folds about right" is not expressible as a signed deviation -- see
+        # Profile.fold_accuracy. Scored separately from the correlated feature
+        # product above (so it is not discounted alongside them) and kept at a
+        # weight that cannot on its own move a player the features disagree
+        # with; see DISCIPLINE_WEIGHT.
+        if fold_accuracy is not None and arch.name in DISCIPLINE:
+            log_posterior[arch.name] += DISCIPLINE_WEIGHT * _log_gaussian(
+                fold_accuracy, DISCIPLINE[arch.name], DISCIPLINE_SPREAD)
 
     if not log_posterior:
         return "unknown", 0.0, []
@@ -410,6 +437,14 @@ def _log_beta_binomial(hits: float, opps: float, mean: float,
 
 def _log_beta(a: float, b: float) -> float:
     return math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+
+
+def _log_gaussian(value: float, mean: float, spread: float) -> float:
+    """Unnormalised log density -- the normaliser is the same for every
+    archetype (fixed ``spread``) so dropping it changes nothing about which
+    archetype wins."""
+    z = (value - mean) / spread
+    return -0.5 * z * z
 
 
 def describe(name: str) -> Archetype | None:

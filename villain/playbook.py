@@ -766,6 +766,31 @@ COMBINATIONS: tuple[Combination, ...] = (
         "They call flops instantly with weak-but-live hands and then fold "
         "turns too often. Barrel every turn after a flop snap-call.",
     ),
+    # The flop and later-street stickiness rules each price their own street
+    # in isolation, but the leaks are not independent: a player who calls too
+    # wide on the flop carries that width forward, so the hand that reaches
+    # the turn or river is a wider, weaker range than the turn/river numbers
+    # alone say it is. Pricing only the later street prices the consequence
+    # and not the cause -- the flop leak is why the later one is bigger than
+    # it looks.
+    Combination(
+        frozenset({"station_flop", "station_turn"}),
+        "Their flop calls are dragging a wide range into the turn",
+        "They will not fold either street, and the flop call is the reason "
+        "the turn one is so wide -- hands that should have died on the flop "
+        "are still in in showing up on the turn. Value bet both streets for "
+        "real money, not just the turn in isolation: the flop bet is what "
+        "sets up the wider turn range you are then getting paid by.",
+    ),
+    Combination(
+        frozenset({"station_flop", "station_river"}),
+        "A range this sticky on the flop never really thins out",
+        "They call flops too wide and rivers too wide, which is the same leak "
+        "showing up twice: their range from the flop never actually narrows "
+        "the way a normal calling range does. Bet every made hand on both "
+        "streets and size up on the river -- the hands that get there are "
+        "weaker than a river-only read would suggest.",
+    ),
 )
 
 

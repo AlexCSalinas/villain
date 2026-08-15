@@ -9,6 +9,9 @@
     villain ui                       open the local web interface
     villain fit                      re-estimate priors from your own games
     villain rebuild                  recompute every profile from stored hands
+    villain validate                 score the classifier on hands it has not seen
+    villain backtest                 walk leaks forward: found early, checked late
+    villain hero                     what only your own hand history can show
 """
 
 from __future__ import annotations
@@ -73,6 +76,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("rebuild", help="recompute all profiles from stored hands")
     sub.add_parser("validate", help="score the classifier on hands it has not seen")
+    sub.add_parser("backtest", help="walk leaks forward: found early, checked late")
+
+    p = sub.add_parser("hero", help="what only your own hand history can show")
+    p.add_argument("--player", help="hero's id or name, if auto-detection picks wrong")
 
     p = sub.add_parser("ui", help="serve the local web interface")
     p.add_argument("--port", type=int, default=8766)
@@ -275,7 +282,10 @@ def _cmd_fit(args) -> int:
             print(f"  {exc}")
 
         print("hand strength")
-        rows = build_dataset(store.stored_hands())
+        # player_hands(), not stored_hands(): the model's residuals are keyed
+        # by player id, and stored_hands() deliberately keeps raw site
+        # account ids, which never match store.players() ids at lookup time.
+        rows = build_dataset(store.player_hands())
         try:
             strength = fit_strength(rows)
             print(f"  trained on {strength.rows} revealed decisions "
@@ -302,6 +312,59 @@ def _cmd_validate(args) -> int:
           "  the calibration error. Halves agreeing is reproducibility, not\n"
           "  correctness -- a player can be labelled the same way twice and be\n"
           "  wrong both times.")
+    return 0
+
+
+def _cmd_backtest(args) -> int:
+    from .backtest import score
+    with Store(args.db) as store:
+        result = score(store)
+    if result is None:
+        print("Not enough hands on any player to walk forward. Import more first.")
+        return 1
+    print(result)
+    return 0
+
+
+def _cmd_hero(args) -> int:
+    from .hero import (FoldReport, MissedValueReport, NotEnoughData, fit_population_model,
+                       fold_grades, find_hero, hero_visibility, missed_value,
+                       preflop_range, range_narrowing, sizing_tell, timing_tell)
+    from .report import hero_card
+
+    with Store(args.db) as store:
+        if args.player:
+            matches = store.find_player(args.player)
+            if len(matches) != 1:
+                print(f"Need exactly one match for {args.player!r}.", file=sys.stderr)
+                return 1
+            hero_id = int(matches[0]["id"])
+        else:
+            hero_id = find_hero(store)
+        if hero_id is None:
+            print("Could not identify hero automatically -- no player has cards "
+                  "known on enough of their own hands. Pass --player to name one.",
+                  file=sys.stderr)
+            return 1
+
+        row = next(r for r in store.players() if int(r["id"]) == hero_id)
+        hero_hands = store.player_hands(hero_id)
+        ranges = preflop_range(hero_hands, hero_id)
+        try:
+            model = fit_population_model(store)
+            report = fold_grades(hero_hands, hero_id, model)
+            missed_report = missed_value(hero_hands, hero_id, model)
+        except NotEnoughData as exc:
+            print(f"{exc}\n(showing the preflop range only)", file=sys.stderr)
+            report, missed_report = FoldReport(grades=[]), MissedValueReport(grades=[])
+        sizing = sizing_tell(hero_hands, hero_id)
+        timing = timing_tell(hero_hands, hero_id)
+        narrowing = range_narrowing(hero_hands, hero_id)
+
+        seen, total = hero_visibility(hero_hands, hero_id)
+        visibility = seen / total if total else 0.0
+        print(hero_card(row["display_name"], visibility, row["hands"] or 0, ranges,
+                        report, missed_report, sizing, timing, narrowing))
     return 0
 
 

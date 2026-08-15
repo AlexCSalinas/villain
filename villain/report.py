@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from .analyze import enrich
 from .archetypes import ARCHETYPE_BY_NAME, deviations
+from .model import STREET_LABELS
 from .playbook import combinations_for
 from .profile import Profile
 
@@ -83,8 +84,12 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
     if watch:
         out.append("  not confirmed yet")
         for leak in watch:
+            if leak.confirms_in is None:
+                confirm = "may never confirm at this rate"
+            else:
+                confirm = f"confirms in ~{leak.confirms_in} more"
             out.append(f"    {leak.headline}  ({leak.confidence:.0%} sure, "
-                       f"n={leak.opps:.0f})")
+                       f"n={leak.opps:.0f}, {confirm})")
             for line in _wrap(leak.in_words, WIDTH - 6):
                 out.append(f"      {line}")
         out.append("")
@@ -172,6 +177,128 @@ def roster(profiles: list[Profile]) -> str:
             f"{p.archetype:11s} {p.skill.score:5.0f}/100  "
             f"{p.skill.exploitability:6.1f}bb/100  {top[:28]}")
     return "\n".join(rows)
+
+
+def hero_card(name: str, visibility: float, hands: int, ranges: dict, fold_report,
+             missed_report, sizing, timing, narrowing: list) -> str:
+    """Everything only hero's own hand history can show -- a counted preflop
+    range, postflop folds and checks graded against what that line usually
+    represents in this database, whether hero's own bet sizing or timing is
+    a tell, and whether hero's continuing range actually narrows street by
+    street. See :mod:`villain.hero`."""
+    from .hero import POSITION_ORDER
+
+    out: list[str] = [RULE, f"{name}  --  hero, cards known {visibility:.1%} of {hands} hands", ""]
+
+    out.append("PREFLOP RANGE  (counted directly from every hand you were dealt, not modelled)")
+    positions = sorted(ranges.values(), key=lambda p: POSITION_ORDER.get(p.position, 99))
+    for pos in positions:
+        if not pos.hands:
+            continue
+        raised, called, checked, folded = (100 * n / pos.hands for n in
+            (pos.raised, pos.called, pos.checked, pos.folded))
+        out.append(f"    {pos.position:5s} {pos.hands:4d} hands   "
+                   f"raised {raised:4.0f}%  called {called:4.0f}%  "
+                   f"checked {checked:4.0f}%  folded {folded:4.0f}%")
+    out.append("")
+
+    # Every number from here down is a percentile -- stated once here rather
+    # than left for the reader to infer from a bare number.
+    out.append("(Numbers below: percentiles -- the share of hands on that board yours beats.)")
+    out.append("")
+
+    out.append("FOLD GRADES  (postflop folds, graded against what a bet like that one usually is)")
+    if not fold_report.graded:
+        out.append("  Not enough postflop folds with a clean line to grade yet.")
+    else:
+        out.append(f"    {fold_report.graded} folds graded, {len(fold_report.mistakes)} "
+                   f"({fold_report.mistake_rate:.1%}) had more edge than the bet typically shows")
+        by_street = fold_report.by_street()
+        if by_street:
+            parts = [f"{STREET_LABELS.get(s, s)} {m / n:.1%}"
+                     for s, (m, n) in sorted(by_street.items())]
+            out.append(f"    by street:   {'   '.join(parts)}")
+        by_texture = fold_report.by_texture()
+        if by_texture:
+            parts = [f"{t} {m / n:.1%}" for t, (m, n) in sorted(by_texture.items())]
+            out.append(f"    by texture:  {'   '.join(parts)}")
+        worst = fold_report.worst()
+        if worst:
+            out.append("    worst folds:")
+            for i, g in enumerate(worst, 1):
+                cards = "".join(g.hole_cards)
+                out.append(f"      {i}. {STREET_LABELS.get(g.street, g.street):6s} {cards}  "
+                          f"[hand {g.hand_id}]")
+                for line in _wrap(g.in_words, WIDTH - 10):
+                    out.append(f"         {line}")
+    out.append("")
+
+    out.append("MISSED VALUE  (postflop checks, graded against what a check like that usually is)")
+    if not missed_report.graded:
+        out.append("  Not enough postflop checks with a clean line to grade yet.")
+    else:
+        out.append(f"    {missed_report.graded} checks graded, {len(missed_report.missed)} "
+                   f"({missed_report.missed_rate:.1%}) had more edge than the check typically shows")
+        by_street = missed_report.by_street()
+        if by_street:
+            parts = [f"{STREET_LABELS.get(s, s)} {m / n:.1%}"
+                     for s, (m, n) in sorted(by_street.items())]
+            out.append(f"    by street:   {'   '.join(parts)}")
+        by_texture = missed_report.by_texture()
+        if by_texture:
+            parts = [f"{t} {m / n:.1%}" for t, (m, n) in sorted(by_texture.items())]
+            out.append(f"    by texture:  {'   '.join(parts)}")
+        worst = missed_report.worst()
+        if worst:
+            out.append("    worst checks:")
+            for i, g in enumerate(worst, 1):
+                cards = "".join(g.hole_cards)
+                out.append(f"      {i}. {STREET_LABELS.get(g.street, g.street):6s} {cards}  "
+                          f"[hand {g.hand_id}]")
+                for line in _wrap(g.in_words, WIDTH - 10):
+                    out.append(f"         {line}")
+    out.append("")
+
+    out.append("SIZING TELL  (does your bet size change with the hand behind it?)")
+    any_row = False
+    for street in sorted(sizing.by_street):
+        strong, weak = sizing.by_street[street]
+        if not strong.hands and not weak.hands:
+            continue
+        any_row = True
+        for line in _wrap(sizing.describe(street), WIDTH - 4):
+            out.append(f"    {line}")
+    if not any_row:
+        out.append("  Not enough postflop bets or raises with a clean line to compare yet.")
+    out.append("")
+
+    out.append("TIMING TELL  (does your think time change with the hand behind it?)")
+    any_row = False
+    for street in sorted(timing.by_street):
+        strong, weak = timing.by_street[street]
+        if not strong.hands and not weak.hands:
+            continue
+        any_row = True
+        for line in _wrap(timing.describe(street), WIDTH - 4):
+            out.append(f"    {line}")
+    if not any_row:
+        out.append("  Not enough postflop bets or raises with a clean line to compare yet.")
+    out.append("")
+
+    out.append("RANGE NARROWING  (average hand strength among hands still live, by street)")
+    if not narrowing:
+        out.append("  Not enough hands reaching each street yet.")
+    else:
+        parts = [f"{STREET_LABELS.get(s.street, s.street)} {s.avg_strength:.0%} ({s.hands})"
+                 for s in sorted(narrowing, key=lambda s: s.street)]
+        out.append(f"    {'   '.join(parts)}")
+        strengths = [s.avg_strength for s in sorted(narrowing, key=lambda s: s.street)]
+        if len(strengths) >= 2 and all(b >= a for a, b in zip(strengths, strengths[1:])):
+            out.append("    Narrows street by street, as a continuing range should.")
+        elif len(strengths) >= 2:
+            out.append("    Does not narrow monotonically -- worth a look at which street gives it back.")
+    out.append(RULE)
+    return "\n".join(out)
 
 
 def _wrap(text: str, width: int) -> list[str]:

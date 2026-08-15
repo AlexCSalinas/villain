@@ -67,14 +67,22 @@ class Row:
     action: str
 
 
+#: (player_id, street, action) -- a residual pooled across every line a
+#: player takes averages away the signal along with the noise: someone who
+#: over-bluffs the river and under-bluffs the flop pools to roughly zero.
+#: Split this way, on a real database 19 street x action cells across 11
+#: players clear the reporting bar where the pooled version found 2 of 30.
+Line = tuple[str, int, str]
+
+
 @dataclass
 class StrengthModel:
-    """Population model plus per-player residuals."""
+    """Population model plus residuals split by player and by line."""
 
     rows: int = 0
     unbiased_rows: int = 0
     mae: float | None = None
-    residuals: dict[str, tuple[float, float]] = field(default_factory=dict)
+    residuals: dict[Line, tuple[float, float]] = field(default_factory=dict)
     _model: object | None = None
 
     def predict(self, features: list[float]) -> float:
@@ -82,20 +90,31 @@ class StrengthModel:
             return 0.5
         return float(np.clip(self._model.predict(np.array(features)[None, :])[0], 0.0, 1.0))
 
-    def offset(self, player_id: str) -> tuple[float, float]:
-        """(shrunk residual, rows). Negative means weaker than the field."""
-        return self.residuals.get(player_id, (0.0, 0.0))
+    def offset(self, player_id: str, street: int, action: str) -> tuple[float, float]:
+        """(shrunk residual, rows) for one player on one street x action cell.
+
+        Negative means weaker than the field.
+        """
+        return self.residuals.get((player_id, street, action), (0.0, 0.0))
+
+    def lines(self, player_id: str) -> list[tuple[int, str, float, float]]:
+        """Every (street, action, offset, rows) cell recorded for one player."""
+        return [(street, action, offset, n)
+                for (pid, street, action), (offset, n) in self.residuals.items()
+                if pid == player_id]
 
     def read(self, player_id: str) -> str | None:
-        offset, n = self.offset(player_id)
-        if n < 6 or abs(offset) < 0.06:
+        """The single most telling line for this player, if any clears the bar."""
+        candidates = [c for c in self.lines(player_id) if c[3] >= 6 and abs(c[2]) >= 0.06]
+        if not candidates:
             return None
+        street, action, offset, n = max(candidates, key=lambda c: abs(c[2]))
         direction = "weaker" if offset < 0 else "stronger"
         advice = ("call them down wider" if offset < 0
                   else "give their bets more credit")
-        return (f"shows up {abs(offset) * 100:.0f} percentile points {direction} "
-                f"than the field on the lines they take ({n:.0f} revealed hands) "
-                f"-- {advice}")
+        return (f"on {Street(street).name.lower()} {action}s, shows up "
+                f"{abs(offset) * 100:.0f} percentile points {direction} than the "
+                f"field ({n:.0f} revealed hands) -- {advice}")
 
 
 class NotEnoughData(ValueError):
@@ -113,7 +132,7 @@ def build_dataset(hands: list[Hand]) -> list[Row]:
         known = {s.seat: s for s in hand.seats if len(s.hole_cards) == 2}
         if not known:
             continue
-        strengths = _strength_by_street(hand, known)
+        strengths = strength_by_street(hand, known)
         for decision in view.decisions():
             seat = known.get(decision.seat)
             if seat is None or decision.street is Street.PREFLOP:
@@ -124,9 +143,16 @@ def build_dataset(hands: list[Hand]) -> list[Row]:
             if strength is None:
                 continue
             act = decision.action.act
+            # Cards visible even when the hand did not go to showdown means
+            # this row is not selected on the outcome. Fed to the model as a
+            # feature, not just recorded on the row -- otherwise the baseline
+            # blends the exporting player's unbiased rows with everyone
+            # else's showdown-selected ones as if they were one population.
+            unbiased = seat.seat not in showdown
             rows.append(Row(
                 player_id=seat.player_id,
                 features=[
+                    float(unbiased),
                     float(decision.street),
                     float(act is Act.BET), float(act is Act.RAISE),
                     float(act is Act.CALL), float(act is Act.CHECK),
@@ -136,12 +162,10 @@ def build_dataset(hands: list[Hand]) -> list[Row]:
                     decision.action.pot_before / hand.big_blind,
                     min((decision.action.think_ms or 0) / 1000.0, 60.0),
                     float(decision.players_in),
-                    *_texture(hand.board_at(decision.street)),
+                    *texture(hand.board_at(decision.street)),
                 ],
                 strength=strength,
-                # Cards visible even when the hand did not go to showdown means
-                # this row is not selected on the outcome.
-                unbiased=seat.seat not in showdown,
+                unbiased=unbiased,
                 street=int(decision.street),
                 action=act.name.lower(),
             ))
@@ -169,28 +193,35 @@ def fit(rows: list[Row], random_state: int = 0) -> StrengthModel:
     out_of_fold = cross_val_predict(model, x, y, cv=min(5, max(2, len(rows) // 60)))
     model.fit(x, y)
 
-    residuals: dict[str, list[float]] = {}
+    residuals: dict[Line, list[float]] = {}
     for row, predicted in zip(rows, out_of_fold):
-        residuals.setdefault(row.player_id, []).append(row.strength - predicted)
+        key = (row.player_id, row.street, row.action)
+        residuals.setdefault(key, []).append(row.strength - predicted)
 
     fitted = StrengthModel(
         rows=len(rows),
         unbiased_rows=sum(1 for r in rows if r.unbiased),
         mae=float(np.mean(np.abs(y - out_of_fold))),
         residuals={
-            pid: (float(np.sum(values) / (len(values) + RESIDUAL_PRIOR)), float(len(values)))
-            for pid, values in residuals.items()
+            key: (float(np.sum(values) / (len(values) + RESIDUAL_PRIOR)), float(len(values)))
+            for key, values in residuals.items()
         },
     )
     fitted._model = model
     return fitted
 
 
-def _strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], float]:
+def strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], float]:
     """Percentile of each known hand on each street it was live for.
 
     Measured against every holding the board allows, because "top pair" means
     something different on a dry board than on a four-flush one.
+
+    Public because :mod:`villain.hero` needs the same calculation for hero's
+    folds, which this module's own dataset deliberately excludes ("a folded
+    hand has no strength worth predicting" is true when the strength has to
+    be inferred from betting patterns; it is false when the hand is already
+    known).
     """
     out: dict[tuple[int, Street], float] = {}
     for street in (Street.FLOP, Street.TURN, Street.RIVER):
@@ -198,9 +229,14 @@ def _strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], flo
         if len(board) < 3 or not hand.reached(street):
             continue
         board_ids = card_ids(board).astype(np.int64)
-        live = [c for c in range(52) if c not in set(board_ids.tolist())]
-        combos = np.array([(a, b) for i, a in enumerate(live) for b in live[i + 1:]],
-                          dtype=np.int64)
+        # Vectorised, not a Python double loop over ~45-49 cards: that loop
+        # ran once per street per hand -- tens of thousands of times over a
+        # real database -- and was most of build_dataset's cost.
+        mask = np.ones(52, dtype=bool)
+        mask[board_ids] = False
+        live = np.nonzero(mask)[0]
+        i, j = np.triu_indices(len(live), k=1)
+        combos = np.stack([live[i], live[j]], axis=1).astype(np.int64)
         seven = np.concatenate(
             [combos, np.repeat(board_ids[None, :], len(combos), axis=0)], axis=1)
         universe = np.sort(evaluate(seven))
@@ -214,7 +250,7 @@ def _strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], flo
     return out
 
 
-def _texture(board: list[str]) -> tuple[float, float, float, float]:
+def texture(board: list[str]) -> tuple[float, float, float, float]:
     """Paired, suited, connected, high -- the four things that change ranges."""
     if len(board) < 3:
         return (0.0, 0.0, 0.0, 0.0)
