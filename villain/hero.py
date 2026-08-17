@@ -39,10 +39,18 @@ All of these use the same building block :func:`villain.reads.strength_by_street
 already computes for the population model. This module points it at hero
 specifically, including the folds, the checks, and the sizing the population
 model has no way to see.
+
+Everything above needs one fact first: which of the seats is hero's.
+:func:`find_hero` answers it for a database, from the same visibility that
+makes the rest of this module possible. :func:`hero_of` answers it for a list
+of hands, which is what the statistics and the evidence behind them are
+extracted from, before anything has been saved -- and prefers the export's own
+word for it where a site gives one.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 from .model import Act, Street, STREET_LABELS
@@ -100,6 +108,67 @@ def find_hero(store, min_hands: int = MIN_HERO_HANDS) -> int | None:
         if frac > best_frac:
             best, best_frac = pid, frac
     return best if best_frac >= HERO_VISIBILITY else None
+
+
+#: Hands the leader must hold *unshown* cards in before :func:`hero_of` will
+#: name them, and how far clear of the runner-up.
+#:
+#: Far below :data:`MIN_HERO_HANDS` on purpose, because it is a different
+#: question asked of a different sample. :func:`find_hero` searches a whole
+#: database, where a hundred hands is cheap and a villain who showed a few
+#: must not win; this runs over one import, which is often exactly one
+#: session. It can afford the smaller floor because it counts a stricter
+#: signal -- cards visible *without having been shown*, rather than cards
+#: visible at all -- so a villain who turned every hand face up at showdown
+#: contributes nothing to it.
+MIN_UNBIASED = 5
+MARGIN_UNBIASED = 3.0
+
+
+def hero_of(hands) -> str | None:
+    """Which player id in ``hands`` is hero, or ``None`` if it is not clear.
+
+    The hand-list counterpart of :func:`find_hero`, for the callers that have
+    no store to search: statistics are extracted from a list of hands, and so
+    is the evidence behind them, both before anything has been saved.
+
+    Two signals, best first. Sites that name the exporter in the export are
+    believed outright -- the parser records that as :attr:`Hand.hero_seat`,
+    and PokerNow gives it. Failing that, and for hands stored before the field
+    existed, it falls back to the same reasoning :func:`find_hero` uses: an
+    export shows you your own cards on every hand you were dealt and shows you
+    everybody else's only when they were turned face up at the end.
+
+    Resolved from the seat rather than from a stored account id, so the answer
+    follows a player through renames and merges: ``rebuild`` re-keys every
+    seat onto an internal player id and this returns whatever that seat holds
+    now.
+
+    Returns ``None`` rather than guessing. A wrong answer here does not fail
+    loudly -- it quietly relabels one opponent's decisions as your own.
+    """
+    hands = list(hands)
+    stated = Counter(
+        hand.seat(hand.hero_seat).player_id
+        for hand in hands
+        if hand.hero_seat is not None
+        and any(s.seat == hand.hero_seat for s in hand.seats)
+    )
+    if stated:
+        return stated.most_common(1)[0][0]
+
+    unbiased: Counter[str] = Counter()
+    for hand in hands:
+        for seat in hand.seats:
+            if len(seat.hole_cards) == 2 and not seat.showed:
+                unbiased[seat.player_id] += 1
+    if not unbiased:
+        return None
+    (leader, count), = unbiased.most_common(1)
+    if count < MIN_UNBIASED:
+        return None
+    runner_up = max((n for p, n in unbiased.items() if p != leader), default=0)
+    return leader if count >= MARGIN_UNBIASED * max(runner_up, 1) else None
 
 
 def hand_class(hole_cards: tuple[str, ...]) -> str:

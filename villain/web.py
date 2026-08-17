@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, urlparse
 from .analyze import as_dict, enrich
 from .archetypes import ARCHETYPE_BY_NAME, deviations
 from .db import DEFAULT_PATH, Store, split_key
+from .dynamics import adjustments
 from .exploits import RULES, find_watchlist
 from .features import record_hands
 from .evidence import find as find_evidence
@@ -53,6 +54,7 @@ from .narrate import Unavailable, enabled as narrator_enabled, narrate
 from .parsers import UnknownFormat, parse_file
 from .priors import population_mean
 from .profile import build_profiles, build_unified, primary_regime
+from .stats import VS_HERO
 from .timing import timing_tells
 from .replay import replay
 
@@ -368,7 +370,14 @@ def session_payload(token: str, store: Store | None = None) -> dict:
         if store is not None and by_regime:
             fitted = store.fitted_priors(primary_regime(by_regime))
             priors = fitted or None
-        return build_unified(by_regime, priors=priors)
+        profile = build_unified(by_regime, priors=priors)
+        if profile is not None:
+            # Store.profile attaches these for saved players; an uploaded
+            # session has no store to do it, and a preview that silently drops
+            # a section the same hands produce once saved is a preview of
+            # something else.
+            profile.adjustments = adjustments(by_regime, priors=priors)
+        return profile
 
     profiles = [p for p in (_unified(by_regime) for by_regime in books.values())
                 if p is not None]
@@ -954,9 +963,26 @@ class Handler(BaseHTTPRequestHandler):
                 # glossary's own high/low readings -- a number without a
                 # reading is the thing this whole tool exists to avoid.
                 reading, rate, pop = "", None, None
+                against = "the field"
                 with Store(self.db_path) as store:
                     prof = store.profile(player_id)
-                if prof is not None and prof.stats.get(stat) is not None:
+                if prof is None:
+                    pass
+                elif stat.startswith(VS_HERO):
+                    # An against-you slice is not among the shrunk stats and
+                    # has no population -- there is no field frequency for
+                    # "folds to that guy". What it is read against is the
+                    # player's own baseline, so that is what the verdict
+                    # compares it with, and it says which.
+                    parent = stat[len(VS_HERO):]
+                    match = next((a for a in prof.adjustments
+                                  if a.stat == parent), None)
+                    against = "everyone else"
+                    if match is not None:
+                        rate, pop = match.versus, match.baseline
+                        entry = stat_help(parent) or {}
+                        reading = entry.get("high" if rate >= pop else "low", "")
+                elif prof.stats.get(stat) is not None:
                     rate = prof.stats[stat].value
                     pop = prof.population(stat)
                     entry = stat_help(stat) or {}
@@ -965,6 +991,7 @@ class Handler(BaseHTTPRequestHandler):
                     "stat": stat, "count": len(found), "hits": len(hits),
                     "rate": None if rate is None else round(rate, 4),
                     "population": None if pop is None else round(pop, 4),
+                    "compared_to": against,
                     "reading": reading,
                     "shown_hits": sum(1 for e in shown if e.hit),
                     "hands": [vars(e) for e in shown],
@@ -1627,6 +1654,9 @@ PAGE = r"""<!doctype html>
   .flag:hover { background: var(--red); color: var(--panel); }
   .leak.watch { opacity: .82; }
   .leak.weakspots .metric { grid-template-columns: 1fr 150px 30px; }
+  /* Two bars to a row, the same length, so the shift is the thing you see
+     rather than something to be worked out from two percentages. */
+  .adjust .metric { grid-template-columns: 88px 1fr 40px; margin: 3px 0; }
   .timing-street { margin-top: 14px; }
   .timing-street .street-label {
     font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
@@ -2224,6 +2254,66 @@ function profileCard(p, opts) {
       <span class="tag">these compound</span></div>
       <div class="leak-advice">${esc(c.body)}</div>`;
     leakBox.appendChild(block);
+  }
+
+  // How they play *you*. Rendered only when there is something in it: most
+  // players against most opponents have no adjustment, and an empty panel
+  // takes a column off a screen that is meant to be read mid-hand.
+  const adjustments = p.adjustments || [];
+  if (adjustments.length) {
+    const adjBox = document.createElement("div");
+    adjBox.className = "panel adjust";
+    adjBox.innerHTML = `<div class="spread"><div class="headline">
+        <h2 style="margin:0">Against You</h2></div></div>
+      <div class="small muted" style="margin:-6px 0 12px">
+        Measured against how they play everybody else, not against the
+        field.</div>`;
+    // Inside .headline rather than after the h2: .spread grows its first
+    // child, so a mark placed as the second one lands against the far edge.
+    $(".headline", adjBox).appendChild(info(termTip("adjustment")));
+    for (const a of adjustments) {
+      const div = document.createElement("div");
+      div.className = "leak";
+      div.innerHTML = `
+        <div class="leak-head">
+          <div class="headline"><b>${esc(a.behaviour)}</b></div>
+          <div class="num small muted">${fmtPct(Math.min(a.confidence, 0.99))} sure</div>
+        </div>
+        <div class="small muted numbers"></div>`;
+      for (const [label, value, color, term] of [
+            ["against you", a.versus, "var(--mark-3)", "against you"],
+            ["otherwise", a.baseline, "var(--mark-1)", "otherwise"]]) {
+        const row = document.createElement("div");
+        row.className = "metric";
+        const name = document.createElement("span");
+        name.className = "small"; name.textContent = label;
+        const val = document.createElement("span");
+        val.className = "small muted"; val.style.textAlign = "right";
+        val.textContent = fmtPct(value);
+        row.append(name, bar(value, 1, color, 150), val);
+        bindTip(row, termTip(term));
+        div.insertBefore(row, $(".numbers", div));
+      }
+      const numbers = $(".numbers", div);
+      const seen = `${Math.round(a.sample)} against you`;
+      if (p.player_id != null) {
+        // Opens on the against-you slice rather than its parent, so the hands
+        // shown are the ones the read is actually about.
+        const link = document.createElement("button");
+        link.className = "linkbtn";
+        link.textContent = seen;
+        link.title = "show the hands behind this";
+        link.onclick = () => showEvidence(p.player_id, a.evidence_stat, a.behaviour);
+        numbers.appendChild(link);
+      } else {
+        numbers.appendChild(document.createTextNode(seen));
+      }
+      numbers.appendChild(document.createTextNode(
+        ` · ${Math.round(a.baseline_sample)} against everybody else`));
+      numbers.appendChild(info(statTip(a.stat, a.behaviour)));
+      adjBox.appendChild(div);
+    }
+    cols.appendChild(adjBox);
   }
 
   if (opts.narrate) {
@@ -3119,13 +3209,19 @@ function evidenceVerdict(d) {
   const rate = d.rate != null ? d.rate : d.hits / d.count;
   const pop = d.population;
   const pct = Math.round(rate * 100);
+  const against = d.compared_to || "the field";
   let scale;
   if (d.hits === 0) scale = "never";
   else if (rate < 0.02) scale = "almost never";
-  else if (pop != null && rate > pop * 1.35) scale = "far more than the field";
-  else if (pop != null && rate < pop * 0.65) scale = "far less than the field";
-  else scale = "about as often as the field";
-  const head = `${d.hits} of ${d.count} \u2014 ${pct}%, ${scale}.`;
+  // Without something to compare against, say the rate and stop. Claiming it
+  // is "about as often as the field" when no field frequency was involved
+  // describes a comparison that never happened.
+  else if (pop == null) scale = "";
+  else if (rate > pop * 1.35) scale = `far more than ${against}`;
+  else if (rate < pop * 0.65) scale = `far less than ${against}`;
+  else scale = `about as often as ${against}`;
+  const head = scale ? `${d.hits} of ${d.count} \u2014 ${pct}%, ${scale}.`
+                     : `${d.hits} of ${d.count} \u2014 ${pct}%.`;
   return d.reading ? `${head} ${d.reading}` : head;
 }
 

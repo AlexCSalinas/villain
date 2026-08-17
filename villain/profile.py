@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 
 from .priors import (CONTINUOUS, NEIGHBOURS, REGIME_LABELS, SHORT, Estimate, logit,
                      population_mean, prior_for, regime, shrink, sigmoid)
-from .stats import Meter, Ratio, StatBook
+from .stats import VS_HERO, Meter, Ratio, StatBook
 
 # The features that define a player, in the order clustering expects.
 PROFILE_FEATURES = [
@@ -71,6 +71,12 @@ class Profile:
     archetype_confidence: float = 0.0
     archetype_mix: list[tuple[str, float]] = field(default_factory=list)
     tags: list = field(default_factory=list)
+    #: Statistics on which this player treats you differently from everybody
+    #: else. Attached by whoever built the profile rather than derived here:
+    #: the against-you counters are deliberately not part of the shrunk stats
+    #: (they have no population to shrink toward), so they are read from the
+    #: books by :mod:`villain.dynamics` and hung here for the surfaces.
+    adjustments: list = field(default_factory=list)
     skill: object | None = None
     first_seen: int | None = None
     last_seen: int | None = None
@@ -184,7 +190,12 @@ def build_profile(book: StatBook, others: dict[str, StatBook] | None = None,
         return replace(est, native_opps=(native or {}).get(stat, opps))
 
     for stat, ratio in book.ratios.items():
-        if stat.startswith("seat:") or stat.startswith("saw:"):
+        # seat:/saw: are bookkeeping. vs: is left out for a different reason:
+        # shrinking it toward the field would measure "how he plays against
+        # you" against a population that has never played you. Its baseline is
+        # the player's own pooled rate, which is what the rest of this loop
+        # produces, so it is read separately once these estimates exist.
+        if stat.startswith(("seat:", "saw:", VS_HERO)):
             continue
         profile.stats[stat] = estimate(stat, ratio.hits, ratio.opps)
 
@@ -302,6 +313,8 @@ def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, in
 
     native: dict[str, float] = {}
     for stat, ratio in source.ratios.items():
+        if stat.startswith(VS_HERO):
+            continue      # see the translation loop below
         merged.ratios[stat].hits = ratio.hits
         merged.ratios[stat].opps = ratio.opps
         native[stat] = ratio.opps
@@ -312,7 +325,12 @@ def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, in
         if regime == home:
             continue
         for stat, ratio in book.ratios.items():
-            if ratio.opps <= 0:
+            # Translation re-expresses a rate against another table size's
+            # population. There is no population for a vs: counter, so pooling
+            # it across regimes is a question for whoever reads it, not
+            # something to decide here by translating against a number that
+            # does not describe it.
+            if ratio.opps <= 0 or stat.startswith(VS_HERO):
                 continue
             translated = _translate_rate(stat, ratio, regime, home)
             weight = CROSS_REGIME_DISCOUNT * ratio.opps

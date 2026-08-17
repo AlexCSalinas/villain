@@ -187,6 +187,12 @@ class Hand:
     winners: list[int] = field(default_factory=list)
     run_count: int = 1               # 2 when the board was run twice
     flags: set[str] = field(default_factory=set)   # e.g. {"bomb_pot", "straddle"}
+    #: The seat the person who exported these hands was sitting in, when the
+    #: file says. A seat rather than an account id on purpose: ``rebuild``
+    #: re-keys every seat onto an internal player id, so an account recorded
+    #: here would go stale the first time two of them were merged. Seat numbers
+    #: are a fact about the hand and survive that. See :mod:`villain.hero`.
+    hero_seat: int | None = None
 
     # -- lookups ---------------------------------------------------------
     def seat(self, seat: int) -> Seat:
@@ -255,7 +261,7 @@ def hand_to_dict(hand: Hand) -> dict:
         "small_blind": hand.small_blind, "ante": hand.ante, "game": hand.game,
         "unit": hand.unit, "board": hand.board, "pot": hand.pot, "rake": hand.rake,
         "winners": hand.winners, "run_count": hand.run_count,
-        "flags": sorted(hand.flags),
+        "flags": sorted(hand.flags), "hero_seat": hand.hero_seat,
         "seats": [
             {"seat": s.seat, "player_id": s.player_id, "name": s.name, "stack": s.stack,
              "position": s.position, "hole_cards": list(s.hole_cards),
@@ -282,6 +288,7 @@ def hand_from_dict(data: dict) -> Hand:
         board=list(data.get("board", [])), pot=data.get("pot", 0),
         rake=data.get("rake", 0), winners=list(data.get("winners", [])),
         run_count=data.get("run_count", 1), flags=set(data.get("flags", [])),
+        hero_seat=data.get("hero_seat"),
     )
     hand.seats = [
         Seat(seat=s["seat"], player_id=s["player_id"], name=s["name"], stack=s["stack"],

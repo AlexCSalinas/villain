@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .features import _pace_thresholds, _think_pass, record_hand
+from .hero import hero_of
 from .model import Act, Hand, Street
 
 #: Which street a statistic is about, read off its name.
@@ -72,10 +73,15 @@ def find(hands: list[Hand], player_key: str, stat: str,
         for reg, book in by_regime.items():
             locks[(pid, reg)] = _pace_thresholds(book)
 
+    # Resolved over the whole list for the same reason the cutoffs are: one
+    # hand cannot say who exported it, and without the answer a vs: statistic
+    # would open onto an empty panel rather than the hands behind it.
+    hero = hero_of(hands)
+
     out: list[Evidence] = []
     for hand in hands:
         books: dict = {}
-        record_hand(hand, books, pace_locks=locks)
+        record_hand(hand, books, pace_locks=locks, hero=hero)
         by_regime = books.get(player_key)
         if not by_regime:
             continue

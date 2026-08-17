@@ -83,13 +83,17 @@ def sniff(path: Path) -> bool:
 def parse(path: Path) -> Iterator[Hand]:
     payload = json.loads(Path(path).read_text())
     table_id = payload.get("gameId") or Path(path).stem
+    # Whoever pressed the export button. PokerNow names them outright, which
+    # saves inferring it from whose cards are visible.
+    exporter = payload.get("playerId")
     for raw in payload.get("hands", []):
-        hand = _parse_hand(raw, table_id)
+        hand = _parse_hand(raw, table_id, exporter)
         if hand is not None:
             yield hand
 
 
-def _parse_hand(raw: dict[str, Any], table_id: str) -> Hand | None:
+def _parse_hand(raw: dict[str, Any], table_id: str,
+                exporter: str | None = None) -> Hand | None:
     players = raw.get("players") or []
     if len(players) < 2:
         return None   # a hand that never started
@@ -125,6 +129,9 @@ def _parse_hand(raw: dict[str, Any], table_id: str) -> Hand | None:
     hand.seats = seats
     by_seat = {s.seat: s for s in seats}
     hand.seats.sort(key=lambda s: s.seat)
+    if exporter is not None:
+        hand.hero_seat = next(
+            (s.seat for s in seats if s.player_id == str(exporter)), None)
 
     pos = positions_for([s.seat for s in seats], int(raw["dealerSeat"]))
     for s in seats:

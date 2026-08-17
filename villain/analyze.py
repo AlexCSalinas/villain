@@ -11,10 +11,11 @@ from __future__ import annotations
 from .archetypes import ARCHETYPE_BY_NAME, match
 from .exploits import find_leaks, find_watchlist
 from .glossary import (component_entry, component_help, component_reading,
-                       component_stats)
+                       component_stats, versus_behaviour)
 from .playbook import combinations_for
 from .profile import Profile
 from .skill import WEAK_COMPONENT, rate, weaknesses
+from .stats import VS_HERO
 
 #: Internal counters. They exist so aggression frequencies can be derived from
 #: raw action mixes; as standalone frequencies they mean nothing, so they are
@@ -97,6 +98,20 @@ def as_dict(profile: Profile) -> dict:
              "size": l.size, "priority": l.priority, "pressure": l.pressure,
              "in_words": l.in_words}
             for l in profile.tags
+        ],
+        # Where they treat you differently from everyone else. Never priced:
+        # what an adjustment is worth depends on how you were playing when
+        # they made it, which is not in the hand history.
+        "adjustments": [
+            {"stat": a.stat, "behaviour": versus_behaviour(a.stat),
+             # The counter the evidence panel opens on: the against-you slice,
+             # not its parent, so the hands shown are the ones being described.
+             "evidence_stat": VS_HERO + a.stat,
+             "versus": round(a.versus, 4), "baseline": round(a.baseline, 4),
+             "gap": round(a.gap, 4), "direction": a.direction,
+             "sample": a.opps, "baseline_sample": a.baseline_opps,
+             "confidence": round(a.confidence, 3)}
+            for a in getattr(profile, "adjustments", [])
         ],
         # Deviations that are probably real but not yet worth acting on.
         # Never priced: not confident enough to say what they are worth.

@@ -377,3 +377,99 @@ def test_range_narrowing_only_counts_streets_hero_actually_saw(stored):
         assert by_street[2] <= by_street[1]
     if 2 in by_street and 3 in by_street:
         assert by_street[3] <= by_street[2]
+
+
+# -- hero_of: the same question asked of a hand list --------------------------
+# Getting this wrong is silent. Nothing crashes; one opponent's decisions are
+# just relabelled as your own. So both routes to the answer are checked, along
+# with the refusal to guess when neither is clear.
+
+from dataclasses import replace                                     # noqa: E402
+
+from villain.hero import MIN_UNBIASED, hero_of                      # noqa: E402
+from villain.model import hand_from_dict, hand_to_dict              # noqa: E402
+
+EXPORTER = "1oC_kmhrYm"     # the ``playerId`` in the fixture export
+
+
+def _stripped(hands):
+    """The same hands with the export's own word for it removed."""
+    return [replace(hand_from_dict(hand_to_dict(h)), hero_seat=None) for h in hands]
+
+
+def test_parser_records_the_exporter_seat(hands):
+    seated = [h for h in hands if any(s.player_id == EXPORTER for s in h.seats)]
+    assert seated, "fixture should seat the exporter"
+    for hand in seated:
+        assert hand.hero_seat is not None
+        assert hand.seat(hand.hero_seat).player_id == EXPORTER
+
+
+def test_hands_without_the_exporter_have_no_hero_seat(hands):
+    for hand in hands:
+        if not any(s.player_id == EXPORTER for s in hand.seats):
+            assert hand.hero_seat is None
+
+
+def test_hero_seat_survives_serialisation(hands):
+    for hand in hands:
+        assert hand_from_dict(hand_to_dict(hand)).hero_seat == hand.hero_seat
+
+
+def test_hero_seat_defaults_to_none_for_hands_stored_before_it_existed(hands):
+    payload = hand_to_dict(hands[0])
+    del payload["hero_seat"]
+    assert hand_from_dict(payload).hero_seat is None
+
+
+def test_the_export_own_word_wins(hands):
+    assert hero_of(hands) == EXPORTER
+
+
+def test_hero_follows_the_seat_through_rekeying(hands):
+    """``rebuild`` re-keys seats onto internal ids; the answer must follow."""
+    rekeyed = []
+    for hand in hands:
+        copy = hand_from_dict(hand_to_dict(hand))
+        for seat in copy.seats:
+            seat.player_id = f"internal-{seat.player_id}"
+        rekeyed.append(copy)
+    assert hero_of(rekeyed) == f"internal-{EXPORTER}"
+
+
+def test_inference_agrees_when_the_file_does_not_say(hands):
+    """The same reasoning find_hero uses, reached without a store."""
+    assert hero_of(_stripped(hands)) == EXPORTER
+
+
+def test_too_few_hands_to_infer_returns_none(hands):
+    assert hero_of(_stripped(hands)[:2]) is None
+
+
+def test_no_hands_returns_none():
+    assert hero_of([]) is None
+
+
+def test_a_villain_who_shows_every_hand_is_not_mistaken_for_the_exporter(hands):
+    """Cards turned face up are not evidence of who exported. This is the
+    stricter signal find_hero cannot use over a whole database, and it is why
+    the hand-count floor here can be so much lower."""
+    stripped = []
+    for hand in _stripped(hands):
+        for seat in hand.seats:
+            if len(seat.hole_cards) == 2:
+                seat.showed = True
+        stripped.append(hand)
+    assert hero_of(stripped) is None
+
+
+def test_the_margin_holds_against_a_frequent_shower(hands):
+    other = next(s.player_id for h in hands for s in h.seats if s.player_id != EXPORTER)
+    stripped, shown = [], 0
+    for hand in _stripped(hands):
+        for seat in hand.seats:
+            if seat.player_id == other and shown < MIN_UNBIASED:
+                seat.hole_cards, seat.showed = ("Ah", "Kd"), False
+                shown += 1
+        stripped.append(hand)
+    assert hero_of(stripped) == EXPORTER

@@ -26,6 +26,18 @@ from .model import Act, Action, Hand, Street, postflop_rank
 # split by these are the single most exploitable postflop tendency.
 SIZE_BUCKETS = (("small", 0.0, 0.42), ("mid", 0.42, 0.70), ("big", 0.70, 1.01), ("over", 1.01, math.inf))
 
+#: Counters recorded a second time under this prefix when the player on the
+#: other side of the decision was you. ``vs:fold_vs_bet:river`` is the slice of
+#: ``fold_vs_bet:river`` where the bet was yours.
+#:
+#: A namespace rather than a table because the counters *are* the same
+#: counters: they add the same way, merge the same way and rebuild the same
+#: way, and the pooled key stays the baseline the slice is read against. What
+#: they do not share is a population -- there is no field frequency for "folds
+#: to that guy" -- so everything that measures a stat against the field has to
+#: leave this namespace alone.
+VS_HERO = "vs:"
+
 
 def size_bucket(fraction: float) -> str:
     for name, lo, hi in SIZE_BUCKETS:
