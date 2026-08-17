@@ -693,7 +693,7 @@ def _hero_model(store: Store):
 #: Bump whenever _build_hero_payload's returned shape changes, so an old
 #: cache file from a previous version of this module is a miss rather than a
 #: served-stale response with fields the current frontend does not expect.
-_HERO_CACHE_VERSION = 4
+_HERO_CACHE_VERSION = 5
 
 
 def _hero_disk_cache_path(store: Store) -> Path:
@@ -755,6 +755,22 @@ def hero_payload(store: Store, hero_id: int | None = None) -> dict | None:
             _hero_disk_cache_save(store, hero_id, hand_count, payload)
         _HERO_PAYLOAD_CACHE[key] = (hand_count, payload)
         return payload
+
+
+def _hero_self(store: Store, hero_id: int) -> dict | None:
+    """Hero read through the ordinary villain machinery. Hero is just another
+    player in the database, so their own StatBook yields a Profile with priced
+    leaks and headline numbers exactly like a villain's -- the difference is
+    only that the UI frames them for self-coaching. Never priced against a
+    villain range; these are deviations from the population you were measured
+    against."""
+    try:
+        prof = store.profile(hero_id)
+    except Exception:
+        return None
+    if prof is None:
+        return None
+    return profile_payload(prof, hero_id)
 
 
 def _build_hero_payload(store: Store, hero_id: int | None) -> dict | None:
@@ -838,6 +854,7 @@ def _build_hero_payload(store: Store, hero_id: int | None) -> dict | None:
              "avg_strength": round(s.avg_strength, 4)}
             for s in sorted(narrowing, key=lambda s: s.street)
         ],
+        "self": _hero_self(store, hero_id),
     }
 
 
@@ -920,6 +937,7 @@ class Handler(BaseHTTPRequestHandler):
                         "profiles": profiles,
                         "by_table": by_table if len(by_table) > 1 else [],
                         "notes": [dict(n) for n in store.notes(player_id)],
+                        "hero_id": _cached_hero_id(store),
                     })
             if path.startswith("/api/session/"):
                 token = path.rsplit("/", 1)[1]
@@ -1218,6 +1236,7 @@ PAGE = r"""<!doctype html>
     --bg: #f6f6f5; --panel: #ffffff; --ink: #111111; --muted: #6b6b68;
     --line: #e3e2df; --edge: #979590; --accent: #111111; --accent-soft: #f1f0ee;
     --warn: #b4532a; --danger: #b4532a; --red: #b4532a;
+    --hero: #2f6fe0; --hero-soft: #eaf1fd;   /* you; the villain world is warm, you are cool */
     /* Neutral ordinal ramp, validated light->dark on the panel surface:
        light end clears 2:1, monotone lightness, visible step gaps. Shade
        carries confidence, never identity. */
@@ -1234,6 +1253,8 @@ PAGE = r"""<!doctype html>
       --bg: #0d0d0d; --panel: #17181a; --ink: #f2f1ee; --muted: #98968f;
       --line: #2a2b2d; --edge: #606166; --accent: #f2f1ee; --accent-soft: #202123;
       --warn: #e5645a; --danger: #e5645a; --red: #e5645a;
+    --hero: #6aa6ff; --hero-soft: #16233a;
+      --hero: #6aa6ff; --hero-soft: #16233a;
       --mark-1: #787774; --mark-2: #adaba6; --mark-3: #f0efec;
       --band: #26272a;
       --grid: #232427; --axis: #75746f; --tick: #9b9a94;
@@ -1279,6 +1300,34 @@ PAGE = r"""<!doctype html>
   }
   nav button:hover { color: var(--ink); }
   nav button.on { color: var(--ink); border-bottom-color: var(--red); font-weight: 600; }
+  /* Hero is you. The tool is otherwise about the villain across the table, so
+     anything that reads your own play -- the Hero tab, and the against-you
+     panel that exists only because the export knows which seat is yours --
+     carries a cool blue identity. Done by remapping the accent tokens inside a
+     scope, so every accented element (bars, links, markers, the active tab)
+     turns blue while the monochrome-plus-confidence system stays put
+     everywhere else. */
+  .hero-scope {
+    --red: var(--hero); --warn: var(--hero); --danger: var(--hero);
+    --accent-soft: var(--hero-soft); --mark-3: var(--hero);
+  }
+  .hero-scope .linkbtn { color: var(--hero); }
+  .hero-scope .linkbtn:hover { text-decoration-color: var(--hero); }
+  nav button[data-tab="hero"].on { border-bottom-color: var(--hero); }
+  nav button[data-tab="hero"]::before {
+    content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--hero); margin-right: 7px; vertical-align: 1px;
+  }
+  /* A small blue wordmark reading "this is about you" -- reused next to the
+     against-you panel and on your own profile. */
+  .hero-badge {
+    display: inline-flex; align-items: center; gap: 5px; vertical-align: 2px;
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.14em;
+    font-weight: 700; color: var(--hero); margin-left: 6px;
+  }
+  .hero-badge::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--hero);
+  }
   .panel {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; padding: 18px; margin: 16px 0;
@@ -1348,8 +1397,8 @@ PAGE = r"""<!doctype html>
   .tag.on { border-color: var(--red); color: var(--ink); }
   /* Same accent the archetype pill and sort caret already use for "this one
      is notable" -- not a new colour for a new meaning. */
-  .hero-row-marker { background: var(--accent-soft); }
-  .hero-tag { margin-left: 6px; border-color: var(--red); color: var(--ink); font-weight: 600; }
+  .hero-row-marker { background: var(--hero-soft); }
+  .hero-tag { margin-left: 6px; border-color: var(--hero); color: var(--hero); font-weight: 600; }
   .scroller { overflow-x: auto; }
   .muted { color: var(--muted); }
   .small { font-size: 12.5px; }
@@ -1552,6 +1601,7 @@ PAGE = r"""<!doctype html>
   }
   .leak .numbers { margin-top: 2px; }
   .how { margin-top: 8px; }
+  .how-link { margin-top: 10px; }
   .how-body { color: var(--ink); font-size: 14px; line-height: 1.45; }
   .howblock { margin: 10px 0; max-width: 66ch; }
   .howlabel { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
@@ -1657,6 +1707,22 @@ PAGE = r"""<!doctype html>
   /* Two bars to a row, the same length, so the shift is the thing you see
      rather than something to be worked out from two percentages. */
   .adjust .metric { grid-template-columns: 88px 1fr 40px; margin: 3px 0; }
+  /* The reads sit two-up (more on a very wide screen) so a full-width panel is
+     not sparse; separation is the grid gap, not a per-read rule. */
+  .adjust-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+                 gap: 6px 40px; }
+  .adjust-grid .leak { border-bottom: 0; }
+  /* Position breakdown: a fixed name column, a bar that fills, and a value
+     column wide enough that "21% played" never wraps -- the old .metric row
+     truncated it. */
+  .hero-pos { display: grid; row-gap: 6px; }
+  .hero-pos .pos-row {
+    display: grid; grid-template-columns: 96px 1fr auto; align-items: center; gap: 12px;
+  }
+  .hero-pos .pos-name { font-weight: 600; }
+  .hero-pos .pos-bar { display: flex; min-width: 0; }
+  .hero-pos .pos-bar svg { width: 100%; }
+  .hero-pos .pos-val { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
   .timing-street { margin-top: 14px; }
   .timing-street .street-label {
     font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
@@ -1963,7 +2029,7 @@ function rosterTable(players, opts) {
     for (const p of rows) {
       const tr = document.createElement("tr");
       const isHero = opts && opts.heroId != null && p.player_id === opts.heroId;
-      if (isHero) tr.className = "hero-row-marker";
+      if (isHero) tr.className = "hero-row-marker hero-scope";
       if (opts && opts.onClick && p.player_id != null) {
         tr.className = (tr.className ? tr.className + " " : "") + "clickable";
         tr.tabIndex = 0;
@@ -2042,8 +2108,9 @@ function rosterTable(players, opts) {
 
 function profileCard(p, opts) {
   opts = opts || {};
+  const isHero = opts.heroId != null && p.player_id === opts.heroId;
   const card = document.createElement("div");
-  card.className = "dash";
+  card.className = isHero ? "dash hero-scope" : "dash";
   const leaks = p.leaks;
   // Full-width tiles are placed last: dropped mid-grid they force a row break
   // and strand whatever tile precedes them alone on a line.
@@ -2067,6 +2134,8 @@ function profileCard(p, opts) {
       <p class="summary">${esc(p.summary)}</p>
       <p class="plan">${esc(p.plan)}</p>
     </div>`;
+  if (isHero) $(".hero-sub", head).insertAdjacentHTML(
+    "afterbegin", '<span class="hero-badge">you</span> ');
   card.appendChild(head);
 
   const cols = document.createElement("div");
@@ -2177,9 +2246,7 @@ function profileCard(p, opts) {
           <span class="tag tier">${esc(l.tier)}</span></div>
         <div class="num small muted">${l.severity_bb100.toFixed(2)} bb/100</div></div>
       <div class="leak-advice">${esc(l.do)}</div>
-      <div class="small muted numbers"></div>
-      <details class="how"><summary>Why, and what not to do</summary>
-        <div class="how-body"></div></details>`;
+      <div class="small muted numbers"></div>`;
     $(".tier", div).after(info(`${termTip(l.tier)}<br><br>${esc(l.priority)}`));
 
     const numbers = $(".numbers", div);
@@ -2199,14 +2266,31 @@ function profileCard(p, opts) {
     }
     numbers.appendChild(info(statTip(l.stat, l.headline)));
 
-    const how = $(".how-body", div);
-    for (const [label, text] of [["Why", l.why], ["Do not", l.dont]]) {
-      if (!text) continue;
-      const block = document.createElement("div");
-      block.className = "howblock";
-      block.innerHTML = `<div class="howlabel">${esc(label)}</div>
-        <div>${esc(text)}</div>`;
-      how.appendChild(block);
+    // A popup, not an inline <details>: expanding it in place grew this panel
+    // after the columns were balanced, which is what threw the layout off. Same
+    // sheet the hands open in.
+    const whydont = [["Why", l.why], ["Do not", l.dont]].filter(([, t]) => t);
+    if (whydont.length) {
+      const link = document.createElement("button");
+      link.className = "linkbtn how-link";
+      link.textContent = "Why, and what not to do";
+      link.onclick = () => {
+        const modal = $("#modal");
+        modal.innerHTML = `<div class="veil"><div class="sheet">
+          <div class="spread"><h2 style="margin:0">${esc(l.headline)}</h2>
+            <button class="act" id="close">Close</button></div>
+          <div class="how-body"></div></div></div>`;
+        const how = $(".how-body", modal);
+        for (const [label, text] of whydont) {
+          const block = document.createElement("div");
+          block.className = "howblock";
+          block.innerHTML = `<div class="howlabel">${esc(label)}</div>
+            <div>${esc(text)}</div>`;
+          how.appendChild(block);
+        }
+        $("#close").onclick = () => { modal.innerHTML = ""; };
+      };
+      div.appendChild(link);
     }
     leakBox.appendChild(div);
   }
@@ -2262,15 +2346,20 @@ function profileCard(p, opts) {
   const adjustments = p.adjustments || [];
   if (adjustments.length) {
     const adjBox = document.createElement("div");
-    adjBox.className = "panel adjust";
-    adjBox.innerHTML = `<div class="spread"><div class="headline">
-        <h2 style="margin:0">Against You</h2></div></div>
-      <div class="small muted" style="margin:-6px 0 12px">
+    // Full width, below the two columns rather than inside the height-packed
+    // masonry: a short reads-only panel could never balance against the tall
+    // skill breakdown without leaving dead space on one side or the other.
+    adjBox.className = "panel wide adjust hero-scope";
+    adjBox.innerHTML = `<h2 style="margin-bottom:6px">Against You<span class="hero-badge">hero</span></h2>
+      <div class="small muted" style="margin:0 0 14px">
         Measured against how they play everybody else, not against the
         field.</div>`;
-    // Inside .headline rather than after the h2: .spread grows its first
-    // child, so a mark placed as the second one lands against the far edge.
-    $(".headline", adjBox).appendChild(info(termTip("adjustment")));
+    // The mark rides the title itself, like every other panel header (see the
+    // hero dashboard): .info's own 5px offset places it, no wrapper needed.
+    $("h2", adjBox).appendChild(info(termTip("adjustment")));
+    const adjGrid = document.createElement("div");
+    adjGrid.className = "adjust-grid";
+    adjBox.appendChild(adjGrid);
     for (const a of adjustments) {
       const div = document.createElement("div");
       div.className = "leak";
@@ -2311,9 +2400,9 @@ function profileCard(p, opts) {
       numbers.appendChild(document.createTextNode(
         ` · ${Math.round(a.baseline_sample)} against everybody else`));
       numbers.appendChild(info(statTip(a.stat, a.behaviour)));
-      adjBox.appendChild(div);
+      adjGrid.appendChild(div);
     }
-    cols.appendChild(adjBox);
+    wideTiles.push(adjBox);
   }
 
   if (opts.narrate) {
@@ -2453,12 +2542,23 @@ function profileCard(p, opts) {
   fill(first, headline.length ? headline : ordered);
   body.appendChild(first);
   if (rest.length) {
-    const more = document.createElement("details");
-    more.innerHTML = `<summary>See more</summary>`;
-    const table = makeTable();
-    fill(table, rest);
-    more.appendChild(table);
-    body.appendChild(more);
+    // The rest open in the sheet popup rather than an inline <details>, so
+    // this panel never changes height after the columns are balanced.
+    const link = document.createElement("button");
+    link.className = "linkbtn how-link";
+    link.textContent = `See all ${ordered.length} numbers`;
+    link.onclick = () => {
+      const modal = $("#modal");
+      modal.innerHTML = `<div class="veil"><div class="sheet">
+        <div class="spread"><h2 style="margin:0">Key numbers</h2>
+          <button class="act" id="close">Close</button></div>
+        <div class="modal-numbers"></div></div></div>`;
+      const full = makeTable();
+      fill(full, ordered);
+      $(".modal-numbers", modal).appendChild(full);
+      $("#close").onclick = () => { modal.innerHTML = ""; };
+    };
+    body.appendChild(link);
   }
   return card;
 }
@@ -2891,6 +2991,76 @@ function renderTellSection(el, section) {
   }
 }
 
+/* Hero read through the ordinary villain machinery -- their own priced leaks
+   and headline numbers, since hero is just another player in the database.
+   Rendered blue (the dash is hero-scoped) and framed for self-coaching. */
+function renderHeroSelf(dash, self) {
+  if (!self) return;
+  const leaks = self.leaks || [];
+  if (leaks.length) {
+    const box = document.createElement("div");
+    box.className = "panel wide";
+    box.innerHTML = `<h2>your biggest leaks</h2>
+      <div class="small muted" style="margin:-6px 0 14px">
+        What a sharp opponent studying you would target, priced in the bb/100
+        they could win from it. Fix the dear ones first.</div>
+      <div class="leaks"></div>`;
+    const host = $(".leaks", box);
+    for (const l of leaks) {
+      const div = document.createElement("div");
+      div.className = "leak";
+      div.innerHTML = `
+        <div class="leak-head">
+          <div class="headline"><b>${esc(l.headline)}</b>
+            <span class="tag tier">${esc(l.tier)}</span></div>
+          <div class="num small muted">${l.severity_bb100.toFixed(2)} bb/100</div></div>
+        <div class="small muted numbers"></div>`;
+      const numbers = $(".numbers", div);
+      if (self.player_id != null) {
+        const link = document.createElement("button");
+        link.className = "linkbtn";
+        link.textContent = `seen about ${Math.round(l.sample)} times`;
+        link.title = "show the hands behind this";
+        link.onclick = () => showEvidence(self.player_id, l.stat, l.headline);
+        numbers.appendChild(link);
+      } else {
+        numbers.appendChild(document.createTextNode(
+          `seen about ${Math.round(l.sample)} times`));
+      }
+      numbers.appendChild(info(statTip(l.stat, l.headline)));
+      host.appendChild(div);
+    }
+    dash.appendChild(box);
+  }
+
+  const rows = self.rows || [];
+  if (rows.length) {
+    const box = document.createElement("div");
+    box.className = "panel wide";
+    box.innerHTML = `<h2>your tendencies</h2>
+      <div class="small muted" style="margin:-6px 0 14px">
+        Your rates against the pool you were measured against -- the bar is the
+        estimate, hover a row for what is typical.</div>
+      <div class="scroller"><table><thead><tr><th>stat</th>
+        <th style="width:40%">0% \u2014 100%</th>
+        <th class="num">you</th><th class="num">sample</th></tr></thead>
+        <tbody></tbody></table></div>`;
+    const tbody = $("tbody", box);
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="label"></td><td></td>
+        <td class="num">${fmtPct(row.value)}</td>
+        <td class="num small muted">${Math.round(row.opps)}</td>`;
+      const label = $(".label", tr);
+      label.appendChild(document.createTextNode(row.label));
+      label.appendChild(info(statTip(row.stat, row.label, row)));
+      tr.children[1].appendChild(statRow(row));
+      tbody.appendChild(tr);
+    }
+    dash.appendChild(box);
+  }
+}
+
 async function viewHero() {
   const view = $("#view");
   view.innerHTML = `<div class="panel"><div class="empty">reading your own hands…
@@ -2906,7 +3076,7 @@ async function viewHero() {
   }
 
   const dash = document.createElement("div");
-  dash.className = "dash";
+  dash.className = "dash hero-scope";
 
   const head = document.createElement("div");
   head.className = "panel wide";
@@ -2965,6 +3135,9 @@ async function viewHero() {
     <div id="hero-narrowing"></div>`;
   dash.appendChild(narrowingPanel);
 
+  // Hero through the villain machinery: your own priced leaks and tendencies.
+  renderHeroSelf(dash, data.self);
+
   view.innerHTML = "";
   view.appendChild(dash);
 
@@ -2989,18 +3162,21 @@ async function viewHero() {
   $("#hero-grid", dash).appendChild(rangeGrid(data.grid));
 
   const positions = $("#hero-positions", dash);
+  positions.className = "hero-pos";
   const ranges = [...(data.ranges || [])].sort(
     (a, b) => POSITION_ORDER.indexOf(a.position) - POSITION_ORDER.indexOf(b.position));
   for (const r of ranges) {
     if (!r.hands) continue;
+    const played = (r.raised + r.called) / r.hands;
     const row = document.createElement("div");
-    row.className = "metric";
-    row.innerHTML = `<span>${esc(r.position)} <span class="small muted">${r.hands}h</span></span>`;
-    row.append(bar(r.raised + r.called, r.hands, "var(--mark-3)", 150));
-    const val = document.createElement("span");
-    val.className = "small muted";
-    val.textContent = `${fmtPct((r.raised + r.called) / r.hands)} played`;
-    row.appendChild(val);
+    row.className = "pos-row";
+    row.innerHTML = `
+      <span class="pos-name">${esc(r.position)}<span class="small muted"> ${r.hands}h</span></span>
+      <span class="pos-bar"></span>
+      <span class="pos-val small muted">${fmtPct(played)} played</span>`;
+    const b = bar(played, 1, "var(--mark-3)", 150);
+    b.setAttribute("preserveAspectRatio", "none");
+    $(".pos-bar", row).appendChild(b);
     positions.appendChild(row);
   }
 
@@ -3489,6 +3665,7 @@ async function viewPlayers() {
   if (state.player) return viewPlayer(state.player);
   view.innerHTML = `<div class="panel"><div class="empty">loading\u2026</div></div>`;
   const data = await get("/api/roster");
+  state.heroId = data.hero_id;
   $("#meta").textContent = `${data.hands} hands \u00b7 ${data.players.length} players`;
   if (!data.players.length) {
     view.innerHTML = `<div class="panel"><h2>nothing stored yet</h2>
@@ -3611,7 +3788,8 @@ async function viewPlayer(id) {
 
   const holder = document.createElement("div");
   view.appendChild(holder);
-  playerTabs(data.profiles, holder, {narrate: true});
+  state.heroId = data.hero_id;
+  playerTabs(data.profiles, holder, {narrate: true, heroId: data.hero_id});
 
   if (data.by_table && data.by_table.length > 1) {
     const panel = document.createElement("div");
@@ -3675,21 +3853,22 @@ function confirmReset(data) {
 /* ---- evidence: the hands behind a number ---- */
 async function showEvidence(playerId, stat, headline) {
   const modal = $("#modal");
-  modal.innerHTML = `<div class="veil"><div class="sheet">
+  const sc = String(stat).startsWith("vs:") ? " hero-scope" : "";
+  modal.innerHTML = `<div class="veil"><div class="sheet${sc}">
     <h2 style="margin-top:0">${esc(headline)}</h2>
     <div class="empty">finding the hands\u2026</div></div></div>`;
   let data;
   try {
     data = await get(`/api/evidence?player=${playerId}&stat=${encodeURIComponent(stat)}`);
   } catch (err) {
-    modal.innerHTML = `<div class="veil"><div class="sheet">
+    modal.innerHTML = `<div class="veil"><div class="sheet${sc}">
       <p class="err">${esc(err.message)}</p>
       <div class="row" style="justify-content:flex-end"><button class="act" id="close">Close</button></div>
       </div></div>`;
     $("#close").onclick = () => { modal.innerHTML = ""; };
     return;
   }
-  modal.innerHTML = `<div class="veil"><div class="sheet">
+  modal.innerHTML = `<div class="veil"><div class="sheet${sc}">
     <div class="spread"><h2 style="margin:0">${esc(headline)}</h2>
       <button class="act" id="close">Close</button></div>
     <p class="ev-verdict">${esc(evidenceVerdict(data))}</p>
