@@ -211,6 +211,14 @@ def fit(rows: list[Row], random_state: int = 0) -> StrengthModel:
     return fitted
 
 
+#: Content-keyed memo for :func:`strength_by_street` (a pure function of the
+#: board, the known holes and which streets were reached). Bounded and cleared
+#: wholesale rather than evicted per entry -- one hero build refills it from
+#: cold and it is never read across databases within a request.
+_STRENGTH_CACHE: dict = {}
+_STRENGTH_CACHE_MAX = 200_000
+
+
 def strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], float]:
     """Percentile of each known hand on each street it was live for.
 
@@ -223,6 +231,21 @@ def strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], floa
     be inferred from betting patterns; it is false when the hand is already
     known).
     """
+    # Pure in (board, known holes, which streets were reached): the same board
+    # is scored once, not once per hero feature. Five features each walk hero's
+    # hands calling this, so without the cache the ~1,100-holding universe for
+    # every board is rebuilt five times over. Keyed by content, so any genuine
+    # repeat -- and a repeat is all a cross-hand "collision" can be, since the
+    # answer depends on nothing else -- is a correct hit.
+    ckey = (
+        tuple(hand.board),
+        tuple(sorted((seat, tuple(p.hole_cards)) for seat, p in known.items())),
+        (hand.reached(Street.FLOP), hand.reached(Street.TURN), hand.reached(Street.RIVER)),
+    )
+    cached = _STRENGTH_CACHE.get(ckey)
+    if cached is not None:
+        return cached
+
     out: dict[tuple[int, Street], float] = {}
     for street in (Street.FLOP, Street.TURN, Street.RIVER):
         board = hand.board_at(street)
@@ -247,6 +270,9 @@ def strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], floa
             score = int(evaluate(np.concatenate([hole, board_ids])[None, :])[0])
             out[(seat, street)] = float(
                 np.searchsorted(universe, score, side="left") / len(universe))
+    if len(_STRENGTH_CACHE) >= _STRENGTH_CACHE_MAX:
+        _STRENGTH_CACHE.clear()          # bound the memory; the next build refills
+    _STRENGTH_CACHE[ckey] = out
     return out
 
 
