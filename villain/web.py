@@ -3063,13 +3063,14 @@ function renderHeroSelf(dash, self) {
 
 async function viewHero() {
   const view = $("#view");
-  view.innerHTML = `<div class="panel"><div class="empty">reading your own hands…
-    the first pass fits a model and can take a while -- after that it is
-    instant until you import more hands.</div></div>`;
+  // The same blocking spinner as import/link ("Applying\u2026"). The first pass
+  // is much faster now, so the full-page explainer is no longer warranted.
+  showBusy("Reading your own hands\u2026");
   let data;
   try {
     data = await get("/api/hero");
   } catch (err) {
+    $("#modal").innerHTML = "";
     view.innerHTML = `<div class="panel"><h2>hero</h2>
       <p class="err">${esc(err.message)}</p></div>`;
     return;
@@ -3138,6 +3139,7 @@ async function viewHero() {
   // Hero through the villain machinery: your own priced leaks and tendencies.
   renderHeroSelf(dash, data.self);
 
+  $("#modal").innerHTML = "";          // dismiss the loader
   view.innerHTML = "";
   view.appendChild(dash);
 

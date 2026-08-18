@@ -50,11 +50,10 @@ def card_text(cid: int) -> str:
 
 
 def _rank_masks(ranks: np.ndarray) -> np.ndarray:
-    """(N, 7) ranks -> (N, 13) counts."""
-    n = ranks.shape[0]
-    counts = np.zeros((n, 13), dtype=np.int8)
-    np.add.at(counts, (np.repeat(np.arange(n), ranks.shape[1]), ranks.ravel()), 1)
-    return counts
+    """(N, 7) ranks -> (N, 13) counts. A one-hot over the 13 ranks summed
+    across the cards -- vectorised, where ``np.add.at`` was an unbuffered
+    scatter and, after the evaluator's sort was fixed, the slowest call here."""
+    return (ranks[:, :, None] == np.arange(13)).sum(axis=1).astype(np.int8)
 
 
 def _best_straight(masks: np.ndarray) -> np.ndarray:
@@ -73,28 +72,32 @@ def _pack(category: np.ndarray, kickers: np.ndarray) -> np.ndarray:
     return score
 
 
-#: Rank 12 (ace) first, descending -- the order _top_bits needs its columns
-#: in, computed once rather than rebuilt on every call.
-_DESCENDING_RANKS = np.arange(12, -1, -1, dtype=np.int64)
+def _build_top_table() -> np.ndarray:
+    """For every 13-bit rank mask, its five highest set bits as rank indices,
+    descending and zero-padded. 8192 x 5 int8 (40 KB), built once at import."""
+    tbl = np.zeros((1 << 13, 5), dtype=np.int8)
+    for m in range(1 << 13):
+        top = [r for r in range(12, -1, -1) if (m >> r) & 1][:5]
+        tbl[m, :len(top)] = top
+    return tbl
+
+
+_TOP_TABLE = _build_top_table()
 
 
 def _top_bits(mask: np.ndarray, count: int) -> np.ndarray:
     """The ``count`` highest set bits of each mask, as rank indices.
 
-    Was a double Python loop (``count`` slots x 13 ranks), each iteration a
-    numpy call over the whole batch -- fine at a handful of hands, most of
-    build_dataset's cost at thousands: profiled at 26 of 40 seconds fitting
-    the hand-strength model on the live database. Replaced with one batched
-    bit-unpack: every mask exposes all 13 rank bits as a boolean matrix in
-    one shot, `argsort` pushes the set bits to the front of each row while
-    a stable sort keeps them in descending-rank order, and the first `count`
-    columns of that are the answer. Same output, no per-rank Python loop.
+    A rank mask is only 13 bits, so the answer for every possible mask is
+    precomputed in :data:`_TOP_TABLE` and this becomes a single gather -- no
+    sort, scatter or per-row work. Earlier versions (a stable ``argsort``, then
+    a ``cumsum`` scatter) were each the biggest single cost in a hero build;
+    this one barely registers. Masked to 13 bits because callers pass
+    ``rank_mask & ~pair_mask`` and friends, whose complement sets high bits.
+    Unset slots and a deuce (rank 0) both read 0, the convention callers rely
+    on.
     """
-    bits = ((mask[:, None].astype(np.int64) >> _DESCENDING_RANKS) & 1).astype(bool)
-    order = np.argsort(~bits, axis=1, kind="stable")[:, :count]
-    ranks = _DESCENDING_RANKS[order]
-    set_bit = np.take_along_axis(bits, order, axis=1)
-    return np.where(set_bit, ranks, 0).astype(np.int8)
+    return _TOP_TABLE[np.asarray(mask, dtype=np.int64) & 0x1FFF][:, :count]
 
 
 def evaluate(hands: np.ndarray) -> np.ndarray:
@@ -109,8 +112,7 @@ def evaluate(hands: np.ndarray) -> np.ndarray:
     counts = _rank_masks(ranks)
     rank_mask = ((counts > 0).astype(np.int32) * (1 << np.arange(13))).sum(axis=1)
 
-    suit_counts = np.zeros((n, 4), dtype=np.int8)
-    np.add.at(suit_counts, (np.repeat(np.arange(n), hands.shape[1]), suits.ravel()), 1)
+    suit_counts = (suits[:, :, None] == np.arange(4)).sum(axis=1).astype(np.int8)
     flush_suit = np.argmax(suit_counts, axis=1)
     has_flush = suit_counts.max(axis=1) >= 5
 
