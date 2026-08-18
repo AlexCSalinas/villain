@@ -360,9 +360,13 @@ def session_identity_labels(session: dict) -> dict[str, dict]:
 
 def session_payload(token: str, store: Store | None = None) -> dict:
     """Profiles for an uploaded session. Reads the store, never writes to it."""
+    from .hero import hero_of
     session = SESSIONS[token]
     extra = database_merges(store, session["hands"]) if store is not None else None
-    books = record_hands(merged_hands(session, extra))
+    mhands = list(merged_hands(session, extra))
+    books = record_hands(mhands)
+    # The exporter is hero, the same person the Hero tab is about.
+    hero_key = hero_of(mhands)
 
     def _unified(by_regime):
         # Same shrink as database profiles when this pool has fitted priors.
@@ -379,9 +383,9 @@ def session_payload(token: str, store: Store | None = None) -> dict:
             profile.adjustments = adjustments(by_regime, priors=priors)
         return profile
 
-    profiles = [p for p in (_unified(by_regime) for by_regime in books.values())
-                if p is not None]
-    profiles.sort(key=lambda p: -p.hands)
+    keyed = [(k, _unified(by_regime)) for k, by_regime in books.items()]
+    keyed = [(k, p) for k, p in keyed if p is not None]
+    keyed.sort(key=lambda kp: -kp[1].hands)
 
     labels = session_identity_labels(session)
     # Also surface database display names from already-linked aliases when the
@@ -418,7 +422,7 @@ def session_payload(token: str, store: Store | None = None) -> dict:
 
     rows = []
     profile_payloads = []
-    for profile in profiles:
+    for player_key, profile in keyed:
         enrich(profile)
         top = profile.tags[0] if profile.tags else None
         link = labels.get(profile.name) or {}
@@ -427,8 +431,9 @@ def session_payload(token: str, store: Store | None = None) -> dict:
                          if n and n != profile.name]
         if db_name and db_name != profile.name and profile.name not in session_names:
             session_names = [profile.name] + session_names
+        is_hero = hero_key is not None and player_key == hero_key
         row = {
-            "player_id": None, "name": profile.name,
+            "player_id": None, "name": profile.name, "is_hero": is_hero,
             "db_name": db_name if db_name else None,
             "session_names": session_names,
             "regime": profile.regime, "regime_label": profile.regime_label,
@@ -445,6 +450,9 @@ def session_payload(token: str, store: Store | None = None) -> dict:
         pp = profile_payload(profile)
         pp["db_name"] = row["db_name"]
         pp["session_names"] = row["session_names"]
+        pp["is_hero"] = is_hero
+        if is_hero:                       # blue identity + second-person voice
+            pp = _to_you(pp)
         profile_payloads.append(pp)
     return {
         "token": token,
@@ -693,7 +701,7 @@ def _hero_model(store: Store):
 #: Bump whenever _build_hero_payload's returned shape changes, so an old
 #: cache file from a previous version of this module is a miss rather than a
 #: served-stale response with fields the current frontend does not expect.
-_HERO_CACHE_VERSION = 5
+_HERO_CACHE_VERSION = 6
 
 
 def _hero_disk_cache_path(store: Store) -> Path:
@@ -757,6 +765,40 @@ def hero_payload(store: Store, hero_id: int | None = None) -> dict | None:
         return payload
 
 
+#: Third person to second: the profile machinery writes about "them", but the
+#: hero read is about you. English second-person plural agreement matches
+#: "they", so a whole-word swap reads correctly on descriptive text; the only
+#: opponent-directed fields (a leak's "do", the plan) are dropped by the hero
+#: UI, so mistranslating them is harmless.
+_HERO_PRONOUNS = {
+    "they're": "you're", "they've": "you've", "themselves": "yourself",
+    "theirs": "yours", "their": "your", "them": "you", "they": "you",
+}
+
+
+def _second_person(text: str) -> str:
+    import re
+
+    def swap(m):
+        w = m.group(0)
+        repl = _HERO_PRONOUNS.get(w.lower())
+        if repl is None:
+            return w
+        return repl.capitalize() if w[0].isupper() else repl
+
+    return re.sub(r"[A-Za-z']+", swap, text)
+
+
+def _to_you(obj):
+    if isinstance(obj, str):
+        return _second_person(obj)
+    if isinstance(obj, list):
+        return [_to_you(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _to_you(v) for k, v in obj.items()}
+    return obj
+
+
 def _hero_self(store: Store, hero_id: int) -> dict | None:
     """Hero read through the ordinary villain machinery. Hero is just another
     player in the database, so their own StatBook yields a Profile with priced
@@ -770,7 +812,7 @@ def _hero_self(store: Store, hero_id: int) -> dict | None:
         return None
     if prof is None:
         return None
-    return profile_payload(prof, hero_id)
+    return _to_you(profile_payload(prof, hero_id))
 
 
 def _build_hero_payload(store: Store, hero_id: int | None) -> dict | None:
@@ -1485,19 +1527,14 @@ PAGE = r"""<!doctype html>
     margin: 0 0 14px;
   }
   .bulk input { margin-top: 3px; }
-  .comp { padding: 8px 0; border-top: 1px solid var(--line); }
+  .comp { display: grid; grid-template-columns: minmax(112px, 1.1fr) minmax(64px, 2fr) 32px;
+          align-items: center; gap: 14px; padding: 9px 0; border-top: 1px solid var(--line); }
   .comp:first-child { border-top: 0; }
-  .comp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
   .comp-name { font-size: 14px; }
-  .comp-score { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .comp-score { font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
   .comp.weak .comp-score { color: var(--red); font-weight: 600; }
-  .comp-bar { margin: 5px 0 0; }
+  .comp-bar { min-width: 0; }
   .comp-bar svg { display: block; width: 100%; height: auto; }
-  .comp-note { margin-top: 3px; }
-  .comp-why { margin-top: 4px; color: var(--muted); }
-  .comp.weak .comp-why { color: var(--ink); }
-  .comp-ev { margin-top: 5px; }
-  .comp-ev:empty { display: none; }
   .cards-row { display: inline-flex; gap: 3px; vertical-align: middle; }
   .card {
     display: inline-flex; align-items: center; gap: 1px;
@@ -1663,11 +1700,16 @@ PAGE = r"""<!doctype html>
   /* the hover-for-meaning affordance */
   .info {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--line);
-    color: var(--muted); font-size: 11px; font-weight: 700; cursor: help;
+    width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line);
+    color: var(--edge); font-size: 9.5px; font-weight: 700; cursor: help;
     vertical-align: 1px; margin-left: 5px; font-style: normal; flex: none;
+    opacity: .7; transition: opacity .12s ease, color .12s ease, border-color .12s ease;
   }
-  .info:hover { color: var(--ink); border-color: var(--accent); }
+  .info:hover { color: var(--ink); border-color: var(--accent); opacity: 1; }
+  /* On hover of the row/line it belongs to, the mark wakes up a little so it is
+     discoverable without shouting on every line at rest. */
+  .comp:hover .info, .leak:hover .info, .metric:hover .info,
+  h2:hover .info, .read-meta:hover .info { opacity: 1; }
   :where(button, [href], input, select, summary, [tabindex]):focus-visible,
   tr.clickable:focus-visible, .ev:focus-visible, th:focus-visible {
     outline: 2px solid var(--red); outline-offset: 2px; border-radius: 4px;
@@ -1739,10 +1781,12 @@ PAGE = r"""<!doctype html>
     color: var(--muted); background: var(--accent-soft); font-weight: 600;
   }
   .timing-grid .rowhead { display: flex; align-items: center; }
-  .timing-cell .tell { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
-  .timing-cell .read { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
-  .timing-cell .n { font-size: 11px; color: var(--muted); margin-top: 6px; }
-  .timing-cell.thin .tell { color: var(--muted); font-weight: 500; font-size: 12.5px; }
+  .timing-cell { cursor: help; }
+  .timing-cell .tell { font-weight: 600; font-size: 13.5px; }
+  .timing-cell .n { font-size: 11px; color: var(--muted); margin-top: 5px; }
+  .timing-cell.thin { cursor: help; }
+  .timing-cell.thin .tell { color: var(--edge); font-weight: 500; }
+  .timing-cell.on { box-shadow: inset 2px 0 0 var(--red); }
   .narration { margin-top: 10px; max-width: none; }
   .narration.hidden { display: none; }
   .narration blockquote {
@@ -2028,7 +2072,7 @@ function rosterTable(players, opts) {
     body.innerHTML = "";
     for (const p of rows) {
       const tr = document.createElement("tr");
-      const isHero = opts && opts.heroId != null && p.player_id === opts.heroId;
+      const isHero = p.is_hero || (opts && opts.heroId != null && p.player_id === opts.heroId);
       if (isHero) tr.className = "hero-row-marker hero-scope";
       if (opts && opts.onClick && p.player_id != null) {
         tr.className = (tr.className ? tr.className + " " : "") + "clickable";
@@ -2108,7 +2152,8 @@ function rosterTable(players, opts) {
 
 function profileCard(p, opts) {
   opts = opts || {};
-  const isHero = opts.heroId != null && p.player_id === opts.heroId;
+  const isHero = p.is_hero || (opts.heroId != null && p.player_id === opts.heroId);
+  const hero = opts.hero || isHero;
   const card = document.createElement("div");
   card.className = isHero ? "dash hero-scope" : "dash";
   const leaks = p.leaks;
@@ -2132,7 +2177,7 @@ function profileCard(p, opts) {
     <div class="read-meta" id="read-meta"></div>
     <div class="read-copy">
       <p class="summary">${esc(p.summary)}</p>
-      <p class="plan">${esc(p.plan)}</p>
+      ${hero ? "" : `<p class="plan">${esc(p.plan)}</p>`}
     </div>`;
   if (isHero) $(".hero-sub", head).insertAdjacentHTML(
     "afterbegin", '<span class="hero-badge">you</span> ');
@@ -2186,41 +2231,25 @@ function profileCard(p, opts) {
   for (const c of [...comps].sort((a, b) => a.score - b.score)) {
     const row = document.createElement("div");
     row.className = "comp" + (c.weak ? " weak" : "");
-    row.innerHTML = `
-      <div class="comp-head">
-        <span class="comp-name">${esc(c.name)}</span>
-        <span class="comp-score">${c.score.toFixed(0)}</span>
-      </div>
-      <div class="comp-bar"></div>
-      ${c.note ? `<div class="small muted comp-note">${esc(c.note)}</div>` : ""}
-      ${c.meaning ? `<div class="small comp-why">${esc(c.meaning)}</div>` : ""}
-      <div class="small comp-ev"></div>`;
+    row.innerHTML = `<span class="comp-name">${esc(c.name)}</span>
+      <span class="comp-bar"></span>
+      <span class="comp-score">${c.score.toFixed(0)}</span>`;
     $(".comp-bar", row).appendChild(
       bar(c.score, 100, c.weak ? "var(--red)" : "var(--mark-1)", 999));
-    if (c.measures) {
-      $(".comp-name", row).appendChild(info(
-        `<b>${esc(c.name)}</b><br>${esc(c.measures)}<br>
-         <span class="muted">counts ${c.weight}x toward the rating</span>`));
-    }
-    // The same evidence route the leaks use: a rating you cannot check against
-    // the hands is just an opinion with a number on it.
-    const ev = $(".comp-ev", row);
-    for (const st of (c.stats || [])) {
-      if (p.player_id == null) break;
-      const b = document.createElement("button");
-      b.className = "linkbtn";
-      const label = statLabel(st, p.rows);
-      b.textContent = label;
-      b.onclick = () => showEvidence(p.player_id, st, `${c.name} \u00b7 ${label}`);
-      if (ev.childNodes.length) ev.appendChild(document.createTextNode(" \u00b7 "));
-      ev.appendChild(b);
-    }
+    // The sentence, the figure it rests on, and what it means all live in the
+    // tooltip now, so the breakdown reads as a scorecard, not a wall of prose.
+    const bits = [`<b>${esc(c.name)}</b>`];
+    if (c.measures) bits.push(esc(c.measures));
+    if (c.note) bits.push(`<span class="hl">${esc(c.note)}</span>`);
+    if (c.meaning) bits.push(esc(c.meaning));
+    bits.push(`<span class="muted">counts ${c.weight}x toward the rating</span>`);
+    $(".comp-name", row).appendChild(info(bits.join("<br>")));
     skillSide.appendChild(row);
   }
 
   const doBox = document.createElement("div");
   doBox.className = "panel";
-  doBox.innerHTML = `<div class="spread"><h2>What to Do</h2>
+  doBox.innerHTML = `<div class="spread"><h2>${hero ? "your biggest leaks" : "What to Do"}</h2>
       <span class="small muted worth"></span></div><div class="leaks"></div>`;
   const worthLabel = $(".worth", doBox);
   worthLabel.append(document.createTextNode(
@@ -2245,24 +2274,22 @@ function profileCard(p, opts) {
         <div class="headline"><b>${esc(l.headline)}</b>
           <span class="tag tier">${esc(l.tier)}</span></div>
         <div class="num small muted">${l.severity_bb100.toFixed(2)} bb/100</div></div>
-      <div class="leak-advice">${esc(l.do)}</div>
+      ${hero ? "" : `<div class="leak-advice">${esc(l.do)}</div>`}
       <div class="small muted numbers"></div>`;
     $(".tier", div).after(info(`${termTip(l.tier)}<br><br>${esc(l.priority)}`));
 
     const numbers = $(".numbers", div);
     numbers.appendChild(document.createTextNode(
-      l.in_words.replace(/seen about .*$/, "").trim()));
+      `${fmtPct(l.value)} vs ${fmtPct(l.breakeven)} break-even \u00b7 `));
     if (p.player_id != null) {
       const link = document.createElement("button");
       link.className = "linkbtn";
-      link.textContent = `seen about ${Math.round(l.sample)} times`;
+      link.textContent = `${Math.round(l.sample)} hands`;
       link.title = "show the hands behind this";
       link.onclick = () => showEvidence(p.player_id, l.stat, l.headline);
-      numbers.appendChild(document.createTextNode(" "));
       numbers.appendChild(link);
     } else {
-      numbers.appendChild(document.createTextNode(
-        ` seen about ${Math.round(l.sample)} times`));
+      numbers.appendChild(document.createTextNode(`${Math.round(l.sample)} hands`));
     }
     numbers.appendChild(info(statTip(l.stat, l.headline)));
 
@@ -2270,7 +2297,7 @@ function profileCard(p, opts) {
     // after the columns were balanced, which is what threw the layout off. Same
     // sheet the hands open in.
     const whydont = [["Why", l.why], ["Do not", l.dont]].filter(([, t]) => t);
-    if (whydont.length) {
+    if (!hero && whydont.length) {
       const link = document.createElement("button");
       link.className = "linkbtn how-link";
       link.textContent = "Why, and what not to do";
@@ -2469,16 +2496,20 @@ function profileCard(p, opts) {
             n: 0, total: 0, share: null, label: "Not enough data",
             read: "Need more timed actions."};
           const div = document.createElement("div");
-          const quiet = cell.n < 5 || /no clear tell/i.test(cell.label || "");
-          div.className = "timing-cell" + (quiet ? " thin" : "");
+          const quiet = cell.n < 5 || /no clear tell|not enough/i.test(cell.label || "");
+          div.className = "timing-cell" + (quiet ? " thin" : " on");
           const share = cell.share == null ? ""
             : `${Math.round(100 * cell.share)}% of ${cell.total}`;
           const nLine = cell.n
             ? `${cell.n} timed${share ? ` \u00b7 ${share}` : ""}`
             : "no data yet";
-          div.innerHTML = `<div class="tell">${esc(cell.label)}</div>
-            <div class="read">${esc(cell.read)}</div>
-            <div class="n">${nLine}</div>`;
+          // Only a real tell prints a label; everything else is a quiet dash.
+          // The read that used to crowd every cell is one hover away.
+          div.innerHTML = quiet
+            ? `<div class="tell">\u2014</div>`
+            : `<div class="tell">${esc(cell.label)}</div><div class="n">${cell.n} timed</div>`;
+          bindTip(div, `<b>${esc(cell.label)}</b><br>${esc(cell.read)}<br>
+            <span class="muted">${esc(nLine)}</span>`);
           grid.appendChild(div);
         }
       }
@@ -2940,19 +2971,15 @@ function renderGradedSection(el, section, opts) {
   const summary = document.createElement("p");
   summary.innerHTML = `<b>${section.graded}</b> ${esc(opts.noun)} graded, <b>${
       section.flagged}</b> (${fmtPct(section.rate)}) ${esc(opts.verdict)}`;
+  // The by-street and by-texture splits are detail -- one hover away, not two
+  // more lines of muted text under every section.
+  const byStreet = Object.entries(section.by_street)
+    .map(([k, v]) => `${k} ${fmtPct(v.flagged / v.graded)}`).join(" \u00b7 ");
+  const byTex = Object.entries(section.by_texture)
+    .map(([k, v]) => `${k} ${fmtPct(v.flagged / v.graded)}`).join(" \u00b7 ");
+  summary.appendChild(info(
+    `<b>by street</b><br>${byStreet}<br><br><b>by texture</b><br>${byTex}`));
   el.appendChild(summary);
-
-  const streets = document.createElement("p");
-  streets.className = "small muted";
-  streets.textContent = "by street:   " + Object.entries(section.by_street)
-    .map(([s, v]) => `${s} ${fmtPct(v.flagged / v.graded)}`).join("   ");
-  el.appendChild(streets);
-
-  const textures = document.createElement("p");
-  textures.className = "small muted";
-  textures.textContent = "by texture:  " + Object.entries(section.by_texture)
-    .map(([t, v]) => `${t} ${fmtPct(v.flagged / v.graded)}`).join("   ");
-  el.appendChild(textures);
 
   for (const g of section.worst) {
     const row = document.createElement("div");
@@ -3076,17 +3103,12 @@ async function viewHero() {
     return;
   }
 
-  const dash = document.createElement("div");
-  dash.className = "dash hero-scope";
-
-  const head = document.createElement("div");
-  head.className = "panel wide";
-  head.innerHTML = `
-    <div class="hero-head">
-      <h2 style="margin:0">${esc(data.name)}</h2>
-      <span class="small muted">cards known on ${fmtPct(data.visibility)} of ${data.hands} hands</span>
-    </div>`;
-  dash.appendChild(head);
+  // Hero is a player, so render the full profile card -- header, skill
+  // breakdown, your leaks, key numbers: everything a villain's page has, in the
+  // same dashboard layout -- then hang the hero-only deep-dives below it.
+  // hero:true drops the two opponent-directed pieces (the plan, and the
+  // per-leak "do this to them").
+  const dash = profileCard(data.self, {heroId: data.hero_id, hero: true});
 
   // Grid and position breakdown side by side: two views of the same range,
   // one by hand the other by seat. dash-cols is the two-panel layout the
@@ -3097,6 +3119,7 @@ async function viewHero() {
   gridCol.className = "col";
   gridCol.innerHTML = `<div class="panel">
     <h2 id="hero-range-head">preflop range</h2>
+    <div class="small muted" style="margin:-6px 0 10px">Cards known on ${fmtPct(data.visibility)} of ${data.hands} hands \u2014 only your own export shows this.</div>
     <div id="hero-grid"></div>
     <div class="range-legend"><span>never</span><span class="ramp"></span><span>always</span></div>
   </div>`;
@@ -3135,9 +3158,6 @@ async function viewHero() {
     <h2 id="hero-narrowing-head">range narrowing</h2>
     <div id="hero-narrowing"></div>`;
   dash.appendChild(narrowingPanel);
-
-  // Hero through the villain machinery: your own priced leaks and tendencies.
-  renderHeroSelf(dash, data.self);
 
   $("#modal").innerHTML = "";          // dismiss the loader
   view.innerHTML = "";
@@ -3704,7 +3724,10 @@ async function viewPlayers() {
       <span class="muted">deletes every hand, player and merge decision</span></p>`;
   wireImport();
   $("#db-roster").appendChild(rosterTable(data.players, {
-    onClick: p => { state.player = p.player_id; viewPlayer(p.player_id); },
+    onClick: p => {
+      if (p.player_id === data.hero_id) { switchTab("hero"); return; }
+      state.player = p.player_id; viewPlayer(p.player_id);
+    },
     heroId: data.hero_id,
   }));
   $("#reset").onclick = () => confirmReset(data);
