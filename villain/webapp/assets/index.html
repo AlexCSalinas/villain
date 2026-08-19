@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Villain</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><a href="#/">Villain<span class="dot"></span></a></h1>
+    <span class="sub" id="meta"></span>
+    <span style="flex:1"></span>
+    <button class="iconbtn" id="theme" title="light / dark" aria-label="switch theme"></button>
+  </header>
+  <nav>
+    <button data-tab="players" class="on">Database</button>
+    <button data-tab="sessions">Sessions</button>
+    <button data-tab="hero">Hero</button>
+    <button data-tab="play">Simulate</button>
+  </nav>
+  <div id="view"></div>
+</div>
+<div class="tip" id="tip"></div>
+<div id="modal"></div>
+<div id="modal2"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
