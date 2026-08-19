@@ -265,7 +265,11 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
             cont, cont_why = 0.02, "calls the shove"
         if lg.can_raise and strength >= rr_gate:
             _, to = _raise_to(hand, lg, rr_to)
-            return ("raise", to, f"{rr_label} to {to} — a premium at {level + 1}-bet depth")
+            # The blind is the 1-bet and an open is the 2-bet, so raising at
+            # `level` makes an (level + 2)-bet -- which is what rr_label
+            # already says ("3-bets" facing an open). The reason said one
+            # less and contradicted the label in the same sentence.
+            return ("raise", to, f"{rr_label} to {to} — a premium at {level + 2}-bet depth")
         if lg.can_call and strength >= 1 - cont:
             return ("call", 0, f"{cont_why} — roughly their top {cont:.0%} facing this")
         if lg.can_check:

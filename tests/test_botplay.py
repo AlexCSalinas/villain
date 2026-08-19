@@ -319,3 +319,34 @@ def test_the_threshold_pivots_on_the_size_they_usually_face():
     at_usual = _facing(1, 0.66, prof)
     assert at_usual is not None
     assert abs(at_usual - 0.45) < 0.06
+
+
+def test_the_bet_depth_in_the_reason_matches_the_action_named():
+    """"3-bets ... at 2-bet depth" contradicted itself in one sentence.
+
+    The blind is the 1-bet and an open is the 2-bet, so raising over an open
+    makes a 3-bet. The label said so; the explanation said 2-bet depth.
+    """
+    import re
+    profile = _Prof(three_bet=0.99, four_bet=0.99, five_bet=0.99)
+    rng = np.random.default_rng(0)
+    seen = 0
+    for level, opener_to in ((1, 6), (2, 20), (3, 60)):
+        for _ in range(60):
+            h = Hand(_seats(4000, 4000, 4000), button=2, sb=1, bb=2,
+                     rng=np.random.default_rng(int(rng.integers(1e9))))
+            h.act("raise", opener_to)
+            while h.raises < level and h.to_act is not None:
+                h.act("raise", h.bet * 3)
+            if h.to_act is None or h.raises != level:
+                continue
+            kind, _, why = decide(h, h.to_act, profile, rng)
+            if kind != "raise" or "bet depth" not in why:
+                continue
+            named = re.search(r"(\d+)-bets", why)
+            depth = re.search(r"at (\d+)-bet depth", why)
+            if not named or not depth:
+                continue
+            assert named.group(1) == depth.group(1), why
+            seen += 1
+    assert seen, "no raise reasons were produced to check"

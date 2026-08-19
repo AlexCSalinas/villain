@@ -3,7 +3,7 @@ const fmtPct = v => (100 * v).toFixed(0) + "%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const SVG = "http://www.w3.org/2000/svg";
-const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: (() => { try { return !!localStorage.getItem("villain.checkFold"); } catch (e) { return false; } })(),
+const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: false, checkFoldHand: null,
                sessionId: null};
 
 /* An "i" that explains a term on hover. Everything the tool says in shorthand
@@ -1545,20 +1545,29 @@ async function stepBots(token) {
   } catch (err) { /* game gone or navigated away */ }
 }
 
-function cfToggle() {
-  // Armed state is a standing instruction, so it is shown in every state of
-  // the table -- including while the villains act, which is exactly when you
-  // want to set it -- and it survives the hand rather than disarming itself.
+function cfArmed(st) {
+  // Armed for *this hand*, not for the session. It has to survive the whole
+  // hand -- you arm it on the flop and it should still fold the river -- but
+  // a standing instruction that outlives the hand is how you fold aces two
+  // hands later without touching anything.
+  return state.checkFold && state.checkFoldHand === st.hand_no;
+}
+
+function cfToggle(st) {
+  // Shown in every state of the table, including while the villains act,
+  // which is exactly when you want to set it.
+  const armed = cfArmed(st);
   const b = document.createElement("button");
-  b.className = "act cf-toggle" + (state.checkFold ? " on" : "");
+  b.className = "act cf-toggle" + (armed ? " on" : "");
   b.textContent = "Check / Fold";
-  b.setAttribute("aria-pressed", state.checkFold ? "true" : "false");
-  b.title = state.checkFold
-    ? "Armed: checks when you can, folds when you cannot. Click to disarm."
-    : "Arm: check when possible, fold when facing a bet, until you turn it off.";
+  b.setAttribute("aria-pressed", armed ? "true" : "false");
+  b.title = armed
+    ? "Armed for this hand: checks when it can, folds when it cannot. Click to disarm."
+    : "Check when possible, fold when facing a bet — for the rest of this hand.";
   b.onclick = () => {
-    state.checkFold = !state.checkFold;
-    try { localStorage.setItem("villain.checkFold", state.checkFold ? "1" : ""); } catch (e) {}
+    const on = !cfArmed(st);
+    state.checkFold = on;
+    state.checkFoldHand = on ? st.hand_no : null;
     renderTable($("#view"), state.game);
   };
   return b;
@@ -1574,7 +1583,7 @@ function renderControls(el, data) {
       }));
     }
     el.appendChild(actbtn("Deal now", () => simPost("/api/sim/next"), "primary"));
-    el.appendChild(cfToggle());
+    el.appendChild(cfToggle(st));
     el.appendChild(actbtn("End & analyze", () => endSession()));
     const won = st.seats.filter(s => s.won);
     if (won.length) {
@@ -1589,7 +1598,7 @@ function renderControls(el, data) {
     const note = document.createElement("span");
     note.className = "small muted"; note.textContent = "villains acting…";
     el.appendChild(note);
-    el.appendChild(cfToggle());
+    el.appendChild(cfToggle(st));
     return;
   }
   const lg = st.legal;
@@ -1597,15 +1606,14 @@ function renderControls(el, data) {
     actionSound(kind);
     simPost("/api/sim/act", {kind, amount: amount || 0});
   };
-  if (state.checkFold) {
-    // Armed, and it stays armed: the point is to fold the next several hands
-    // without touching anything. `act` is declared above this on purpose --
-    // calling it from here while it was still a `const` below threw a
-    // ReferenceError every time, so the option silently did nothing.
+  if (cfArmed(st)) {
+    // `act` is declared above this on purpose -- calling it from here while
+    // it was still a `const` below threw a ReferenceError every time, so the
+    // option silently did nothing.
     act(lg.can_check ? "check" : "fold");
     return;
   }
-  el.appendChild(cfToggle());
+  el.appendChild(cfToggle(st));
   if (lg.can_fold) el.appendChild(actbtn("Fold", () => act("fold")));
   if (lg.can_check) el.appendChild(actbtn("Check", () => act("check")));
   else if (lg.can_call) el.appendChild(actbtn(`Call ${lg.call_amount}`, () => act("call")));
