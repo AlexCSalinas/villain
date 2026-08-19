@@ -602,10 +602,10 @@ def test_the_against_you_read_is_detail_only(tmp_path):
     Mixing "how they play the table" with "how they play you" in one column is
     how the field read stopped meaning anything in the first place.
     """
-    from villain.analyze import as_dict
-    from villain.web import roster_payload
     from tests.conftest import FIXTURE
+    from villain.analyze import as_dict
     from villain.parsers import parse_file
+    from villain.web import roster_payload
 
     with Store(tmp_path / "v.db") as store:
         store.add_hands(parse_file(FIXTURE))
