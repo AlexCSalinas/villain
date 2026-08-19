@@ -183,9 +183,13 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(SCHEMA)
+        self._pending = set()
         self._migrate()
         self._ensure_definitions()
         self.conn.commit()
+
+    #: Players whose books a deferred import still owes a rebuild for.
+    _pending: set[int]
 
     def _migrate(self) -> None:
         """Idempotent schema catch-up for databases made by earlier versions."""
@@ -438,12 +442,20 @@ class Store:
     # -- hands -----------------------------------------------------------
 
     def add_hands(self, hands: Iterable[Hand], report: ImportReport | None = None,
-                  name_splits: set[tuple[str, str, str]] | None = None) -> ImportReport:
+                  name_splits: set[tuple[str, str, str]] | None = None,
+                  defer_rebuild: bool = False) -> ImportReport:
         """Store hands, skipping any already seen, and update the books.
 
         ``name_splits`` holds ``(site, account, name)`` triples the user has
         declared to be a *different* person from whoever already owns that
         account id.
+
+        ``defer_rebuild`` records the players this batch touched and returns
+        without rebuilding, leaving the caller to call :meth:`rebuild_pending`
+        once. A rebuild costs a pass over every hand those players appear in,
+        which on a real database is most of it -- so doing one per file turned
+        an import of N files into N full rebuilds. Importing a directory is the
+        normal case, not the exception.
         """
         report = report or ImportReport()
         fresh: list[Hand] = []
@@ -473,23 +485,32 @@ class Store:
 
         touched = self._ingest(fresh, report, name_splits or set())
         self.conn.commit()
-        if touched:
-            self.rebuild(only=sorted(touched))
+        self._pending.update(touched)
+        if not defer_rebuild:
+            self.rebuild_pending()
         return report
+
+    def rebuild_pending(self) -> int:
+        """Rebuild the books for every player added since the last rebuild."""
+        pending, self._pending = self._pending, set()
+        if not pending:
+            return 0
+        return self.rebuild(only=sorted(pending))
 
     def _ingest(self, hands: list[Hand], report: ImportReport,
                 name_splits: set[tuple[str, str, str]]) -> set[int]:
         """Register players and aliases for a batch of hands."""
         touched: set[int] = set()
+        # One count before and after the whole batch, not two per seat. The
+        # per-seat version issued two full-table counts for every seat of every
+        # hand -- roughly 900k queries on a 70k-hand import -- to learn a number
+        # the difference of two counts gives exactly.
+        before_all = self.conn.execute("SELECT COUNT(*) c FROM players").fetchone()["c"]
         for hand in hands:
             ids = []
             for seat in hand.seats:
-                before = self.conn.execute("SELECT COUNT(*) c FROM players").fetchone()["c"]
                 key = alias_key(hand.site, seat.player_id, seat.name, name_splits)
                 pid = self.player_for(hand.site, seat.player_id, seat.name, alias_key=key)
-                after = self.conn.execute("SELECT COUNT(*) c FROM players").fetchone()["c"]
-                if after > before:
-                    report.players_new += 1
                 ids.append(pid)
                 touched.add(pid)
                 report.players[seat.name] = report.players.get(seat.name, 0) + 1
@@ -498,6 +519,8 @@ class Store:
                     " name = ? WHERE site = ? AND account = ?",
                     (hand.started_at, seat.name, hand.site, key))
             self.mark_distinct(ids)
+        after_all = self.conn.execute("SELECT COUNT(*) c FROM players").fetchone()["c"]
+        report.players_new += after_all - before_all
         return touched
 
     def stored_hands(self, player_id: int | None = None) -> list[Hand]:
@@ -627,6 +650,22 @@ class Store:
             self.conn.execute(
                 "UPDATE players SET display_name = ? WHERE id = ? AND display_name = ''",
                 (name, player_id))
+
+    def books_missing(self) -> int:
+        """Hands stored with no books built from them.
+
+        Hands are committed before the books are computed, so a rebuild that
+        is interrupted -- or an import killed for being slow -- leaves a
+        database full of hands that every profile query reads as "no such
+        player". That rendered as an empty roster with no error at all, which
+        is the worst way for it to present: indistinguishable from a database
+        nobody has imported into yet. Callers surface this instead of guessing.
+        """
+        hands = self.conn.execute("SELECT COUNT(*) c FROM hands").fetchone()["c"]
+        if not hands:
+            return 0
+        books = self.conn.execute("SELECT COUNT(*) c FROM books").fetchone()["c"]
+        return hands if not books else 0
 
     def books(self, player_id: int) -> dict[str, StatBook]:
         """Every regime book for a player, read back out of the cache."""

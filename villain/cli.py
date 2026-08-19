@@ -104,7 +104,12 @@ def _cmd_import(args) -> int:
             report.files += 1
             if not args.quiet:
                 print(f"  {path.name}: {len(hands)} hands")
-            store.add_hands(hands, report)
+            # Defer: rebuilding after each file re-reads every hand those
+            # players appear in, so a directory of N files cost N full passes.
+            store.add_hands(hands, report, defer_rebuild=True)
+        if not args.quiet and report.hands_new:
+            print("  building profiles...", flush=True)
+        store.rebuild_pending()
     if report.files == 0:
         print("No file matched a known format.", file=sys.stderr)
         return 1
