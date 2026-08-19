@@ -12,6 +12,7 @@
     villain validate                 score the classifier on hands it has not seen
     villain backtest                 walk leaks forward: found early, checked late
     villain hero                     what only your own hand history can show
+    villain table <names...>         lineup briefing for who is sitting here
     villain export <file>            write every hand to a portable archive
     villain import-db <file>         merge an archive from another machine
 """
@@ -82,6 +83,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("hero", help="what only your own hand history can show")
     p.add_argument("--player", help="hero's id or name, if auto-detection picks wrong")
+
+    p = sub.add_parser("table", help="lineup briefing for who is sitting here")
+    p.add_argument("names", nargs="+", help="the players at your table")
 
     p = sub.add_parser("export", help="write every hand to a portable archive")
     p.add_argument("path", type=Path)
@@ -181,6 +185,13 @@ def _apply_runs(store, runs) -> int:
                                (question.default_name, keep))
     store.conn.commit()
     return merged
+
+
+def _cmd_table(args) -> int:
+    from .table import brief
+    with Store(args.db) as store:
+        print(brief(store, args.names))
+    return 0
 
 
 def _cmd_export(args) -> int:

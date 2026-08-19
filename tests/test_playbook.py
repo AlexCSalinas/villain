@@ -462,3 +462,40 @@ def test_a_model_that_keeps_inventing_numbers_is_refused(monkeypatch):
     monkeypatch.setenv("VILLAIN_LLM_MODEL", "test-model")
     with pytest.raises(module.Unavailable, match="not in the data"):
         module.narrate(_profile())
+
+
+# -- a rule that cannot fire is not conservative, it is dead -----------------
+
+def test_a_small_threshold_keeps_a_reachable_trigger():
+    """MARGIN is absolute, and two thresholds are smaller than it.
+
+    ``no_three_bet`` (0.05) and ``never_check_raises`` (0.04) had their
+    triggers pushed to 0.00 and -0.01 -- below any frequency that exists, so
+    neither could fire on any player at any sample size.
+    """
+    from villain.exploits import MARGIN, trigger_for
+
+    for threshold in (0.04, 0.05):
+        trigger = trigger_for(threshold, "low")
+        assert trigger > 0.0, f"{threshold} gives an unreachable trigger"
+        assert trigger < threshold, "the guard against noise must still bite"
+
+    # Unchanged where the threshold is comfortably larger than the margin.
+    assert trigger_for(0.40, "low") == pytest.approx(0.40 - MARGIN)
+    assert trigger_for(0.44, "high") == pytest.approx(0.44 + MARGIN)
+
+
+def test_every_low_rule_can_be_triggered_by_some_frequency():
+    """No rule may ask for a frequency below zero."""
+    from villain.exploits import RULES, trigger_for
+    from villain.profile import Profile
+
+    blank = Profile(player_id="x", name="x", hands=0, regime="6max", table_size=6.0)
+    for rule in RULES:
+        if rule.direction != "low":
+            continue
+        try:
+            threshold = rule.threshold(blank)
+        except Exception:
+            continue
+        assert trigger_for(threshold, "low") > 0.0, f"{rule.id} cannot fire"
