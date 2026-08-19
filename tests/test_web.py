@@ -96,6 +96,48 @@ def test_similar_names_raise_an_alias_question(session, tmp_path):
     assert all(not q.auto for q in session_only)
 
 
+def test_same_name_overlapping_time_is_not_offered_as_one(session, tmp_path):
+    """Two accounts with the same display name but overlapping play windows
+    should not be offered as one person.
+
+    A reconnect can explain different account ids for the same human, but if
+    both ids are actively seen during the same time window it is riskier to
+    guess they are one person.
+    """
+    from villain.web import SESSIONS
+
+    # Work with a copy: we will tweak timestamps to create a long overlapping
+    # time window.
+    hands = copy.deepcopy(SESSIONS[session]["hands"])
+    target_name = "player1"
+    a_account = next(
+        s.player_id for h in hands for s in h.seats if s.name == target_name)
+    alt_account = a_account + "-alt"
+
+    # Stretch the hands across many days so the overlap check (>= 7 days) is
+    # meaningful for this fixture.
+    base_ms = 1_800_000_000_000
+    for i, hand in enumerate(hands):
+        hand.started_at = base_ms + i * 86_400_000  # +i days
+
+    twin = copy.deepcopy(hands)
+    for hand in twin:
+        for seat in hand.seats:
+            if seat.name == target_name:
+                seat.player_id = alt_account
+
+    with Store(tmp_path / "v.db") as store:
+        questions = session_questions(store, hands + twin)
+
+    alias = [q for q in questions if q.kind == "alias"]
+    pair = {a_account, alt_account}
+    offered = [
+        q for q in alias
+        if {q.left.get("account"), q.right.get("account")} == pair
+    ]
+    assert not offered, "overlapping same-name accounts should not be merged"
+
+
 def test_regular_opponents_are_never_offered_as_one(session, tmp_path):
     """A pair that shares more than a glitch's worth of hands is two people.
 

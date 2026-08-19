@@ -137,7 +137,7 @@ SPURIOUS_OVERLAP = 2
 
 #: Feature / display-stat definition stamp. Bump when ``rebuild`` is required
 #: for existing databases to grow new counters or fix old ones.
-DEFINITIONS_VERSION = "2026-08-15.vs-hero"
+DEFINITIONS_VERSION = "2026-08-19.iso-and-cbet-slices"
 
 
 def split_key(account: str, name: str) -> str:
