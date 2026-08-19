@@ -106,6 +106,52 @@ def _hero_disk_cache_save(store: Store, hero_id: int | None, hand_count: int,
         pass    # a stale/missing cache costs time next request, not correctness
 
 
+#: Hero builds in flight, so a second request can be told "still building"
+#: instead of queueing behind the lock for a minute and a half.
+_HERO_BUILDING: set = set()
+
+
+def hero_status(store: Store, hero_id: int | None = None) -> str:
+    """``ready`` | ``building`` | ``cold`` -- without starting a build."""
+    key = (str(store.path), hero_id)
+    hand_count = _hand_count(store)
+    cached = _HERO_PAYLOAD_CACHE.get(key)
+    if cached and cached[0] == hand_count:
+        return "ready"
+    if key in _HERO_BUILDING:
+        return "building"
+    hit, _payload = _hero_disk_cache_load(store, hero_id, hand_count)
+    return "ready" if hit else "cold"
+
+
+def hero_begin(store: Store, hero_id: int | None = None) -> bool:
+    """Start the build on a background thread. True if one was started here.
+
+    The work is seconds to minutes -- it walks every hand the exporting player
+    appears in and fits a strength model over it -- and it was done inside the
+    request, so the browser sat on a blank Hero tab with no way to know
+    whether anything was happening. Same lock, same caches; only who waits
+    changes.
+    """
+    key = (str(store.path), hero_id)
+    if hero_status(store, hero_id) != "cold" or key in _HERO_BUILDING:
+        return False
+    _HERO_BUILDING.add(key)
+    path = store.path
+
+    def run():
+        try:
+            with Store(path) as own:
+                hero_payload(own, hero_id)
+        except Exception:
+            pass                       # a failed build must not wedge the flag
+        finally:
+            _HERO_BUILDING.discard(key)
+
+    threading.Thread(target=run, name="hero-build", daemon=True).start()
+    return True
+
+
 def hero_payload(store: Store, hero_id: int | None = None) -> dict | None:
     key = (str(store.path), hero_id)
     hand_count = _hand_count(store)

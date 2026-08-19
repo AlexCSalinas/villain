@@ -3,7 +3,7 @@ const fmtPct = v => (100 * v).toFixed(0) + "%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const SVG = "http://www.w3.org/2000/svg";
-const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: false, checkFoldHand: null,
+const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: false, checkFoldHand: null, heroPoll: null,
                sessionId: null};
 
 /* An "i" that explains a term on hover. Everything the tool says in shorthand
@@ -1692,6 +1692,18 @@ async function viewHero() {
   let data;
   try {
     data = await get("/api/hero");
+    if (data && data.status === "building") {
+      // The build runs once per import and takes about a minute and a half.
+      // Say so and keep asking, rather than holding the request open with a
+      // blank tab behind it.
+      view.innerHTML = `<div class="panel"><h2>Hero</h2>
+        <p>${esc(data.message || "Reading your hands…")}</p>
+        <p class="small muted">This page will appear on its own when it is ready.</p></div>`;
+      if (state.heroPoll) clearTimeout(state.heroPoll);
+      state.heroPoll = setTimeout(() => { if (state.tab === "hero") viewHero(); }, 4000);
+      return;
+    }
+    if (state.heroPoll) { clearTimeout(state.heroPoll); state.heroPoll = null; }
   } catch (err) {
     $("#modal").innerHTML = "";
     view.innerHTML = `<div class="panel"><h2>hero</h2>

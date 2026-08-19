@@ -116,6 +116,37 @@ def _solid(profile: Profile, feature: str) -> float:
     return target_frequency(ARCHETYPE_BY_NAME["tag"], feature, profile.regime, profile)
 
 
+#: A tolerance may tighten to the pool at most this far. A degenerate band --
+#: a stat everyone in a small database happens to agree on -- must not be able
+#: to score the whole table zero.
+MIN_TOLERANCE_SHARE = 0.35
+
+
+def _pool_tolerance(profile, stat: str, builtin: float) -> float:
+    """The built-in band, tightened to the one players actually occupy.
+
+    The bands were set from poker theory and are two to four times wider than
+    the pool's real spread, so a player a full standard deviation from solid
+    still scored 96 and every component saturated: postflop aggression had a
+    standard deviation of 3.7 around a median of 98, which is not a measure of
+    anything. Distance from solid play is still the thing being scored -- this
+    only stops the ruler being longer than the room.
+
+    Tightening only. It never widens past the theory band, so nobody is scored
+    more leniently than the absolute standard, and it falls back to the built
+    in number when there is no pool to ask.
+    """
+    band = profile.priors.get(f"range:{stat}") if profile is not None else None
+    if not band:
+        return builtin
+    low, high = band
+    if high <= low:
+        return builtin
+    # p2..p98 spans about four standard deviations.
+    sd = (high - low) / 4.0
+    return max(min(builtin, 2.0 * sd), builtin * MIN_TOLERANCE_SHARE)
+
+
 def _band_score(value: float, target: float, tolerance: float,
                 loose_tolerance: float | None = None) -> float:
     """100 at the target, decaying with distance in units of ``tolerance``.
@@ -137,7 +168,8 @@ def _preflop_selection(profile: Profile) -> Component | None:
     # Tighter than the field is a mild error and loose is a large one, so the
     # band is generous below the target and strict above it. A player who folds
     # too much leaves value behind; one who plays everything bleeds it.
-    score = _band_score(vpip, _solid(profile, "vpip"), tolerance=0.22,
+    score = _band_score(vpip, _solid(profile, "vpip"),
+                        tolerance=_pool_tolerance(profile, "vpip", 0.22),
                         loose_tolerance=0.13)
     limp = profile.get("limp")
     note = ""
@@ -172,7 +204,9 @@ def _postflop_aggression(profile: Profile) -> Component | None:
         value = profile.get(f"aggression:{street}")
         if value is None or profile.opps(f"aggression:{street}") < 8:
             continue
-        scores.append(_band_score(value, _solid(profile, f"aggression:{street}"), 0.18))
+        scores.append(_band_score(
+            value, _solid(profile, f"aggression:{street}"),
+            _pool_tolerance(profile, f"aggression:{street}", 0.18)))
         weights.append(1.0)
     if not scores:
         return None
@@ -189,7 +223,8 @@ def _discipline(profile: Profile) -> Component | None:
             continue
         # Near the breakeven fold frequency is where an opponent has no cheap
         # exploit in either direction.
-        scores.append(_band_score(value, 0.44, 0.16))
+        scores.append(_band_score(
+            value, 0.44, _pool_tolerance(profile, f"fold_vs_bet:{street}", 0.16)))
     if not scores:
         return None
     return Component("Discipline vs bets", sum(scores) / len(scores), 1.4)
@@ -201,9 +236,11 @@ def _showdown_judgement(profile: Profile) -> Component | None:
         return None
     # Winning most of the showdowns you reach means you got there with the
     # right hands. Reaching very few is its own error, so wtsd is banded.
-    score = _band_score(wsd, _solid(profile, "wsd") + 0.04, 0.16)
+    score = _band_score(wsd, _solid(profile, "wsd") + 0.04,
+                        _pool_tolerance(profile, "wsd", 0.16))
     if wtsd is not None and profile.opps("wtsd") >= 12:
-        score = 0.65 * score + 0.35 * _band_score(wtsd, _solid(profile, "wtsd"), 0.10)
+        score = 0.65 * score + 0.35 * _band_score(
+            wtsd, _solid(profile, "wtsd"), _pool_tolerance(profile, "wtsd", 0.10))
     return Component("Showdown judgment", score, 1.0)
 
 
