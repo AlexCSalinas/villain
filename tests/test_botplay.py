@@ -350,3 +350,44 @@ def test_the_bet_depth_in_the_reason_matches_the_action_named():
             assert named.group(1) == depth.group(1), why
             seen += 1
     assert seen, "no raise reasons were produced to check"
+
+
+# -- the sim plays the table it is actually at --------------------------------
+
+def test_a_villain_uses_the_book_for_the_table_size():
+    """Heads-up and six-handed are two strategies, not one with a label."""
+    from villain.sim import MIN_REGIME_HANDS, Villain
+
+    class Book:
+        def __init__(self, regime, hands):
+            self.regime, self.hands = regime, hands
+
+    pooled = Book("6max", 9999)
+    hu = Book("hu", MIN_REGIME_HANDS + 1)
+    six = Book("6max", MIN_REGIME_HANDS + 1)
+    v = Villain(pooled, {"hu": hu, "6max": six})
+    assert v.at(2) is hu
+    assert v.at(6) is six
+
+
+def test_a_thin_regime_book_falls_back_to_the_pooled_one():
+    """A book on forty hands describes the right game and nothing else."""
+    from villain.sim import MIN_REGIME_HANDS, Villain
+
+    class Book:
+        def __init__(self, regime, hands):
+            self.regime, self.hands = regime, hands
+
+    pooled = Book("6max", 9999)
+    thin = Book("hu", MIN_REGIME_HANDS - 1)
+    v = Villain(pooled, {"hu": thin})
+    assert v.at(2) is pooled
+
+
+def test_a_villain_without_regime_books_still_plays():
+    from villain.sim import Villain
+
+    class Book:
+        regime, hands = "6max", 500
+    pooled = Book()
+    assert Villain(pooled).at(6) is pooled

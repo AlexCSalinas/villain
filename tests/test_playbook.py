@@ -499,3 +499,29 @@ def test_every_low_rule_can_be_triggered_by_some_frequency():
         except Exception:
             continue
         assert trigger_for(threshold, "low") > 0.0, f"{rule.id} cannot fire"
+
+
+def test_no_rule_asks_for_a_frequency_nobody_could_post(tmp_path):
+    """A rule whose trigger sits outside the pool's own range is dead.
+
+    Nine of the ten chosen thresholds were: `bluffs_rivers` asked 0.40 where
+    the pool's highest is 0.245, and every timing rule sat above its own
+    ceiling. The pool-derived ones are now held inside the band players
+    actually occupy -- including the margin the trigger adds on top, which is
+    where two of them escaped it on the second pass.
+    """
+    from villain.exploits import MARGIN, POOL_HIGH, POOL_LOW, pool_bar, trigger_for
+    from villain.profile import Profile
+
+    low, high = 0.05, 0.30
+    p = Profile(player_id="x", name="x", hands=500, regime="6max", table_size=6.0)
+    p.priors = {"range:some_stat": (low, high)}
+
+    hi_bar = pool_bar(p, "some_stat", POOL_HIGH, 0.99)
+    assert trigger_for(hi_bar, "high") <= high, "nobody could ever clear it"
+    lo_bar = pool_bar(p, "some_stat", POOL_LOW, 0.0)
+    assert trigger_for(lo_bar, "low") >= low - MARGIN, "nobody could ever fall under it"
+
+    # With no fitted pool, the chosen number is used unchanged.
+    blank = Profile(player_id="y", name="y", hands=0, regime="6max", table_size=6.0)
+    assert pool_bar(blank, "some_stat", POOL_HIGH, 0.42) == 0.42

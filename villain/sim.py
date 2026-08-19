@@ -14,6 +14,39 @@ import numpy as np
 from .botplay import decide
 from .cards import card_text
 from .holdem import STREETS, Hand, Seat
+from .priors import regime as regime_of
+
+#: Hands a villain needs *in a table size* before that book is preferred to
+#: their pooled one. Below it the pooled profile is the better estimate even
+#: though it describes the wrong game, because a regime book on forty hands
+#: describes nothing at all.
+MIN_REGIME_HANDS = 150
+
+
+class Villain:
+    """A player's profiles, and the one that matches the table being played.
+
+    Regime is part of the identity of a book, not a label on it -- the same
+    person heads-up and six-handed is two strategies, and pooling them
+    describes neither. The sim was handing the policy the pooled profile, so
+    a villain defended their big blind at their six-max rate in a heads-up
+    match. Seats empty out as people bust, so this is resolved per hand
+    rather than once when the game is made.
+    """
+
+    def __init__(self, pooled, by_regime: dict | None = None):
+        self.pooled = pooled
+        self.by_regime = by_regime or {}
+
+    def at(self, players: int):
+        book = self.by_regime.get(regime_of(float(players)))
+        if book is not None and book.hands >= MIN_REGIME_HANDS:
+            return book
+        return self.pooled
+
+    @property
+    def regimes(self) -> dict:
+        return {r: b.hands for r, b in self.by_regime.items()}
 
 
 class Game:
@@ -60,7 +93,12 @@ class Game:
         if h.over or h.to_act == self.hero_seat:
             return None
         seat = h.to_act
-        kind, amount, reason = decide(h, seat, self.profiles[seat], self.rng,
+        # Table size, not how many are still in the pot: regime is about how
+        # many people you are playing against, which does not change when
+        # somebody folds.
+        who = self.profiles[seat]
+        book = who.at(len(h.seats)) if isinstance(who, Villain) else who
+        kind, amount, reason = decide(h, seat, book, self.rng,
                                       self.names[seat])
         h.act(kind, amount)
         if h.over:

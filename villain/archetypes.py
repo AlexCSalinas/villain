@@ -362,6 +362,29 @@ def target_frequency(arch: Archetype, feature: str, table_regime: str,
     return sigmoid(logit(pop) + arch.deviation(feature) * spread)
 
 
+# Two attempts at the reachability problem -- station, maniac, nit and trapper
+# asking for frequencies nobody in the pool posts -- were measured against
+# `villain validate` and both rejected. Recorded so they are not tried a third
+# time without a reason to expect a different answer:
+#
+#                        log loss   accuracy   calibration   agreement
+#   baseline                1.295      0.558         0.003       0.593
+#   fitted spreads          1.362      0.558         0.015       0.611
+#   clamp target to band    1.343      0.566         0.022       0.566
+#
+# Fitting the spread widened `raise_share` (0.55 -> 0.83 measured), amplifying
+# the one feature that already decided the label. Clamping bought +0.008
+# accuracy for 7x the calibration error. The band is still fitted and stored,
+# because the exploit thresholds use it to stay inside what players actually
+# do -- it is only the archetype targets that are left alone.
+
+
+#: Opportunities past which a single feature stops accumulating evidence.
+#: ``None`` restores the old behaviour, where the commonest spot wins.
+#: Swept against ``villain validate``, never against a label.
+EVIDENCE_CAP: int | None = None
+
+
 def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
     """Best-fitting archetype, its posterior probability, and the full mix.
 
@@ -385,7 +408,21 @@ def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
             # pool 24% of the counts were borrowed, and the players the matcher
             # got most confidently wrong were the ones borrowing most.
             n = est.native_opps or est.opps
-            observed.append((feature, est.raw * n, n))
+            # Cap how much evidence one feature may contribute. The
+            # beta-binomial log-likelihood grows with the opportunity count,
+            # and opportunity counts are wildly unequal by *where the spot
+            # occurs*, not by how much the feature tells you: a preflop
+            # feature gets a spot every hand, a river fold only when the hand
+            # gets there. On a real 13,888-hand profile that is raise_share at
+            # n=1745 and limp at n=2901 against fold_vs_bet:river at n=263, so
+            # preflop play decided the archetype 108% of the way -- the
+            # postflop evidence pointed the other way and was outvoted.
+            # IMPORTANCE is supposed to be what weights a feature; this stops
+            # the sample size from overruling it.
+            if EVIDENCE_CAP and n > EVIDENCE_CAP:
+                observed.append((feature, est.raw * EVIDENCE_CAP, float(EVIDENCE_CAP)))
+            else:
+                observed.append((feature, est.raw * n, n))
 
     fold_accuracy = profile.fold_accuracy()
 

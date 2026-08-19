@@ -358,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
     def _sim_new(self, body: dict):
         import secrets
 
-        from ..sim import Game
+        from ..sim import Game, Villain
         vids = [int(x) for x in (body.get("villains") or [])][:5]
         if not vids:
             return self._send(400, {"error": "pick at least one villain"})
@@ -370,7 +370,10 @@ class Handler(BaseHTTPRequestHandler):
             known = {int(r["id"]): r["display_name"] for r in store.players()}
             for pid in vids:
                 names.append(known.get(pid, f"Villain {pid}"))
-                profiles.append(store.profile(pid))
+                # Both books: the pooled one, and one per table size. Which is
+                # used depends on how many seats the game actually has.
+                by_regime = {p.regime: p for p in store.profiles(pid)}
+                profiles.append(Villain(store.profile(pid), by_regime))
         token = secrets.token_urlsafe(9)
         game = Game(names, profiles, hero_seat=0, start_stack=stack, sb=sb, bb=bb)
         SIM_GAMES[token] = game
