@@ -51,7 +51,7 @@ regressions named for the modeling mistakes that produced them.
 villain ui                         # http://127.0.0.1:8766
 ```
 
-Standard library HTTP server, one self-contained module. Two tabs.
+Standard library HTTP server, one self-contained module. Four tabs.
 
 * **Database** — everyone you have recorded, ranked by skill, with the bb/100
   you can attack them for alongside. Drop any number of exports on it at once:
@@ -63,6 +63,19 @@ Standard library HTTP server, one self-contained module. Two tabs.
   they did more or less of than usual. Compared *within* a table size, because
   "+8pp VPIP" measures which table somebody sat at otherwise. A player with too
   little history outside the sitting is told so rather than given a trend.
+* **Hero** — you, measured against yourself. Your own cards are visible on
+  every hand while everyone else's show only at a showdown, so your history can
+  grade what theirs cannot: how often your folds were right, the value you left
+  on the table, and how your range, sizing and timing shift from spot to spot.
+  The one tab that reads your own game instead of an opponent's.
+* **Simulate** — sit down and play real hands against players from your own
+  database. Each villain acts from its own measured profile — a station calls
+  you down, a nit folds, a maniac keeps barrelling — so it plays like practice
+  against the exact people you face, and (with *explain decisions* on) tells you
+  *why* each of them did what they did. End the session for a read on how you
+  came out, hand by hand and against each opponent.
+
+![The practice simulator: a real hand against villains driven by their measured profiles, each decision explained](docs/simulator.png)
 
 A profile is one screen of tiles — the read and the plan across the top, then
 what to do, the rating and the numbers — because a mid-session read that
