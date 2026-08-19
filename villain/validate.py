@@ -79,6 +79,22 @@ def _best_supported(profile) -> str:
 
     Unweighted and undiscounted on purpose. The target has to be independent of
     every constant being tuned, or the harness scores the tuning against itself.
+
+    **It is not, and this is a live bug.** ``target_frequency`` is itself made
+    of tuned constants -- the archetype traits and the spread they are
+    multiplied by -- so a change to either moves this ground truth and the
+    posterior being scored in the same direction. That makes the harness blind
+    to exactly the changes it is most needed for: three separate attempts at
+    the prototype-reachability problem were "rejected" by numbers that only
+    show the two halves agreeing with each other.
+
+    Weighting changes (``IMPORTANCE``, ``CORRELATION_DISCOUNT``,
+    ``EVIDENCE_CAP``) do not touch ``target_frequency`` and are still scored
+    honestly. Anything that moves a target is not.
+
+    Fixing it needs a target that does not consult the thing being tuned --
+    the raw counts against a fixed reference, or a held-out family of features
+    scored on the other half.
     """
     best, best_ll = None, -math.inf
     for arch in ARCHETYPES:

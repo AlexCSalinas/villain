@@ -364,19 +364,47 @@ def target_frequency(arch: Archetype, feature: str, table_regime: str,
 
 # Two attempts at the reachability problem -- station, maniac, nit and trapper
 # asking for frequencies nobody in the pool posts -- were measured against
-# `villain validate` and both rejected. Recorded so they are not tried a third
-# time without a reason to expect a different answer:
+# `villain validate` and both looked rejected. Recorded with the caveat that
+# matters more than the numbers:
+#
+#   *** validate cannot judge a change to this function. ***
+#
+# `validate._best_supported` builds its ground truth by calling
+# `target_frequency`, so a change here moves the label and the thing predicting
+# it together. Its own docstring says the target "has to be independent of
+# every constant being tuned, or the harness scores the tuning against
+# itself" -- and then calls this. The numbers below are therefore evidence
+# that these changes are self-consistent, not that they are wrong:
 #
 #                        log loss   accuracy   calibration   agreement
 #   baseline                1.295      0.558         0.003       0.593
 #   fitted spreads          1.362      0.558         0.015       0.611
 #   clamp target to band    1.343      0.566         0.022       0.566
 #
-# Fitting the spread widened `raise_share` (0.55 -> 0.83 measured), amplifying
-# the one feature that already decided the label. Clamping bought +0.008
-# accuracy for 7x the calibration error. The band is still fitted and stored,
-# because the exploit thresholds use it to stay inside what players actually
-# do -- it is only the archetype targets that are left alone.
+# The band is still fitted and stored, because the exploit thresholds use it to
+# stay inside what players actually do -- it is only the archetype targets that
+# are left alone, and only until the harness can judge them.
+#
+# What the dead prototypes actually need is not a different spread. Their
+# traits were authored as "+/-2.2 spreads" without anyone checking the
+# frequency that implies, and the implied frequencies sit outside real play:
+#
+#   station  fold_vs_bet:turn   needs 0.258   pool 0.353-0.639
+#   maniac   aggression:turn    needs 0.435   pool 0.162-0.380
+#   nit      vpip               needs 0.194   pool 0.235-0.723
+#   trapper  check_raise:flop   needs 0.267   pool 0.021-0.167
+#
+# Rescaling each trait vector by the largest factor that keeps every target
+# inside the observed band (station 0.60, trapper 0.56, limper 0.58, nit 0.84)
+# revives station and trapper and takes calibration error 0.011 -> 0.001. Fix
+# the harness first; then this is a poker judgement about what "station"
+# means, not a statistics problem.
+#
+# EVIDENCE_CAP is the one lever validate *can* judge honestly, because it does
+# not touch this function. Swept against a fixed target it does nothing at all:
+# log loss 1.295 -> 1.298 at a cap of 400, and agreement pinned at 0.593 for
+# every cap from 2000 down to 80. The opportunity-count imbalance is real and
+# this is not the way to correct it.
 
 
 #: Opportunities past which a single feature stops accumulating evidence.

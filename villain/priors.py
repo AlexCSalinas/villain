@@ -242,12 +242,13 @@ def spread_of(feature: str, table_regime: str = "",
     decided the label. Clamping the target into the observed band instead was
     also tried and also rejected (1.343 / 0.566 / 0.022).
 
-    So the measurement stands and the substitution does not, and the
-    reachability problem it was aimed at -- station, maniac and nit asking for
-    frequencies nobody in the pool posts -- is still open. A third attempt
-    needs a reason to expect a different answer, not another sweep; tuning it
-    against a handful of hand-labeled players is how the prototypes were
-    overfitted twice already.
+    So the measurement stands, and whether the substitution helps is currently
+    unknowable. The reachability problem it was aimed at is still open, and
+    the evidence now points at the prototypes' own traits rather than at this
+    constant: they were authored as multiples of a spread without checking the
+    frequency that implies. Fix the harness before trying again, and do not
+    tune this against a handful of hand-labeled players -- that is how the
+    prototypes were overfitted twice already.
     """
     return SPREAD.get(feature, DEFAULT_SPREAD)
 
