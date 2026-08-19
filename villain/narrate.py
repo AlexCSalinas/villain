@@ -407,7 +407,7 @@ def _one_call(url: str, model: str, headers: dict, facts: str, timeout: int) -> 
                 "to another OpenAI-compatible endpoint.")
         raise _Retryable() from Unavailable(
             f"could not reach {url}: {exc.reason}. {hint}")
-    except (TimeoutError, OSError) as exc:
+    except (TimeoutError, OSError):
         raise _Retryable() from Unavailable(f"{model} did not respond in {timeout}s")
 
     try:

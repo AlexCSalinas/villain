@@ -395,8 +395,8 @@ def test_splitting_the_batch_does_not_change_the_books():
     cutoffs are frozen -- this asserts it directly rather than trusting it,
     by chunking by hand instead of by process.
     """
-    from villain.features import merge_books, record_hand, record_hands
     from tests.conftest import FIXTURE
+    from villain.features import merge_books, record_hand, record_hands
     from villain.parsers import parse_file
 
     hands = parse_file(FIXTURE)

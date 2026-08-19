@@ -7,8 +7,8 @@ mixed exports and sort them out itself.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
 
 from ..model import Hand
 

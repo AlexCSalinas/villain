@@ -20,8 +20,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .archetypes import (ARCHETYPES, CONCENTRATION, _log_beta_binomial, match,
-                         target_frequency)
+from .archetypes import ARCHETYPES, _log_beta_binomial, match, target_frequency
 from .profile import PROFILE_FEATURES, build_profile
 
 #: A half needs this many hands before it is worth scoring at all.

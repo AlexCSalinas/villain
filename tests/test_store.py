@@ -7,7 +7,6 @@ import pytest
 from villain.cli import main
 from villain.db import Store
 from villain.identity import name_similarity, normalise, suggest_links
-from villain.parsers import parse_file
 
 
 @pytest.fixture

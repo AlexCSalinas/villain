@@ -54,10 +54,9 @@ prototypes, because a cluster id is not a strategy.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from .priors import (DEFAULT_SPREAD, SPREAD, logit, population_mean,
-                     sigmoid, spread_of)
+from .priors import logit, population_mean, sigmoid, spread_of
 from .profile import PROFILE_FEATURES, Profile
 
 #: How much each feature counts toward identifying a plan. Shared by every
@@ -348,7 +347,7 @@ def deviations(profile: Profile) -> dict[str, float]:
 
 
 def target_frequency(arch: Archetype, feature: str, table_regime: str,
-                     profile: "Profile | None" = None) -> float:
+                     profile: Profile | None = None) -> float:
     """The frequency this archetype implies for a feature at this table size.
 
     Pass ``profile`` to measure against that player's fitted population rather

@@ -175,11 +175,6 @@ def _apply_runs(store, runs) -> int:
                                (question.default_name, keep))
     store.conn.commit()
     return merged
-    if report.files == 0:
-        print("No file matched a known format.", file=sys.stderr)
-        return 1
-    print(report)
-    return 0
 
 
 def _cmd_export(args) -> int:
@@ -419,9 +414,20 @@ def _cmd_backtest(args) -> int:
 
 
 def _cmd_hero(args) -> int:
-    from .hero import (FoldReport, MissedValueReport, NotEnoughData, fit_population_model,
-                       fold_grades, find_hero, hero_visibility, missed_value,
-                       preflop_range, range_narrowing, sizing_tell, timing_tell)
+    from .hero import (
+        FoldReport,
+        MissedValueReport,
+        NotEnoughData,
+        find_hero,
+        fit_population_model,
+        fold_grades,
+        hero_visibility,
+        missed_value,
+        preflop_range,
+        range_narrowing,
+        sizing_tell,
+        timing_tell,
+    )
     from .report import hero_card
 
     with Store(args.db) as store:

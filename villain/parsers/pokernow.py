@@ -36,8 +36,9 @@ preflop is a raise (there are blinds out) while a flop lead is a bet.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from ..model import Act, Action, Hand, Seat, Street, positions_for
 from .base import register
@@ -150,7 +151,7 @@ def _replay(hand: Hand, events: list[dict[str, Any]], by_seat: dict[int, Seat]) 
     # ``hand.pot`` came up short by exactly the antes while ``awarded``
     # included them -- every hand of an ante game failed the balance check and
     # was dropped, silently, for every player at the table.
-    committed: dict[int, int] = {seat: hand.ante for seat in by_seat} if hand.ante else {}
+    committed: dict[int, int] = dict.fromkeys(by_seat, hand.ante) if hand.ante else {}
     returned = 0
     awarded = 0
     prev_at: int | None = None

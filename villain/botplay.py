@@ -22,7 +22,6 @@ from .holdem import STREETS
 from .model import positions_for
 from .stats import size_bucket
 
-
 # -- preflop hand strength: percentile of each of the 169 classes -------------
 
 def _chen(cls: str) -> float:

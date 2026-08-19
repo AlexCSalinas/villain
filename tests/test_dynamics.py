@@ -7,8 +7,7 @@ the arithmetic behind them.
 
 import pytest
 
-from villain.dynamics import (ADJUSTMENT_PRIOR, MIN_GAP, MIN_OPPS, Adjustment,
-                              adjustments)
+from villain.dynamics import ADJUSTMENT_PRIOR, MIN_GAP, MIN_OPPS, Adjustment, adjustments
 from villain.stats import VS_HERO, StatBook
 
 TABLE_SIZE = {"hu": 2, "3max": 3, "6max": 6, "full": 9}

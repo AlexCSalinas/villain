@@ -22,7 +22,7 @@ built on. Chips are plain integers in whatever unit the caller passes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -296,7 +296,7 @@ class Hand:
         for s in self.seats:                             # sweep last street in
             s.street_put = 0
         contribs = {i: s.hand_put for i, s in enumerate(self.seats)}
-        winners: dict[int, int] = {i: 0 for i in range(self.n)}
+        winners: dict[int, int] = dict.fromkeys(range(self.n), 0)
 
         # Peel side pots by contribution level.
         levels = sorted({c for c in contribs.values() if c > 0})

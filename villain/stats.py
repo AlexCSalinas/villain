@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator
 
 from .model import Act, Action, Hand, Street, postflop_rank
 
@@ -58,7 +58,7 @@ class Ratio:
         if hit:
             self.hits += weight
 
-    def merge(self, other: "Ratio") -> None:
+    def merge(self, other: Ratio) -> None:
         self.hits += other.hits
         self.opps += other.opps
 
@@ -80,7 +80,7 @@ class Meter:
         self.total += value * weight
         self.sumsq += value * value * weight
 
-    def merge(self, other: "Meter") -> None:
+    def merge(self, other: Meter) -> None:
         self.n += other.n
         self.total += other.total
         self.sumsq += other.sumsq
@@ -122,7 +122,7 @@ class StatBook:
     def measure(self, stat: str, value: float) -> None:
         self.meters[stat].add(value)
 
-    def merge(self, other: "StatBook") -> "StatBook":
+    def merge(self, other: StatBook) -> StatBook:
         """Add another book of the same player and regime into this one."""
         self.hands += other.hands
         self.player_id = self.player_id or other.player_id
@@ -182,7 +182,7 @@ class HandView:
         self.seats = {s.seat: s for s in hand.seats}
         self.folded_on: dict[int, Street] = {}
         self.saw: dict[Street, set[int]] = {s: set() for s in Street}
-        self.aggressor: dict[Street, int | None] = {s: None for s in Street}
+        self.aggressor: dict[Street, int | None] = dict.fromkeys(Street)
         self.last_street = Street.PREFLOP
         self._build()
 

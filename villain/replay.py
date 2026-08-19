@@ -8,7 +8,7 @@ other. No analysis, no opinions, just the hand as it happened.
 
 from __future__ import annotations
 
-from .model import ACT_LABELS, Act, Hand, Street
+from .model import ACT_LABELS, Hand, Street
 
 
 def replay(hand: Hand, focus: str | None = None) -> dict:

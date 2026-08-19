@@ -8,8 +8,6 @@ section rather than an empty one.
 
 import json
 
-import pytest
-
 from villain.analyze import as_dict
 from villain.dynamics import adjustments
 from villain.features import record_hands

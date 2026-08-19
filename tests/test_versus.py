@@ -69,7 +69,7 @@ def test_heads_up_the_slice_is_the_whole_counter(hands, hero):
     assert hu, "fixture should contain heads-up hands with the exporter"
     books = _books(hu, hero)
     checked = 0
-    for pid, _regime, book, stat, ratio in _versus(books):
+    for _pid, _regime, book, stat, ratio in _versus(books):
         parent = book.ratios[stat[len(VS_HERO):]]
         assert (ratio.hits, ratio.opps) == (parent.hits, parent.opps), stat
         checked += 1
@@ -77,12 +77,12 @@ def test_heads_up_the_slice_is_the_whole_counter(hands, hero):
 
 
 def test_the_exporter_has_no_slice_of_their_own(books, hero):
-    for regime, book in books[hero].items():
+    for _regime, book in books[hero].items():
         assert not [s for s in book.ratios if s.startswith(VS_HERO)]
 
 
 def test_no_hero_means_no_slice(hands):
-    for _pid, _regime, book, stat, _ratio in _versus(_books(hands, None)):
+    for _pid, _regime, _book, stat, _ratio in _versus(_books(hands, None)):
         pytest.fail(f"recorded {stat} with nobody identified as the exporter")
 
 
@@ -107,8 +107,8 @@ def test_pooled_counters_are_untouched(hands, hero):
 
 
 def test_profiles_carry_no_versus_stats(books):
-    for pid, by_regime in books.items():
-        for regime, book in by_regime.items():
+    for _pid, by_regime in books.items():
+        for _regime, book in by_regime.items():
             profile = build_profile(book, others=by_regime)
             assert not [s for s in profile.stats if s.startswith(VS_HERO)]
 
@@ -116,7 +116,7 @@ def test_profiles_carry_no_versus_stats(books):
 def test_the_unified_book_drops_them_rather_than_translating(books):
     """A rate has no meaning on another table size's scale without a
     population to be a deviation from, and this one has none."""
-    for pid, by_regime in books.items():
+    for _pid, by_regime in books.items():
         merged, _contributions, native = unified_book(by_regime)
         assert not [s for s in merged.ratios if s.startswith(VS_HERO)]
         assert not [s for s in native if s.startswith(VS_HERO)]
@@ -132,7 +132,7 @@ def test_the_prior_fit_never_sees_them(tmp_path, hands):
         store.add_hands(hands)
         samples = store.population_samples()
     assert samples, "fixture should produce population samples"
-    for regime, stats in samples.items():
+    for _regime, stats in samples.items():
         assert not [s for s in stats if s.startswith(VS_HERO)]
 
 

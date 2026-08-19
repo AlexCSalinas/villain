@@ -20,10 +20,9 @@ Three families of signal are collected:
 
 from __future__ import annotations
 
-from typing import Iterable
-
 import math
 import os
+from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -696,7 +695,7 @@ def _all_in_ev(hand: Hand, view: HandView, books: Books, reg: str,
         return
     invested = [s.invested for s in hand.seats]
     depths = {s.invested for s in hand.seats if s.invested > 0}
-    if len(depths) > 1 and len([a for a in all_in_actions]) > 1:
+    if len(depths) > 1 and len(all_in_actions) > 1:
         # Unequal stacks all-in: layered pots, which this does not model.
         hand.flags.add("side_pot")
     for (seat, _), share in zip(known.items(), shares):

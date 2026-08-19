@@ -25,7 +25,6 @@ exactly the question the prior strength answers.
 from __future__ import annotations
 
 import math
-
 from dataclasses import dataclass
 
 # Table-size regimes. These are different games, not variations on one: a 55%

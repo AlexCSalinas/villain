@@ -8,36 +8,18 @@ table and closing the tab leaves the database untouched.
 
 from __future__ import annotations
 
-import gzip
-import json
-import secrets
 import tempfile
-import threading
 import time
-import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
-from ..analyze import as_dict, enrich
-from ..archetypes import ARCHETYPE_BY_NAME, deviations
-from ..db import DEFAULT_PATH, Store, split_key
+from ..analyze import enrich
+from ..db import Store, split_key
 from ..dynamics import adjustments
-from ..exploits import RULES, find_watchlist
 from ..features import record_hands
-from ..evidence import find as find_evidence
-from ..glossary import payload as glossary_payload, stat_help
+from ..identity import askable_questions, auto_answers
 from ..model import hand_from_dict, hand_to_dict
-from ..identity import askable_questions, auto_answers, session_questions, suggest_links
-from ..skill import weaknesses
-from ..narrate import Unavailable, enabled as narrator_enabled, narrate
-from ..parsers import UnknownFormat, parse_file
-from ..priors import population_mean
-from ..profile import build_profiles, build_unified, primary_regime
-from ..stats import VS_HERO
-from ..timing import timing_tells
-from ..replay import replay
-
+from ..parsers import parse_file
+from ..profile import build_unified, primary_regime
 from .heroview import _to_you
 from .payloads import profile_payload
 

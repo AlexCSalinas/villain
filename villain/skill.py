@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .archetypes import ARCHETYPE_BY_NAME, target_frequency
-from .exploits import Leak, dedupe_leaks, find_leaks, leak_family
+from .exploits import Leak, find_leaks, leak_family
 from .profile import Profile
 
 TIERS = [

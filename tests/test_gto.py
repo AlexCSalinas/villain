@@ -2,8 +2,6 @@
 
 from dataclasses import dataclass
 
-import pytest
-
 from villain import gto
 from villain.priors import FULL, HEADS_UP, SHORT, THREE
 
