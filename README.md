@@ -1,19 +1,23 @@
 # Villain
 
-Reads hand histories, works out what kind of player each opponent is, prices
-what their leaks are worth, and remembers them the next time they sit down.
+[![tests](https://github.com/aroraarnav/villain/actions/workflows/tests.yml/badge.svg)](https://github.com/aroraarnav/villain/actions/workflows/tests.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## Why this is hard
+**Villain reads your poker hand histories and tells you how to beat the people
+you play against.** Drop in an export from a session and, for every opponent, it
+works out what kind of player they are, the specific mistakes worth attacking
+and what each one is worth, and a skill rating — then remembers them the next
+time they sit down.
 
-A home game session is about 200 hands — 20 to 40 observations of any postflop
-statistic. A tracker will tell you the villain folds to 100% of turn bets
-because he folded the only three he faced, and betting every turn on that basis
-is how you donate to a normal player. The hard part is not computing statistics
-but knowing which of them mean anything yet, and everything below follows from
-that: this is built for a couple of hundred hands, not a couple of hundred
-thousand.
+It is built for **home games and small samples**. A session is only a couple of
+hundred hands, so the whole design is about telling a real read apart from a
+lucky run of three folds. If you just want to use it, read on; the statistics
+behind every number are in [How it works](#how-it-works).
 
-## Install
+![Villain's profile view: one screen per player, the read and the plan on top, the numbers below](docs/screenshot.png)
+
+## Quickstart
 
 Needs Python 3.11 or newer.
 
@@ -25,13 +29,21 @@ python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
 
-pytest                             # 305 tests
+pytest                             # 353 tests
 ```
 
-That installs two commands, `villain` and `villain-ui`. The parser suite checks
-that every hand balances to the cent, which is what proves the opcode decoding
-is right; several tests in `test_profiling.py` are regressions named for the
-modelling mistakes that produced them.
+That installs two commands, `villain` and `villain-ui`. A small anonymized
+sample ships with the repo, so you can see real output before you have an export
+of your own:
+
+```bash
+villain scout tests/data/pokernow_sample.json --min-hands 1
+villain ui                         # then open http://127.0.0.1:8766
+```
+
+The parser suite checks that every hand balances to the cent, which is what
+proves the opcode decoding is right; several tests in `test_profiling.py` are
+regressions named for the modeling mistakes that produced them.
 
 ## The interface
 
@@ -151,7 +163,7 @@ recovers faster than any retry, because a spent quota does not clear inside a
 backoff. Small models are enough for short bullets built from a fact sheet, and
 they carry the roomier quotas, which is what decides whether the button works
 when you press it. Transient failures (429, 5xx, timeouts) retry with backoff
-and honour `Retry-After`; 401 and 404 raise at once, since retrying those only
+and honor `Retry-After`; 401 and 404 raise at once, since retrying those only
 delays the same answer. Use floating aliases like `gemini-flash-lite-latest`:
 pinned Gemini versions retire and start returning 404 to a tool that worked
 last month.
@@ -166,7 +178,7 @@ quoted number used to mean the wrong thing is a mistake no guard on invented
 figures can catch. Any statistic the glossary cannot describe unambiguously is
 withheld rather than handed over.
 
-Suggestions are labelled as suggestions. They are not measured reads, and the
+Suggestions are labeled as suggestions. They are not measured reads, and the
 evidence view exists to check them against the hands.
 
 ## Reading the output
@@ -194,7 +206,7 @@ AGAINST YOU  (1 found)
     re-raises your opens          19%   (3% otherwise)   32 seen, 99% sure
 
 SKILL: strong (69/100)   confidence 54%
-    showdown judgement         ##############....  77.3
+    showdown judgment         ##############....  77.3
     hand selection             ###############...  81.5
     bet sizing                 ###############...  85.3
     preflop aggression         ##################  97.6  raises 73% of hands played
@@ -203,9 +215,9 @@ SKILL: strong (69/100)   confidence 54%
 ```
 
 Note what it does *not* claim: 183 hands buy a bucket at 51% confidence and one
-leak still labelled tentative, which is what a session this size contains.
+leak still labeled tentative, which is what a session this size contains.
 
-Each exploit answers four questions — what they are doing (as behaviour, not as
+Each exploit answers four questions — what they are doing (as behavior, not as
 a statistic), why it is exploitable (the breakeven arithmetic), what to do, and
 the counter-mistake, which matters most because nearly every way of losing
 money to a correct read is an over-adjustment. Leaks that compound are called
@@ -213,7 +225,7 @@ out together: folding flops too often *and* never check-raising removes both
 the reason to fear betting and the cost of being wrong.
 
 Leaks are sorted by **bb/100**, what one is worth per 100 hands if you attack
-it every time, and labelled `tentative`, `likely` or `strong` by how much comes
+it every time, and labeled `tentative`, `likely` or `strong` by how much comes
 from this player's hands rather than from the prior. No leaks usually means not
 enough hands yet, and the tool says so rather than inventing something.
 
@@ -233,6 +245,14 @@ wrong; building it surfaced VPIP counting once per preflop *decision* instead
 of once per hand.
 
 ## How it works
+
+**The whole problem is small samples.** A home game session is about 200 hands
+— 20 to 40 observations of any postflop statistic. A tracker will tell you the
+villain folds to 100% of turn bets because he folded the only three he faced,
+and betting every turn on that basis is how you donate to a normal player. The
+hard part is not computing statistics but knowing which of them mean anything
+yet, and everything below follows from that: this is built for a couple of
+hundred hands, not a couple of hundred thousand.
 
 **Everything is shrunk toward a population prior and carries its own
 uncertainty.** A frequency is a Beta posterior, not a fraction. A prior is a
@@ -301,7 +321,7 @@ those features are correlated — VPIP and PFR are not independent measurements.
 Shrinking first and *then* measuring distance to a prototype would count the
 uncertainty twice and collapse every thin sample onto whichever prototype sits
 in the middle. That failure is worth naming because it recurs: a prototype
-close to the population centre wins every ambiguous player by default, so each
+close to the population center wins every ambiguous player by default, so each
 archetype needs a real identity, not just a name. The bucket a player is
 "between" is reported rather than hidden.
 
@@ -374,7 +394,7 @@ else's only at a showdown.
 Rating a player by results is rating their luck, so results carry the smallest
 weight, and only after all-in pots are rescored by equity so a cooler and a
 punt stop looking alike. The rest is **fundamentals** — distance from competent
-play for that table size, penalised asymmetrically where the errors are — and
+play for that table size, penalized asymmetrically where the errors are — and
 **resistance to exploitation**, the bb/100 the exploit layer can find, weighted
 by sample size, because "no leaks found" and "no leaks yet findable" are the
 same number and only one is a compliment.
@@ -413,7 +433,7 @@ returning something authoritative-looking and wrong.
   cards are visible on every hand and those rows are marked unbiased, but the
   bias is reduced, not removed.
 * **Severity constants are assumptions.** The breakeven thresholds are derived;
-  the capture fractions are judgement calls. So is `ADJUSTMENT_PRIOR` in
+  the capture fractions are judgment calls. So is `ADJUSTMENT_PRIOR` in
   `dynamics.py`, which decides how much evidence it takes to believe somebody
   is playing you differently: fitting it would need pairwise samples across
   many players, and a home game has one pair worth counting.
@@ -422,7 +442,7 @@ returning something authoritative-looking and wrong.
   playing when they made it, and that is not in the hand history.
 * **Side pots are approximate.** Each player's equity is capped at the pot they
   were actually eligible for, so a short all-in is no longer credited with money
-  it could never have won, but the split between layered pots is not modelled
+  it could never have won, but the split between layered pots is not modeled
   and those hands carry a `side_pot` flag.
 * **Built-in priors are pool-agnostic.** They describe a generic online
   population until your own pool can replace them, which happens automatically
@@ -447,3 +467,15 @@ returning something authoritative-looking and wrong.
 | `db.py`, `identity.py` | persistence, aliases, merge safety |
 | `analyze.py`, `glossary.py`, `report.py` | the payload the CLI and UI both render |
 | `cli.py`, `web.py` | commands, local web UI |
+
+## Contributing
+
+Bug reports, new site parsers, and fixes are welcome. The one rule worth knowing
+up front: **no figure reaches the screen that the arithmetic did not produce**,
+and a test fails if a statistic appears without a glossary entry. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, how the test suite is laid
+out, and how to add a parser for a new site.
+
+## License
+
+[MIT](LICENSE).
