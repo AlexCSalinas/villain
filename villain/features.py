@@ -63,6 +63,18 @@ def _default_workers() -> int:
     return max(1, min(8, (os.cpu_count() or 2) - 1))
 
 
+def _can_spawn() -> bool:
+    """Whether worker processes can re-import ``__main__``.
+
+    A spawned worker re-imports the parent's ``__main__``, which does not
+    exist when the caller is a REPL or a ``python -`` heredoc. The pool then
+    fails *after* each child has printed its own traceback, so the fallback
+    worked but buried the real output in noise. Cheaper to ask first.
+    """
+    import sys
+    return bool(getattr(sys.modules.get("__main__"), "__file__", None))
+
+
 def merge_books(into: Books, extra: Books) -> Books:
     """Fold one set of books into another, in place."""
     for pid, by_regime in extra.items():
@@ -113,7 +125,7 @@ def record_hands(hands: Iterable[Hand], books: Books | None = None,
     hero = hero_of(hands)
 
     n_workers = _default_workers() if workers is None else workers
-    if n_workers > 1 and len(hands) >= PARALLEL_MIN_HANDS and not books:
+    if n_workers > 1 and len(hands) >= PARALLEL_MIN_HANDS and not books and _can_spawn():
         size = math.ceil(len(hands) / n_workers)
         chunks = [(hands[i:i + size], locks, hero)
                   for i in range(0, len(hands), size)]

@@ -3,7 +3,7 @@ const fmtPct = v => (100 * v).toFixed(0) + "%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const SVG = "http://www.w3.org/2000/svg";
-const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: false,
+const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: (() => { try { return !!localStorage.getItem("villain.checkFold"); } catch (e) { return false; } })(),
                sessionId: null};
 
 /* An "i" that explains a term on hover. Everything the tool says in shorthand
@@ -1375,12 +1375,12 @@ function checkSound() {
     const ctx = _actx, t = ctx.currentTime;
     for (let k = 0; k < 2; k++) {
       const o = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
-      o.type = "sine"; o.frequency.value = 165 - k * 25;
-      f.type = "lowpass"; f.frequency.value = 420;
-      const s0 = t + k * 0.085;
+      o.type = "triangle"; o.frequency.value = 220 - k * 40;
+      f.type = "lowpass"; f.frequency.value = 1400;
+      const s0 = t + k * 0.075;
       g.gain.setValueAtTime(0.0001, s0);
-      g.gain.exponentialRampToValueAtTime(0.05, s0 + 0.005);
-      g.gain.exponentialRampToValueAtTime(0.0001, s0 + 0.09);
+      g.gain.exponentialRampToValueAtTime(0.16, s0 + 0.003);
+      g.gain.exponentialRampToValueAtTime(0.0001, s0 + 0.11);
       o.connect(f); f.connect(g); g.connect(ctx.destination);
       o.start(s0); o.stop(s0 + 0.1);
     }
@@ -1406,11 +1406,11 @@ function foldSound() {
     const src = ctx.createBufferSource(), g = ctx.createGain(), f = ctx.createBiquadFilter();
     src.buffer = noiseBuffer(ctx);
     f.type = "lowpass";
-    f.frequency.setValueAtTime(2400, t);
-    f.frequency.exponentialRampToValueAtTime(600, t + 0.18);
+    f.frequency.setValueAtTime(3200, t);
+    f.frequency.exponentialRampToValueAtTime(700, t + 0.2);
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.035, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+    g.gain.exponentialRampToValueAtTime(0.13, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
     src.connect(f); f.connect(g); g.connect(ctx.destination);
     src.start(t); src.stop(t + 0.22);
   } catch (e) {}
@@ -1471,8 +1471,6 @@ function renderTable(view, data) {
         state.descOn ? " checked" : ""}> explain decisions</label>
       <label class="desc-toggle" style="margin-top:8px"><input type="checkbox" id="snd-on"${
         state.muted ? "" : " checked"}> table sounds</label>
-      <label class="desc-toggle" style="margin-top:8px"><input type="checkbox" id="cf-on"${
-        state.checkFold ? " checked" : ""}> check / fold</label>
       <button class="act small" id="end-session" style="margin-top:18px">End &amp; analyze</button>
     </div>
   </div></div>`;
@@ -1492,7 +1490,8 @@ function renderTable(view, data) {
         <div class="tseat-name">${esc(s.name)}${
           s.is_hero ? ' <span class="tag hero-tag">you</span>' : ""}</div>
         <div class="tseat-stack">${s.stack}${
-          s.won ? ` <span class="won-amt">+${s.won}</span>` : ""}</div>
+          st.over && s.net ? ` <span class="won-amt${s.net < 0 ? " down" : ""}">${
+            s.net > 0 ? "+" : ""}${s.net}</span>` : ""}</div>
       </div>`;
     const ev = state.lastEvent;
     if (ev && ev.seat === i && !s.is_hero) {
@@ -1526,7 +1525,6 @@ function renderTable(view, data) {
   };
   $("#desc-on").onchange = (e) => { state.descOn = e.target.checked; };
   $("#snd-on").onchange = (e) => { state.muted = !e.target.checked; if (!state.muted) ensureAudio(); };
-  const cf = $("#cf-on"); if (cf) cf.onchange = (e) => { state.checkFold = e.target.checked; };
   $("#end-session").onclick = () => endSession();
   renderControls($("#controls"), data);
   if (!st.over && !st.your_turn) {           // pace the villains so you can watch
@@ -1547,6 +1545,25 @@ async function stepBots(token) {
   } catch (err) { /* game gone or navigated away */ }
 }
 
+function cfToggle() {
+  // Armed state is a standing instruction, so it is shown in every state of
+  // the table -- including while the villains act, which is exactly when you
+  // want to set it -- and it survives the hand rather than disarming itself.
+  const b = document.createElement("button");
+  b.className = "act cf-toggle" + (state.checkFold ? " on" : "");
+  b.textContent = "Check / Fold";
+  b.setAttribute("aria-pressed", state.checkFold ? "true" : "false");
+  b.title = state.checkFold
+    ? "Armed: checks when you can, folds when you cannot. Click to disarm."
+    : "Arm: check when possible, fold when facing a bet, until you turn it off.";
+  b.onclick = () => {
+    state.checkFold = !state.checkFold;
+    try { localStorage.setItem("villain.checkFold", state.checkFold ? "1" : ""); } catch (e) {}
+    renderTable($("#view"), state.game);
+  };
+  return b;
+}
+
 function renderControls(el, data) {
   const st = data.state; el.innerHTML = "";
   if (st.over) {
@@ -1557,6 +1574,7 @@ function renderControls(el, data) {
       }));
     }
     el.appendChild(actbtn("Deal now", () => simPost("/api/sim/next"), "primary"));
+    el.appendChild(cfToggle());
     el.appendChild(actbtn("End & analyze", () => endSession()));
     const won = st.seats.filter(s => s.won);
     if (won.length) {
@@ -1567,18 +1585,27 @@ function renderControls(el, data) {
     }
     return;
   }
-  if (!st.your_turn) { el.innerHTML = '<span class="small muted">villains acting…</span>'; return; }
-  const lg = st.legal;
-  if (state.checkFold) {                       // pre-selected while the villains acted
-    state.checkFold = false;
-    act(lg.can_check ? "check" : "fold");
+  if (!st.your_turn) {
+    const note = document.createElement("span");
+    note.className = "small muted"; note.textContent = "villains acting…";
+    el.appendChild(note);
+    el.appendChild(cfToggle());
     return;
   }
+  const lg = st.legal;
   const act = (kind, amount) => {
     actionSound(kind);
     simPost("/api/sim/act", {kind, amount: amount || 0});
   };
-  el.appendChild(actbtn("Check / Fold", () => act(lg.can_check ? "check" : "fold")));
+  if (state.checkFold) {
+    // Armed, and it stays armed: the point is to fold the next several hands
+    // without touching anything. `act` is declared above this on purpose --
+    // calling it from here while it was still a `const` below threw a
+    // ReferenceError every time, so the option silently did nothing.
+    act(lg.can_check ? "check" : "fold");
+    return;
+  }
+  el.appendChild(cfToggle());
   if (lg.can_fold) el.appendChild(actbtn("Fold", () => act("fold")));
   if (lg.can_check) el.appendChild(actbtn("Check", () => act("check")));
   else if (lg.can_call) el.appendChild(actbtn(`Call ${lg.call_amount}`, () => act("call")));

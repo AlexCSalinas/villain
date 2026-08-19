@@ -154,7 +154,12 @@ class Game:
                 "is_hero": i == self.hero_seat,
                 "is_button": i == self.button,
                 "to_act": (not h.over) and h.to_act == i,
+                # Gross pot pushed to them, and what the hand actually made.
+                # The badge next to a stack has to be the second one: showing
+                # the gross "+200" beside a stack that only rose by 100 reads
+                # as profit and is not.
                 "won": (h.winners or {}).get(i, 0),
+                "net": ((h.winners or {}).get(i, 0) - s.hand_put) if h.over else 0,
                 "hole": [card_text(c) for c in s.hole] if reveal else None,
                 "all_hole": [card_text(c) for c in s.hole] if h.over else None,
             })
