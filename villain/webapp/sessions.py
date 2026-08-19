@@ -268,7 +268,14 @@ def session_payload(token: str, store: Store | None = None) -> dict:
         "saved": session.get("saved", False),
         "questions": [question_payload(q) for q in askable_questions(
             session.get("questions") or [])],
-        "answered": bool(session.get("answers")),
+        # Whether a *person* has answered, not whether the session carries
+        # answers at all. Auto-applied merges live in the same dict, so the
+        # plain truthiness test made every upload look already-answered the
+        # moment reconnect runs started being applied -- and the UI, which
+        # only opens the dialog when a session is unanswered, silently
+        # skipped every question that still needed a human.
+        "answered": bool(set(session.get("answers") or {})
+                         - {q.id for q in (session.get("questions") or []) if q.auto}),
         "auto_merged": len(auto_answers(session.get("questions") or [])),
         "merges": [{"from": k[1], "to": v["name"]}
                    for k, v in (session.get("merges") or {}).items()],
@@ -364,7 +371,10 @@ def commit_session(store: Store, token: str, answers: dict) -> dict:
         right = question.right
         name_splits.add((right["site"], right["account"], right["name"]))
 
-    report = store.add_hands(session["hands"], name_splits=name_splits)
+    # Defer: the merges below each rebuild the surviving player, and the
+    # rebuild after them covers everything at once.
+    report = store.add_hands(session["hands"], name_splits=name_splits,
+                             defer_rebuild=True)
     # Refit the population from the pool itself. This used to be a button, but
     # it is not a preference: measuring a home game against a generic online
     # population makes every deviation wrong by the gap between the two, and
@@ -413,13 +423,16 @@ def commit_session(store: Store, token: str, answers: dict) -> dict:
             if absorb == keep:
                 continue
             try:
-                store.link(keep, absorb)
+                store.link(keep, absorb, rebuild=False)
                 merged += 1
             except ValueError as exc:
                 blocked.append(str(exc))
         store.conn.execute("UPDATE players SET display_name = ? WHERE id = ?",
                            (chosen_name(qid, question), keep))
         store.conn.commit()
+
+    # One rebuild for the whole save: the hands, and every merge above.
+    store.rebuild_pending()
 
     session["saved"] = True
     return {
