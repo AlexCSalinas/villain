@@ -932,10 +932,14 @@ class Handler(BaseHTTPRequestHandler):
                     match = next((x for x in store.sessions() if x["id"] == sid), None)
                     if match is None:
                         return self._send(404, {"error": "no such session"})
+                    hero_id = _cached_hero_id(store)
+                    players = store.session_detail(match)
+                    for pl in players:
+                        pl["is_hero"] = pl.get("player_id") == hero_id
                     return self._send(200, {
                         "id": match["id"], "started_at": match["started_at"],
                         "ended_at": match["ended_at"], "hands": match["hands"],
-                        "players": store.session_detail(match)})
+                        "hero_id": hero_id, "players": players})
             if path == "/api/roster":
                 with Store(self.db_path) as store:
                     n_players = store.conn.execute(
@@ -1628,6 +1632,8 @@ PAGE = r"""<!doctype html>
   .drop:hover, .drop.over { border-color: var(--red); color: var(--ink); }
   .leak { padding: 14px 0; border-bottom: 1px solid var(--line); }
   .leak:last-child { border-bottom: 0; }
+  .leak.hero-sitting { background: var(--hero-soft); border-radius: 8px;
+                       padding-left: 12px; padding-right: 12px; }
   .leak-head { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; }
   .leak-head .headline b {
     font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
@@ -1700,12 +1706,13 @@ PAGE = r"""<!doctype html>
   /* the hover-for-meaning affordance */
   .info {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line);
-    color: var(--edge); font-size: 9.5px; font-weight: 700; cursor: help;
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 1px solid var(--edge); background: var(--accent-soft);
+    color: var(--muted); font-size: 11px; font-weight: 700; cursor: help;
     vertical-align: 1px; margin-left: 5px; font-style: normal; flex: none;
-    opacity: .7; transition: opacity .12s ease, color .12s ease, border-color .12s ease;
+    transition: color .12s ease, border-color .12s ease;
   }
-  .info:hover { color: var(--ink); border-color: var(--accent); opacity: 1; }
+  .info:hover { color: var(--ink); border-color: var(--accent); }
   /* On hover of the row/line it belongs to, the mark wakes up a little so it is
      discoverable without shouting on every line at rest. */
   .comp:hover .info, .leak:hover .info, .metric:hover .info,
@@ -1925,7 +1932,18 @@ function withInfo(node, html) {
 }
 /* Full explanation of a statistic: what it counts, and whether *this* player
    is over or under the field -- with the matching play implication. */
+let _heroVoice = false;   // set by profileCard while rendering the hero
+const _YOU = {"They're":"You're","they're":"you're","They've":"You've","they've":"you've",
+  "Themselves":"Yourself","themselves":"yourself","Theirs":"Yours","theirs":"yours",
+  "Their":"Your","their":"your","Them":"You","them":"you","They":"You","they":"you"};
+function toYou(s) {
+  return (s || "").replace(
+    /\b(They're|they're|They've|they've|Themselves|themselves|Theirs|theirs|Their|their|Them|them|They|they)\b/g,
+    m => _YOU[m]);
+}
+
 function statTip(stat, label, row) {
+  const V = t => esc(_heroVoice ? toYou(t) : t);
   const g = state.glossary;
   const h = g && (g.stats[stat] || g.stats[stat.split(":")[0]]);
   if (!h) return esc(label || stat);
@@ -1933,17 +1951,17 @@ function statTip(stat, label, row) {
   if (row && row.population != null && row.value != null) {
     const delta = row.value - row.population;
     if (delta > 0.03) {
-      direction = `<div class="dir"><b>High</b> vs field \u2014 ${esc(h.high)}</div>`;
+      direction = `<div class="dir"><b>High</b> vs field \u2014 ${V(h.high)}</div>`;
     } else if (delta < -0.03) {
-      direction = `<div class="dir"><b>Low</b> vs field \u2014 ${esc(h.low)}</div>`;
+      direction = `<div class="dir"><b>Low</b> vs field \u2014 ${V(h.low)}</div>`;
     } else {
       direction = `<div class="dir"><b>Near</b> the field \u2014 neither direction is clear yet.</div>`;
     }
   } else {
-    direction = `<div class="dir"><b>High</b> ${esc(h.high)}</div>
-      <div class="dir"><b>Low</b> ${esc(h.low)}</div>`;
+    direction = `<div class="dir"><b>High</b> ${V(h.high)}</div>
+      <div class="dir"><b>Low</b> ${V(h.low)}</div>`;
   }
-  return `<span class="hl">${esc(label || stat)}</span><br>${esc(h.what)}
+  return `<span class="hl">${esc(label || stat)}</span><br>${V(h.what)}
     ${direction}`;
 }
 
@@ -1951,9 +1969,10 @@ function fieldRead(row) {
   const g = state.glossary;
   const h = g && (g.stats[row.stat] || g.stats[row.stat.split(":")[0]]);
   if (!h || row.population == null) return "";
+  const V = t => esc(_heroVoice ? toYou(t) : t);
   const delta = row.value - row.population;
-  if (delta > 0.03) return `<br><span class="hl">Over the field</span> \u2014 ${esc(h.high)}`;
-  if (delta < -0.03) return `<br><span class="hl">Under the field</span> \u2014 ${esc(h.low)}`;
+  if (delta > 0.03) return `<br><span class="hl">Over the field</span> \u2014 ${V(h.high)}`;
+  if (delta < -0.03) return `<br><span class="hl">Under the field</span> \u2014 ${V(h.low)}`;
   return `<br><span class="muted">Near the field \u2014 neither over nor under yet.</span>`;
 }
 
@@ -2154,6 +2173,7 @@ function profileCard(p, opts) {
   opts = opts || {};
   const isHero = p.is_hero || (opts.heroId != null && p.player_id === opts.heroId);
   const hero = opts.hero || isHero;
+  _heroVoice = hero;                     // glossary tooltips read in your voice
   const card = document.createElement("div");
   card.className = isHero ? "dash hero-scope" : "dash";
   const leaks = p.leaks;
@@ -2210,7 +2230,14 @@ function profileCard(p, opts) {
   conf.appendChild(info(`${termTip("confidence")}<br><br>
     <span class="hl">also plausibly</span><br>${
       p.archetype_mix.slice(1, 4).map(([n, v]) => `${esc(n)} ${fmtPct(v)}`).join("<br>")}`));
-  meta.append(line, conf);
+  const fieldChip = document.createElement("span");
+  fieldChip.style.marginLeft = "12px";
+  fieldChip.textContent = "vs the field";
+  fieldChip.appendChild(info(`<span class="hl">the field</span><br>
+    The average of the other players in your database at ${esc(p.regime_label)}.
+    Your own pool once you have 8+ players; generic online norms before that.
+    Empirical \u2014 not a GTO solver.`));
+  meta.append(line, conf, fieldChip);
   if (p.contributions && Object.keys(p.contributions).length > 1) {
     const where = document.createElement("span");
     where.style.marginLeft = "12px";
@@ -2579,6 +2606,7 @@ function profileCard(p, opts) {
     link.className = "linkbtn how-link";
     link.textContent = `See all ${ordered.length} numbers`;
     link.onclick = () => {
+      _heroVoice = hero;
       const modal = $("#modal");
       modal.innerHTML = `<div class="veil"><div class="sheet">
         <div class="spread"><h2 style="margin:0">Key numbers</h2>
@@ -2865,10 +2893,11 @@ async function drawSession(id) {
   body.innerHTML = "";
   for (const p of data.players) {
     const div = document.createElement("div");
-    div.className = "leak";
+    div.className = "leak" + (p.is_hero ? " hero-scope hero-sitting" : "");
     const netTxt = p.net_bb > 0 ? `+${p.net_bb}` : `${p.net_bb}`;
     div.innerHTML = `<div class="leak-head">
-        <div class="sess-who"><b class="linkish">${esc(p.name)}</b>
+        <div class="sess-who"><b class="linkish">${esc(p.name)}</b>${
+          p.is_hero ? '<span class="tag hero-tag">you</span>' : ""}
           <span class="tag arch ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
           <span class="small muted">${p.hands} hands \u00b7 ${esc(p.regime_label || "")}</span>
         </div>
