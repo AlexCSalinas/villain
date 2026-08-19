@@ -219,6 +219,45 @@ _STRENGTH_CACHE: dict = {}
 _STRENGTH_CACHE_MAX = 200_000
 
 
+#: Sorted scores for every holding a board allows, keyed by the board alone.
+#: The universe depends on nothing else -- not the players, not the street's
+#: action -- but the result cache below is keyed by the hole cards too, so
+#: across a database of distinct hands it never hit and every hand rebuilt the
+#: ~1,100-holding universe from scratch. Flops repeat often enough over tens of
+#: thousands of hands to make this the difference.
+_BOARD_CACHE: dict[tuple[str, ...], tuple] = {}
+_BOARD_CACHE_MAX = 40_000
+
+
+def _board_universe(board: tuple[str, ...]):
+    """``(sorted scores, score by card pair)`` for every holding this board allows."""
+    hit = _BOARD_CACHE.get(board)
+    if hit is not None:
+        return hit
+    board_ids = card_ids(list(board)).astype(np.int64)
+    # Vectorised, not a Python double loop over ~45-49 cards: that loop ran
+    # once per street per hand -- tens of thousands of times over a real
+    # database -- and was most of build_dataset's cost.
+    mask = np.ones(52, dtype=bool)
+    mask[board_ids] = False
+    live = np.nonzero(mask)[0]
+    i, j = np.triu_indices(len(live), k=1)
+    combos = np.stack([live[i], live[j]], axis=1).astype(np.int64)
+    seven = np.concatenate(
+        [combos, np.repeat(board_ids[None, :], len(combos), axis=0)], axis=1)
+    scores = evaluate(seven)
+    # A flat 52x52 table so a pair of card ids indexes its own score directly.
+    lookup = np.zeros(52 * 52, dtype=np.int64)
+    lo = np.minimum(combos[:, 0], combos[:, 1])
+    hi = np.maximum(combos[:, 0], combos[:, 1])
+    lookup[lo * 52 + hi] = scores
+    result = (np.sort(scores), lookup)
+    if len(_BOARD_CACHE) >= _BOARD_CACHE_MAX:
+        _BOARD_CACHE.clear()
+    _BOARD_CACHE[board] = result
+    return result
+
+
 def strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], float]:
     """Percentile of each known hand on each street it was live for.
 
@@ -252,22 +291,16 @@ def strength_by_street(hand: Hand, known: dict) -> dict[tuple[int, Street], floa
         if len(board) < 3 or not hand.reached(street):
             continue
         board_ids = card_ids(board).astype(np.int64)
-        # Vectorised, not a Python double loop over ~45-49 cards: that loop
-        # ran once per street per hand -- tens of thousands of times over a
-        # real database -- and was most of build_dataset's cost.
-        mask = np.ones(52, dtype=bool)
-        mask[board_ids] = False
-        live = np.nonzero(mask)[0]
-        i, j = np.triu_indices(len(live), k=1)
-        combos = np.stack([live[i], live[j]], axis=1).astype(np.int64)
-        seven = np.concatenate(
-            [combos, np.repeat(board_ids[None, :], len(combos), axis=0)], axis=1)
-        universe = np.sort(evaluate(seven))
+        universe, lookup = _board_universe(tuple(board))
         for seat, player in known.items():
             hole = card_ids(player.hole_cards).astype(np.int64)
             if set(hole.tolist()) & set(board_ids.tolist()):
                 continue
-            score = int(evaluate(np.concatenate([hole, board_ids])[None, :])[0])
+            # The player's two cards are one of the combos the universe was
+            # built from, so their score is already in it -- look it up rather
+            # than paying a second evaluate for a single row.
+            a, b = int(hole[0]), int(hole[1])
+            score = int(lookup[min(a, b) * 52 + max(a, b)])
             out[(seat, street)] = float(
                 np.searchsorted(universe, score, side="left") / len(universe))
     if len(_STRENGTH_CACHE) >= _STRENGTH_CACHE_MAX:
