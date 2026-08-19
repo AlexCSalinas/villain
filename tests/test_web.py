@@ -534,3 +534,33 @@ def test_an_uploaded_session_shows_them_too(session):
     payload = session_payload(session)
     for profile in payload["profiles"]:
         assert "adjustments" in profile
+
+
+def test_auto_merges_do_not_swallow_the_questions_that_need_a_human(session, tmp_path):
+    """Applying the runs must not mark the session answered.
+
+    The UI opens the identity dialog only for an unanswered session. Auto
+    answers share the dict human answers live in, so counting them as "the
+    user has answered" hid every remaining question behind merges the user
+    never saw.
+    """
+    from villain.identity import auto_answers, session_questions
+    from villain.web import SESSIONS, apply_answers, session_payload
+
+    with Store(tmp_path / "v.db") as store:
+        questions = session_questions(store, SESSIONS[session]["hands"])
+        SESSIONS[session]["questions"] = questions
+        auto = auto_answers(questions)
+        if auto:
+            apply_answers(SESSIONS[session], auto)
+        payload = session_payload(session, store)
+
+    if auto:
+        assert not payload["answered"], "auto merges are not a human answer"
+    # And a real answer does flip it.
+    human = [q for q in questions if not q.auto]
+    if human:
+        with Store(tmp_path / "v.db") as store:
+            apply_answers(SESSIONS[session], {human[0].id: {"same": False}})
+            payload = session_payload(session, store)
+        assert payload["answered"]

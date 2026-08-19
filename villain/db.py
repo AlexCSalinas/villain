@@ -337,8 +337,15 @@ class Store:
         """True when the overlap is too large to be a glitch."""
         return self.shared_hands(a, b) > SPURIOUS_OVERLAP
 
-    def link(self, keep: int, absorb: int) -> None:
-        """Declare two players the same human, folding ``absorb`` into ``keep``."""
+    def link(self, keep: int, absorb: int, rebuild: bool = True) -> None:
+        """Declare two players the same human, folding ``absorb`` into ``keep``.
+
+        ``rebuild=False`` skips recomputing the surviving player's books, for
+        callers merging many accounts at once. One rebuild re-extracts every
+        hand the player appears in, so doing it per link made a 36-account
+        reconnect run re-read the same 7,000 hands thirty-five times; the
+        caller is expected to rebuild once when it is done.
+        """
         if keep == absorb:
             return
         overlap = self.shared_hands(keep, absorb)
@@ -379,7 +386,10 @@ class Store:
                 (lo, hi, int(row["hands"])))
         self.conn.execute("DELETE FROM distinct_pairs WHERE a = b")
         self.conn.commit()
-        self.rebuild(only=[keep])
+        if rebuild:
+            self.rebuild(only=[keep])
+        else:
+            self._pending.add(keep)
 
     def unlink(self, player_id: int, site: str, account: str) -> int:
         """Split one alias back onto its own player.
@@ -510,19 +520,50 @@ class Store:
         # hand -- roughly 900k queries on a 70k-hand import -- to learn a number
         # the difference of two counts gives exactly.
         before_all = self.conn.execute("SELECT COUNT(*) c FROM players").fetchone()["c"]
+
+        # Accumulate in memory and write once. Per-seat and per-hand statements
+        # meant roughly two million writes for an 80k-hand import -- an alias
+        # UPDATE for every seat of every hand, and a distinct_pairs upsert for
+        # every *pair* of seats -- each one walking an index that grows as it
+        # goes. The totals are the same either way; only the number of round
+        # trips to SQLite changes, and that was the entire cost.
+        known: dict[tuple[str, str], int] = {}
+        alias_seen: dict[tuple[str, str], tuple[int, int, str]] = {}
+        pair_counts: dict[tuple[int, int], int] = {}
         for hand in hands:
             ids = []
             for seat in hand.seats:
                 key = alias_key(hand.site, seat.player_id, seat.name, name_splits)
-                pid = self.player_for(hand.site, seat.player_id, seat.name, alias_key=key)
+                cache_key = (hand.site, key)
+                pid = known.get(cache_key)
+                if pid is None:
+                    pid = self.player_for(hand.site, seat.player_id, seat.name,
+                                          alias_key=key)
+                    known[cache_key] = pid
                 ids.append(pid)
                 touched.add(pid)
                 report.players[seat.name] = report.players.get(seat.name, 0) + 1
-                self.conn.execute(
-                    "UPDATE aliases SET hands = hands + 1, last_seen = MAX(COALESCE(last_seen, 0), ?),"
-                    " name = ? WHERE site = ? AND account = ?",
-                    (hand.started_at, seat.name, hand.site, key))
-            self.mark_distinct(ids)
+                count, last, _name = alias_seen.get(cache_key, (0, 0, ""))
+                alias_seen[cache_key] = (
+                    count + 1, max(last, hand.started_at or 0), seat.name)
+            seats = sorted(set(ids))
+            for i, a in enumerate(seats):
+                for b in seats[i + 1:]:
+                    pair_counts[(a, b)] = pair_counts.get((a, b), 0) + 1
+
+        if alias_seen:
+            self.conn.executemany(
+                "UPDATE aliases SET hands = hands + ?,"
+                " last_seen = MAX(COALESCE(last_seen, 0), ?), name = ?"
+                " WHERE site = ? AND account = ?",
+                [(count, last, name, site, key)
+                 for (site, key), (count, last, name) in alias_seen.items()])
+        if pair_counts:
+            self.conn.executemany(
+                "INSERT INTO distinct_pairs (a, b, hands) VALUES (?, ?, ?) "
+                "ON CONFLICT(a, b) DO UPDATE SET hands = hands + excluded.hands",
+                [(a, b, n) for (a, b), n in pair_counts.items()])
+
         after_all = self.conn.execute("SELECT COUNT(*) c FROM players").fetchone()["c"]
         report.players_new += after_all - before_all
         return touched

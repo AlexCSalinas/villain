@@ -22,6 +22,10 @@ from __future__ import annotations
 
 from typing import Iterable
 
+import math
+import os
+from concurrent.futures import ProcessPoolExecutor
+
 import numpy as np
 
 from .cards import card_ids, evaluate
@@ -50,13 +54,51 @@ CEIL_SNAP_MS = 2_500
 BLUFF_PCTILE = 0.35    # showdown strength below this, in a bet, was a bluff
 
 
-def record_hands(hands: Iterable[Hand], books: Books | None = None) -> Books:
+#: Below this many hands, handing work to other processes costs more than it
+#: saves -- the hands have to be pickled across, and a small import is already
+#: sub-second.
+PARALLEL_MIN_HANDS = 4000
+
+#: Leave a core for the UI thread and whatever else is running.
+def _default_workers() -> int:
+    return max(1, min(8, (os.cpu_count() or 2) - 1))
+
+
+def merge_books(into: Books, extra: Books) -> Books:
+    """Fold one set of books into another, in place."""
+    for pid, by_regime in extra.items():
+        dst = into.setdefault(pid, {})
+        for reg, book in by_regime.items():
+            if reg in dst:
+                dst[reg].merge(book)
+            else:
+                dst[reg] = book
+    return into
+
+
+def _record_chunk(payload):
+    """Worker entry point: stats for one slice of the batch."""
+    hands, locks, hero = payload
+    books: Books = {}
+    for hand in hands:
+        record_hand(hand, books, pace_locks=locks, hero=hero)
+    return books
+
+
+def record_hands(hands: Iterable[Hand], books: Books | None = None,
+                 workers: int | None = None) -> Books:
     """Extract stats for every hand.
 
     Timing uses a two-pass read: first accumulate each player's think times,
     then freeze snap/tank cutoffs from those means and tag every hand with the
     same thresholds. A one-pass relative mean would tag early hands differently
     from late ones in the same import.
+
+    The second pass is the expensive one -- it evaluates every holding a board
+    allows, for every hand -- and each hand is independent of every other once
+    the cutoffs are frozen, so it is split across processes on a large import.
+    The books are counters, and counters merge, so the result does not depend
+    on how the batch was divided; a test asserts that.
     """
     hands = list(hands)
     books = books if books is not None else {}
@@ -70,6 +112,24 @@ def record_hands(hands: Iterable[Hand], books: Books | None = None) -> Books:
     # Resolved over the whole batch, because a single hand cannot say who
     # exported it.
     hero = hero_of(hands)
+
+    n_workers = _default_workers() if workers is None else workers
+    if n_workers > 1 and len(hands) >= PARALLEL_MIN_HANDS and not books:
+        size = math.ceil(len(hands) / n_workers)
+        chunks = [(hands[i:i + size], locks, hero)
+                  for i in range(0, len(hands), size)]
+        try:
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                for part in pool.map(_record_chunk, chunks):
+                    merge_books(books, part)
+            return books
+        except Exception:
+            # A sandbox with no process spawning, a pickling failure, a worker
+            # killed for memory: fall back rather than fail an import over an
+            # optimisation. Books are empty on this path or partially filled,
+            # so start clean.
+            books.clear()
+
     for hand in hands:
         record_hand(hand, books, pace_locks=locks, hero=hero)
     return books

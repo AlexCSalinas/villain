@@ -166,7 +166,7 @@ def _apply_runs(store, runs) -> int:
                 keep = pid
                 continue
             try:
-                store.link(keep, pid)
+                store.link(keep, pid, rebuild=False)
                 merged += 1
             except ValueError:
                 pass                      # co-occurrence refused it; leave apart

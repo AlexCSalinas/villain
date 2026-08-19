@@ -370,3 +370,68 @@ def test_uniformly_slow_player_is_not_a_tank_folder():
     caller = books["b"]["hu"]
     # After a baseline of slow actions, another slow fold is normal pace.
     assert caller.rate("tank_fold") == pytest.approx(0.0, abs=0.2)
+
+
+# -- parallel extraction ------------------------------------------------------
+
+def _books_snapshot(books):
+    return {
+        (pid, reg): (
+            book.hands,
+            sorted((k, round(r.hits, 9), round(r.opps, 9))
+                   for k, r in book.ratios.items()),
+            sorted((k, round(m.n, 9), round(m.total, 9))
+                   for k, m in book.meters.items()),
+        )
+        for pid, by_regime in books.items() for reg, book in by_regime.items()
+    }
+
+
+def test_splitting_the_batch_does_not_change_the_books():
+    """Counters merge, so the answer must not depend on the chunking.
+
+    ``record_hands`` splits the expensive pass across processes on a large
+    import. That is only safe because every hand is independent once the pace
+    cutoffs are frozen -- this asserts it directly rather than trusting it,
+    by chunking by hand instead of by process.
+    """
+    from villain.features import merge_books, record_hand, record_hands
+    from tests.conftest import FIXTURE
+    from villain.parsers import parse_file
+
+    hands = parse_file(FIXTURE)
+    whole = record_hands(hands, workers=1)
+
+    # Same hands, recorded one chunk at a time and merged.
+    from villain.features import _pace_thresholds, _think_pass
+    from villain.hero import hero_of
+    scratch = {}
+    for hand in hands:
+        _think_pass(hand, scratch)
+    locks = {(pid, reg): _pace_thresholds(b)
+             for pid, by in scratch.items() for reg, b in by.items()}
+    hero = hero_of(hands)
+    pieces = {}
+    for i in range(0, len(hands), 3):
+        part = {}
+        for hand in hands[i:i + 3]:
+            record_hand(hand, part, pace_locks=locks, hero=hero)
+        merge_books(pieces, part)
+
+    assert _books_snapshot(pieces) == _books_snapshot(whole)
+
+
+def test_a_worker_failure_falls_back_instead_of_failing_the_import(monkeypatch):
+    """An optimisation must not be able to lose somebody's import."""
+    import villain.features as features
+    from tests.conftest import FIXTURE
+    from villain.parsers import parse_file
+
+    hands = parse_file(FIXTURE) * 40          # over PARALLEL_MIN_HANDS
+
+    class Boom:
+        def __init__(self, *a, **k): raise OSError("no processes here")
+
+    monkeypatch.setattr(features, "ProcessPoolExecutor", Boom)
+    books = features.record_hands(hands)
+    assert books, "fallback must still produce books"
