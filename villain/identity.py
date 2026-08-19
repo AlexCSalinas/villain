@@ -41,6 +41,16 @@ MIN_HANDS_FOR_BEHAVIOUR = 60
 #: that two tight-passives are "similar" is not evidence they are one person.
 HIGH_NAME_SCORE = 0.92
 
+#: Two different accounts that show the same screen name are usually a
+#: reconnect, but they can also be two distinct humans that chose the same
+#: nickname. If their time windows overlap substantially, treating them as
+#: one person is risky, so we skip offering an alias question.
+#
+#: This is deliberately conservative: if someone truly did split across two
+#: accounts while playing concurrently for long enough, the merge must be
+#: decided manually rather than being guessed.
+MAX_SAME_NAME_OVERLAP_DAYS = 7
+
 
 @dataclass
 class Suggestion:
@@ -221,6 +231,22 @@ def _name_match_reason(a: str, b: str, score: float) -> str:
     if _skeleton_score(normalise(a), normalise(b)):
         return f"“{a}” is “{b}” with the vowels dropped"
     return f"“{a}” ≈ “{b}” ({score:.0%})"
+
+
+def _same_name_time_overlap_days(left: dict, right: dict) -> float:
+    """Overlap of the two accounts' active time windows, in days.
+
+    Both ``left`` and ``right`` come from :func:`_account_index` and carry
+    ``first``/``last`` timestamps in milliseconds.
+    """
+    first_a, last_a = left.get("first"), left.get("last")
+    first_b, last_b = right.get("first"), right.get("last")
+    if not first_a or not last_a or not first_b or not last_b:
+        return 0.0
+    overlap_ms = min(last_a, last_b) - max(first_a, first_b)
+    if overlap_ms <= 0:
+        return 0.0
+    return overlap_ms / (1000.0 * 60.0 * 60.0 * 24.0)
 
 
 def _short_account(value) -> str:
@@ -471,6 +497,13 @@ def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> 
             score = name_similarity(entry["name"], other["name"])
             if score < min_name_score:
                 continue
+            # Same display name is consistent with a reconnect, but if both
+            # accounts are actively seen during the same time window it is
+            # more likely they are distinct humans who happened to pick the
+            # same nickname.
+            if display_key(entry["name"]) == display_key(other["name"]):
+                if _same_name_time_overlap_days(entry, other) >= MAX_SAME_NAME_OVERLAP_DAYS:
+                    continue
             add_alias_question(
                 f"alias:{key[1]}|{other_key[1]}", score,
                 {"name": entry["name"], "hands": entry["hands"], "site": key[0],

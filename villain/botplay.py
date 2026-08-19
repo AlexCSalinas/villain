@@ -122,12 +122,45 @@ def _freq_n(profile, stat, default, min_opps=15.0):
     return est.value if (est is not None and est.opps >= min_opps) else default
 
 
+#: How much of MDF still applies once the pot has been raised. Facing a bet the
+#: aggressor bluffs near equilibrium and MDF holds; facing a raise their range
+#: is value-heavy, and facing a re-raise it is almost pure value. Calibrated so
+#: a pot-sized raise reproduces the flat cutoffs these replaced.
+RAISE_VALUE_WEIGHT = 0.40
+RERAISE_VALUE_WEIGHT = 0.08
+
+#: The share of the continuing range strong enough to raise it again, and to
+#: get it all in at re-raise depth.
+RERAISE_SHARE = 0.22
+JAM_SHARE = 0.375
+
+#: Pool baseline for raising a bet, the reference their own rate modulates.
+POOL_RAISE_VS_BET = 0.06
+
+
 def _clamp(x, lo, hi):
     return max(lo, min(hi, x))
 
 
 def _position(hand, seat):
     return positions_for(list(range(hand.n)), hand.button).get(seat, "")
+
+
+def _in_position(hand, seat) -> bool:
+    """Whether ``seat`` acts last among the players still in the hand.
+
+    Postflop action starts left of the button and ends on it, so the last live
+    seat walking backwards from the button is the one in position.
+    """
+    live = {i for i, s in enumerate(hand.seats) if not s.folded}
+    if len(live) < 2:
+        return True
+    i = hand.button
+    for _ in range(hand.n):
+        if i in live:
+            return i == seat
+        i = (i - 1) % hand.n
+    return False
 
 
 def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -> tuple[str, int, str]:
@@ -145,6 +178,29 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
         strength = preflop_strength(s.hole) + jitter
         pos = _position(hand, seat)
         opened = hand.bet > bb
+        if not opened and getattr(hand, "limpers", 0) >= 1:
+            # Limpers in, nobody raised: an isolation spot, and a wider one than
+            # opening a folded pot. Pooling it under rfi had every villain
+            # attacking limps at their first-in rate -- ShishGL opens the button
+            # 40% first in and isolates limpers at ~63%.
+            iso_f = _freq_n(profile, f"iso:{pos}",
+                            _freq(profile, "iso", _freq(profile, f"rfi:{pos}", 0.25)), 12)
+            if lg.can_raise and strength >= 1 - iso_f:
+                obb = _clamp(_size(profile, f"iso_bb:{pos}",
+                                   _size(profile, "iso_bb",
+                                         _size(profile, f"open_bb:{pos}", 3.5))), 2.5, 7.0)
+                # An iso is sized to punish the limpers, so it grows with them.
+                _, to = _raise_to(hand, lg, int(round(obb * bb)) + hand.limpers * bb)
+                return ("raise", to,
+                        f"isolates the {hand.limpers} limper{'s' if hand.limpers > 1 else ''}"
+                        f" to {to / bb:.1f}bb — attacks limps ~{iso_f:.0%} from {pos or 'here'}")
+            over = _freq_n(profile, "over_limp", 0.05, 12)
+            if lg.can_call and over > 0.05 and strength >= 1 - _clamp(over * 2, 0.08, 0.45):
+                return ("call", 0, f"over-limps behind — comes along ~{over:.0%} in limped pots")
+            if lg.can_check:
+                return ("check", 0, "checks the option behind the limpers")
+            return ("fold", 0, f"folds — isolates only ~{iso_f:.0%} from {pos or 'here'}")
+
         if not opened:                              # first in: open by position, at their size
             rfi = _freq_n(profile, f"rfi:{pos}", _freq(profile, "rfi", 0.22), 20)
             if lg.can_raise and strength >= 1 - rfi:
@@ -168,7 +224,14 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
             steal = opener_pos in ("CO", "BTN", "SB") and pos in ("SB", "BB")
             ratio = _clamp(_size(profile, "three_bet_ratio", 3.0), 2.2, 5.0)
             rr_to = int(round(ratio * hand.bet))
-            if steal:
+            if getattr(hand, "callers", 0) >= 1:
+                # Cold-callers behind the open: a squeeze, which is its own
+                # frequency and a much stronger claim than a plain 3-bet.
+                rr_freq = _freq_n(profile, "squeeze", tbet, 15)
+                rr_label = f"squeezes over {hand.callers} caller{'s' if hand.callers > 1 else ''}"
+                cont = _clamp(_freq_n(profile, "cold_call", 0.18, 25), 0.05, 0.6)
+                cont_why = "flats behind the callers"
+            elif steal:
                 rr_freq = _freq_n(profile, "three_bet_vs_steal", tbet, 20)
                 rr_label = "3-bets the steal"
                 cont = (_freq_n(profile, "bb_defend", 0.45, 25) if in_bb
@@ -184,8 +247,13 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
             four_f = _freq_n(profile, "four_bet", 0.04, 12)   # GTO ~4%; sample-gated
             rr_gate, rr_label = 1 - four_f, "4-bets"
             rr_to = int(round(_clamp(_size(profile, "four_bet_ratio", 2.3), 2.0, 2.8) * hand.bet))
-            cont = _clamp(1 - _freq_n(profile, "fold_to_three_bet", 0.55, 20), 0.05, 0.16)
-            cont_why = "flats the 3-bet"
+            # In and out of position facing a 3-bet are different decisions;
+            # prefer the side we are actually on when it has sample.
+            ipo = "ip" if _in_position(hand, seat) else "oop"
+            f3 = _freq_n(profile, f"fold_to_three_bet:{ipo}",
+                         _freq_n(profile, "fold_to_three_bet", 0.55, 20), 12)
+            cont = _clamp(1 - f3, 0.05, 0.16)
+            cont_why = f"flats the 3-bet {ipo}"
         elif level == 3:             # facing a 4-bet -> a 5-bet jam is QQ+/AK
             five_f = _freq_n(profile, "five_bet", 0.02, 10)   # GTO ~2%; sample-gated
             rr_gate, rr_label = 1 - five_f, "5-bets"
@@ -223,21 +291,42 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
         mdf = 1.0 / (1.0 + f)                          # P / (P + B)
         req_eq = B / (2.0 * B + pot_before)            # pot odds
         bucket = size_bucket(B / max(hand.pot, 1))
-        if level >= 3:                                # a re-raised pot: value range only
-            if lg.can_raise and strength >= 0.985:
-                _, to = _raise_to(hand, lg, lg.max_raise_to)
-                return ("raise", to, "jams — a re-raised pot; the value range only")
-            if strength >= 0.96:
-                return ("call", 0, "calls it off — beats the value range at this depth")
-            return ("fold", 0, f"folds — a re-raised pot; pot odds ({req_eq:.0%}) do not rescue one pair")
-        if level == 2:                                # facing a raise: two pair+ continues
-            if lg.can_raise and strength >= 0.955:
+        if level >= 2:
+            # A raised pot is still MDF, but MDF assumes the aggressor bluffs
+            # at equilibrium. Nobody raises a made bet as a bluff anywhere near
+            # that often, so defending P/(P+B) here hands money away. The
+            # defended share is MDF scaled down by how value-heavy a raise at
+            # this depth is, then modulated by how often this player actually
+            # raises: someone who raises twice as often as the pool has twice
+            # the bluffs in the range, and more of ours has to continue.
+            #
+            # At a pot-sized raise (mdf 0.50) this reproduces the cutoffs it
+            # replaces -- 0.80/0.955 facing a raise, 0.96/0.985 facing a
+            # re-raise -- but now a small raise is defended wider and an
+            # overbet tighter, which a flat constant could never do.
+            heavy, floor, ceil_ = ((RERAISE_VALUE_WEIGHT, 0.02, 0.12) if level >= 3
+                                   else (RAISE_VALUE_WEIGHT, 0.08, 0.45))
+            raise_f = _freq_n(profile, f"raise_vs_bet:{street}", POOL_RAISE_VS_BET, 12)
+            polarity = _clamp(raise_f / POOL_RAISE_VS_BET, 0.5, 2.0)
+            defend = _clamp(mdf * heavy * polarity, floor, ceil_)
+            value_bar = 1 - defend * (JAM_SHARE if level >= 3 else RERAISE_SHARE)
+            depth = "a re-raised pot" if level >= 3 else "a raised pot"
+            if lg.can_raise and strength >= value_bar:
+                if level >= 3:
+                    _, to = _raise_to(hand, lg, lg.max_raise_to)
+                    return ("raise", to,
+                            f"jams — {depth}; only the top {1 - value_bar:.0%} of what continues")
                 frac = _clamp(_size(profile, f"cbet_size:{street}", 0.8), 0.4, 2.0)
                 _, to = _raise_to(hand, lg, hand.bet + int(round(frac * hand.pot)))
-                return ("raise", to, "re-raises for value — the top of the range in a raised pot")
-            if strength >= 0.80:
-                return ("call", 0, "calls the raise — strong, not strong enough to re-raise")
-            return ("fold", 0, "folds to the raise — below the value that continues in a raised pot")
+                return ("raise", to,
+                        f"re-raises for value — the top {1 - value_bar:.0%} of the range that continues here")
+            if strength >= 1 - defend:
+                return ("call", 0,
+                        f"calls — {depth}; they raise ~{raise_f:.0%} here, so the top "
+                        f"{defend:.0%} continues (MDF {mdf:.0%} assumes bluffs they do not have)")
+            return ("fold", 0,
+                    f"folds — {depth}; below the top {defend:.0%} that continues, and "
+                    f"{req_eq:.0%} pot odds do not rescue one pair")
         # level 1: MDF defence, value-raise the top, call to pot odds.
         fold_f = _freq_n(profile, f"fold_vs_bet:{street}:{bucket}",
                          _freq_n(profile, f"fold_vs_bet:{street}", 1 - mdf, 20), 12)

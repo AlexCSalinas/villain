@@ -85,6 +85,12 @@ class Hand:
         self.min_raise = self.bb                  # size of the last full raise
         self.acted: set[int] = set()              # acted since the last full raise
         self.raises = 0                           # raises this street (an open is 1)
+        # Preflop shape, for the policies that price an iso-raise or a squeeze.
+        # A limp and a cold-call are both "call", and telling them apart needs
+        # only whether a raise had gone in yet -- so count them as they happen
+        # rather than reconstructing the street afterwards.
+        self.limpers = 0                          # preflop calls before any raise
+        self.callers = 0                          # preflop calls after a raise
         self.last_raiser: int | None = None       # seat of the most recent aggressor
         self.initiative: int | None = None         # who bet last street -> has initiative now
         self.to_act: int | None = self._first_to_act_preflop()
@@ -206,6 +212,11 @@ class Hand:
             self.acted.add(i)
             self.log.append(f"{s.name} checks")
         elif kind == "call":
+            if self.street == 0:
+                if self.raises == 0:
+                    self.limpers += 1
+                else:
+                    self.callers += 1
             self._commit(i, self.bet)
             self.acted.add(i)
             self.log.append(f"{s.name} calls")
@@ -250,6 +261,7 @@ class Hand:
         self.bet = 0
         self.min_raise = self.bb
         self.raises = 0
+        self.callers = 0
         self.initiative = self.last_raiser       # carried into the next street
         self.last_raiser = None
         # If at most one player can still act, run the board out to showdown.

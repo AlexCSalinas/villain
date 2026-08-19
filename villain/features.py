@@ -29,6 +29,7 @@ from .equity import equities
 from .hero import hero_of
 from .model import Act, Hand, Street
 from .priors import regime as regime_of
+from .reads import texture
 from .stats import VS_HERO, HandView, StatBook, size_bucket
 
 #: player id -> table-size regime -> book
@@ -153,6 +154,7 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
     opener: int | None = None
     three_bettor: int | None = None
     open_size = 0
+    three_bet_amt = 0
     voluntary: set[int] = set()
     limpers: set[int] = set()
     cold_callers = 0
@@ -188,6 +190,18 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
                 book.measure("open_bb", a.to_amount / bb)
                 book.measure(f"open_bb:{pos}", a.to_amount / bb)
 
+        elif d.aggression_level == 0:
+            # Limpers are in and nobody has raised: an isolation spot, and a
+            # different decision from opening a folded pot. Pooling the two
+            # under rfi hid the gap -- a player who opens the button 40% first
+            # in attacks limps far wider, and nothing recorded it.
+            book.count("iso", raised)
+            book.count(f"iso:{pos}", raised)
+            book.count("over_limp", called)
+            if raised:
+                book.measure("iso_bb", a.to_amount / bb)
+                book.measure(f"iso_bb:{pos}", a.to_amount / bb)
+
         elif d.aggression_level == 1 and d.seat != opener:
             # Facing a single raise.
             book.count("three_bet", raised)
@@ -222,7 +236,11 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
         elif d.aggression_level == 2:
             if d.seat == opener:
                 book.count("fold_to_three_bet", folded)
+                book.count(f"fold_to_three_bet:{'ip' if d.in_position else 'oop'}", folded)
                 book.count("four_bet", raised)
+                if three_bet_amt:
+                    if raised:
+                        book.measure("four_bet_ratio", a.to_amount / three_bet_amt)
                 if three_bettor is not None and three_bettor == hero_seat:
                     book.count(f"{VS_HERO}fold_to_three_bet", folded)
             else:
@@ -238,7 +256,7 @@ def _preflop(hand: Hand, view: HandView, books: Books, reg: str,
             if opener is None:
                 opener, open_size = d.seat, a.to_amount
             elif three_bettor is None:
-                three_bettor = d.seat
+                three_bettor, three_bet_amt = d.seat, a.to_amount
         if called and d.aggression_level >= 1 and d.seat not in voluntary:
             cold_callers += 1
         if called and d.aggression_level == 0:
@@ -296,6 +314,12 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
             street = d.street
             first_bettor, bettor_had_initiative = None, False
             checked, faced_bet_size, faced_bet_already = set(), {}, set()
+            # Two-way, not the four-way split reads.texture returns: a c-bet
+            # rate split four ways runs out of sample on all but a handful of
+            # players, and "did the board connect with anything" is the part
+            # that actually moves the decision.
+            paired, suited, connected, _high = texture(hand.board_at(street))
+            tex = "wet" if (suited or connected or paired) else "dry"
             faced_bet_from = {}
             for seat in view.saw[street]:
                 _book(hand, books, seat, reg).count(f"saw:{street.label}", True)
@@ -345,6 +369,15 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
                     book.count(f"cbet:{s}", bet)
                     if bet:
                         book.measure(f"cbet_size:{s}", d.bet_fraction)
+                    # Heads-up and multiway are different decisions, and so are
+                    # wet and dry boards. Pooling them averages a player's two
+                    # different plans into one number describing neither: the
+                    # same player c-bets small and often heads-up on a dry
+                    # board and rarely into three people on a wet one.
+                    for slice_ in ("hu" if d.players_in <= 2 else "mw", tex):
+                        book.count(f"cbet:{s}:{slice_}", bet)
+                        if bet:
+                            book.measure(f"cbet_size:{s}:{slice_}", d.bet_fraction)
                     # Only heads-up against you. In a multiway pot a c-bet is
                     # aimed at the field, so crediting it as a decision made
                     # against you would read three opponents' pressure as one

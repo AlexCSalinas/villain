@@ -125,3 +125,132 @@ def test_opening_is_position_dependent_in_frequency_and_size():
     uf, us = open_at("UTG"); bf, bs = open_at("BTN")
     assert bf > uf + 0.25          # opens far wider from the button
     assert bs > us                 # ...and to a bigger size
+
+
+# -- isolation, squeezes, and the position split ------------------------------
+
+def _limped_to(button_stack=200, limpers=1):
+    """A 3-handed pot where ``limpers`` players have limped to the button."""
+    h = Hand(_seats(200, 200, button_stack), button=2, sb=1, bb=2,
+             rng=np.random.default_rng(1))
+    for _ in range(limpers):
+        h.act("call")
+    return h
+
+
+def test_limpers_are_counted_and_reset_by_street():
+    h = _limped_to(limpers=2)
+    assert h.limpers == 2 and h.callers == 0
+
+
+def test_a_cold_call_after_a_raise_is_a_caller_not_a_limper():
+    h = Hand(_seats(200, 200, 200), button=2, sb=1, bb=2, rng=np.random.default_rng(1))
+    h.act("raise", 6)          # SB opens
+    h.act("call")              # BB cold-calls
+    assert h.limpers == 0 and h.callers == 1
+
+
+def test_isolates_limpers_wider_than_it_opens_a_folded_pot():
+    """The gap the counters exist for: attacking limps is not opening first-in."""
+    profile = _Prof(**{"rfi:BTN": 0.40, "iso:BTN": 0.75})
+    rng = np.random.default_rng(3)
+    isos = 0
+    for _ in range(300):
+        h = _limped_to()
+        isos += decide(h, 2, profile, rng)[0] == "raise"
+    tight_iso = _Prof(**{"rfi:BTN": 0.40, "iso:BTN": 0.10})
+    rng = np.random.default_rng(3)
+    few = sum(decide(_limped_to(), 2, tight_iso, rng)[0] == "raise" for _ in range(300))
+    assert isos > few + 100
+
+
+def test_the_iso_raise_grows_with_the_number_of_limpers():
+    profile = _Prof(**{"iso:BTN": 0.99})
+    rng = np.random.default_rng(5)
+    one = decide(_limped_to(limpers=1), 2, profile, rng)
+    two = decide(_limped_to(limpers=2), 2, profile, rng)
+    assert one[0] == two[0] == "raise"
+    assert two[1] > one[1]
+
+
+def test_a_thin_iso_sample_falls_back_instead_of_reading_one_hand():
+    """One iso out of two must not become a 50% isolation frequency."""
+    thin = _Prof(**{"rfi:BTN": 0.40})
+    thin.stats["iso:BTN"] = _Est(0.5, opps=2)
+    rng = np.random.default_rng(7)
+    reasons = {decide(_limped_to(), 2, thin, rng)[2] for _ in range(40)}
+    assert not any("~50%" in r for r in reasons)
+
+
+# -- raised pots: MDF-grounded, and the regressions that must hold ------------
+
+# Card ids are rank * 4 + suit, ranks 0..12 = 2..A.
+_7d, _7h, _Kd, _Ac, _Ad = 21, 22, 47, 48, 49
+_FLOP = [0, 5, 22]                        # 2c 3d 7h -- one pair for a seven
+
+
+def _raised_flop(hole, bet=20, raise_to=60, level=2):
+    """A flop that has been bet and raised, with the action back on seat 0.
+
+    Postflop the engine carries no separate "bet" verb -- the first aggressive
+    action into an unbet pot is a raise from zero, which is what the policy
+    itself emits.
+    """
+    h = Hand(_seats(400, 400), button=0, sb=1, bb=2, rng=np.random.default_rng(2))
+    h.act("call")                          # limped preflop
+    h.act("check")
+    h.street = 1
+    h.board = list(_FLOP)
+    h.bet = 0
+    h.act("raise", bet)                    # seat 0 bets
+    h.act("raise", raise_to)               # seat 1 raises
+    h.seats[0].hole = tuple(hole)
+    h.raises = level
+    return h
+
+
+def test_one_pair_still_folds_a_reraised_pot():
+    """Top pair, no kicker help, four bets deep: the guard the handoff names."""
+    h = _raised_flop([_7d, _Kd], level=3)
+    kind, _, why = decide(h, 0, _Prof(**{"raise_vs_bet:flop": 0.06}),
+                          np.random.default_rng(0))
+    assert kind == "fold"
+    assert "re-raised pot" in why
+
+
+def test_the_nuts_still_get_it_in_at_reraise_depth():
+    h = _raised_flop([_Ac, _Ad], level=3)
+    h.seats[0].hole = (_7d, _7h)           # a set of sevens on 2-3-7
+    kind, _, _ = decide(h, 0, _Prof(**{"raise_vs_bet:flop": 0.06}),
+                        np.random.default_rng(0))
+    assert kind == "raise"
+
+
+def test_a_pot_sized_raise_reproduces_the_cutoffs_it_replaced():
+    """The calibration claim in the comment, asserted rather than trusted."""
+    from villain.botplay import (JAM_SHARE, RAISE_VALUE_WEIGHT, RERAISE_SHARE,
+                                 RERAISE_VALUE_WEIGHT)
+    mdf = 0.5                              # a pot-sized raise
+    raised = mdf * RAISE_VALUE_WEIGHT
+    reraised = mdf * RERAISE_VALUE_WEIGHT
+    assert round(1 - raised, 3) == 0.80
+    assert round(1 - raised * RERAISE_SHARE, 3) == 0.956
+    assert round(1 - reraised, 3) == 0.96
+    assert round(1 - reraised * JAM_SHARE, 3) == 0.985
+
+
+def _defended(mdf, raise_f):
+    from villain.botplay import POOL_RAISE_VS_BET, RAISE_VALUE_WEIGHT, _clamp
+    polarity = _clamp(raise_f / POOL_RAISE_VS_BET, 0.5, 2.0)
+    return _clamp(mdf * RAISE_VALUE_WEIGHT * polarity, 0.08, 0.45)
+
+
+def test_a_bigger_raise_is_defended_tighter_than_a_small_one():
+    """What a flat cutoff could never do: the bar moves with the size faced."""
+    half_pot = 1 / (1 + 0.5)
+    double_pot = 1 / (1 + 2.0)
+    assert _defended(half_pot, 0.06) > _defended(double_pot, 0.06)
+
+
+def test_a_player_who_raises_more_is_defended_wider():
+    assert _defended(0.5, 0.12) > _defended(0.5, 0.03)
