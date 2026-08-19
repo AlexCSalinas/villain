@@ -139,6 +139,12 @@ def _cmd_import(args) -> int:
         if not args.quiet and report.hands_new:
             print("  building profiles...", flush=True)
         store.rebuild_pending()
+        # Fit the population from this pool, after the books exist. A home
+        # game measured against online norms is wrong by the gap between
+        # them, and here that gap is a VPIP of 0.42 against 0.24.
+        fitted = store.fit_priors()
+        if fitted and not args.quiet:
+            print(f"  priors fitted from your own pool ({sum(fitted.values())} stats)")
     if report.files == 0:
         print("No file matched a known format.", file=sys.stderr)
         return 1

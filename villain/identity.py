@@ -99,7 +99,34 @@ def name_similarity(a: str, b: str) -> float:
         return 1.0
     blocks = SequenceMatcher(None, na, nb).ratio()
     edits = 1.0 - _levenshtein(na, nb) / max(len(na), len(nb))
-    return max(blocks, edits, _skeleton_score(na, nb))
+    return max(blocks, edits, _skeleton_score(na, nb), _containment_score(na, nb))
+
+
+#: Shortest stem a name-plus-suffix match will accept. Measured on a real
+#: pool: at 3+ characters the pairs a prefix match newly proposes are things
+#: like ``nuj``/``nuj10min`` and ``Rauf``/``RaufLaptop``; at 1-2 it starts
+#: proposing ``T@2009`` for ``Thomas`` and ``Tin``.
+MIN_CONTAINED = 3
+
+
+def _containment_score(na: str, nb: str) -> float:
+    """Catch a name that is another name with something stuck on the end.
+
+    ``Rauf`` reappears as ``RaufLaptop`` and ``RAUF10MIN``, ``Benson`` as
+    ``Benson1hr`` and ``Benson Wang`` -- one person labelling which device or
+    how long they are staying. Neither shared runs nor edit distance sees it:
+    the suffix is most of the longer string, so ``Rauf``/``Raufff`` scores
+    0.80 and ``Benson``/``Benson1hr`` 0.80, both under the bar.
+
+    A prefix, deliberately, not a substring: the suffix is something appended,
+    and a substring rule matches the middle of unrelated names. It is evidence
+    for a question and never an answer -- ``Arnav``/``Arnav Shah`` has exactly
+    this shape and is two different people, which only the user can say.
+    """
+    short, long = (na, nb) if len(na) <= len(nb) else (nb, na)
+    if len(short) < MIN_CONTAINED or short == long or not long.startswith(short):
+        return 0.0
+    return 0.93
 
 
 def _skeleton(name: str) -> str:
@@ -213,6 +240,21 @@ def suggest_links(store, min_name_score: float = HIGH_NAME_SCORE) -> list[Sugges
             ))
     out.sort(key=lambda s: -s.confidence)
     return out
+
+
+def matched_only_by_containment(a: str, b: str, bar: float) -> bool:
+    """True when a name-plus-suffix match is the *only* thing linking two names.
+
+    Those are asked, never applied: the shape that makes ``Rauf`` and
+    ``RaufLaptop`` one person makes ``Arnav`` and ``Arnav Shah`` two.
+    """
+    na, nb = normalise(a), normalise(b)
+    if _containment_score(na, nb) < bar:
+        return False
+    from difflib import SequenceMatcher as _SM
+    blocks = _SM(None, na, nb).ratio()
+    edits = 1.0 - _levenshtein(na, nb) / max(len(na), len(nb), 1)
+    return max(blocks, edits, _skeleton_score(na, nb)) < bar
 
 
 def _name_match_reason(a: str, b: str, score: float) -> str:

@@ -349,9 +349,18 @@ class Store:
             return
         overlap = self.shared_hands(keep, absorb)
         if overlap > SPURIOUS_OVERLAP:
+            # By name, not by internal id. "players 41 and 118" told the reader
+            # nothing about who the tool was refusing to merge, or why they
+            # should believe it.
+            names = {
+                int(r["id"]): (r["display_name"] or f"player {r['id']}")
+                for r in self.conn.execute(
+                    "SELECT id, display_name FROM players WHERE id IN (?, ?)",
+                    (keep, absorb))}
             raise ValueError(
-                f"players {keep} and {absorb} were dealt into {overlap} hands "
-                "together and cannot be the same person")
+                f"\u201c{names.get(keep, keep)}\u201d and "
+                f"\u201c{names.get(absorb, absorb)}\u201d were dealt into "
+                f"{overlap} hands together, so they are two different people")
         self.conn.execute("UPDATE aliases SET player_id = ? WHERE player_id = ?",
                           (keep, absorb))
         self.conn.execute("UPDATE notes SET player_id = ? WHERE player_id = ?",

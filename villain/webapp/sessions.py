@@ -363,17 +363,6 @@ def commit_session(store: Store, token: str, answers: dict) -> dict:
     # the fit already refuses (8+ players, 5+ opportunities per stat) when the
     # data cannot support it. Announced rather than silent, because it moves
     # the reference point every read is measured from.
-    priors_fitted = None
-    fitted = store.fit_priors()
-    if fitted:
-        players = store.conn.execute(
-            "SELECT COUNT(DISTINCT player_id) c FROM books").fetchone()["c"]
-        priors_fitted = {"regimes": fitted, "players": players}
-        # No rebuild here. Books are counts; the fitted prior is applied when a
-        # profile is *read*, so refitting takes effect immediately. Rebuilding
-        # recomputed every player from every stored hand for nothing, which on
-        # a 12,000-hand database is most of a minute with the window blocked.
-
     # A confirmed rename means the player is now known by the new name; the old
     # one stays reachable as an alias.
     for qid, question in questions.items():
@@ -415,6 +404,23 @@ def commit_session(store: Store, token: str, answers: dict) -> dict:
 
     # One rebuild for the whole save: the hands, and every merge above.
     store.rebuild_pending()
+
+    # After the rebuild, never before it. The fit reads the ratios table,
+    # which does not exist until the books are built -- fitting first
+    # silently produced nothing, and left every player in a home game
+    # measured against online norms whose VPIP is 0.24 against this
+    # pool's 0.42. Every read downstream is relative to that reference.
+    priors_fitted = None
+    fitted = store.fit_priors()
+    if fitted:
+        players = store.conn.execute(
+            "SELECT COUNT(DISTINCT player_id) c FROM books").fetchone()["c"]
+        priors_fitted = {"regimes": fitted, "players": players}
+        # No rebuild here. Books are counts; the fitted prior is applied when a
+        # profile is *read*, so refitting takes effect immediately. Rebuilding
+        # recomputed every player from every stored hand for nothing, which on
+        # a 12,000-hand database is most of a minute with the window blocked.
+
 
     session["saved"] = True
     return {
