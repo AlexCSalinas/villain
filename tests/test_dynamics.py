@@ -193,7 +193,7 @@ def test_a_slice_with_no_pooled_counter_is_skipped():
 
 
 def test_the_prior_is_what_decides_how_much_evidence_is_needed():
-    """Documented as a judgement call, so the knob has to actually be one."""
+    """Documented as a judgment call, so the knob has to actually be one."""
     counts = {STAT: (45, 100), VS_HERO + STAT: (2, 20)}
     assert adjustments({"6max": book("6max", counts)})
     # Believe much harder that he plays you like everyone, and 20 decisions

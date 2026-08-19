@@ -6,7 +6,7 @@ import pytest
 
 from villain.cli import main
 from villain.db import Store
-from villain.identity import name_similarity, normalise, suggest_links
+from villain.identity import name_similarity, normalize, suggest_links
 
 
 @pytest.fixture
@@ -152,7 +152,7 @@ def test_suggestion_reason_cites_the_matching_alias(tmp_path, hands):
 
 def test_unrelated_names_stay_apart():
     assert name_similarity("aryan", "Arnav2") < 0.8
-    assert normalise("Bob!!") == "bob"
+    assert normalize("Bob!!") == "bob"
 
 
 def test_suggestions_never_include_impossible_merges(store):

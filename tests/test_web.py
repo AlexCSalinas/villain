@@ -523,7 +523,7 @@ def test_the_payload_points_evidence_at_the_slice(tmp_path, hands):
     assert payload["adjustments"]
     for a in payload["adjustments"]:
         assert a["evidence_stat"] == "vs:" + a["stat"]
-        assert a["behaviour"] != a["stat"]
+        assert a["behavior"] != a["stat"]
 
 
 def test_an_uploaded_session_shows_them_too(session):

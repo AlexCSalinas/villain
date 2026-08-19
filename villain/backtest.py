@@ -5,7 +5,7 @@ This one asks whether the *exploits* are: split a player's hands
 chronologically, build a profile and find leaks from the earlier half alone,
 then check whether the later half -- hands the tool never saw -- actually
 kept doing what the leak said it would. That turns "trust the read" from an
-argument about the maths into a scoreboard, and it needs no new modelling:
+argument about the maths into a scoreboard, and it needs no new modeling:
 :func:`villain.exploits.find_leaks` and the stored hand history are all it
 uses.
 

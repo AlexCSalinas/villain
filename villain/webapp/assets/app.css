@@ -100,7 +100,7 @@
     border-radius: 12px; padding: 18px; margin: 16px 0;
   }
   /* Dashboard: tiles sized by content, flowing into as many columns as fit.
-     align-items:start stops a tall tile stretching its neighbours. */
+     align-items:start stops a tall tile stretching its neighbors. */
   .dash {
     display: grid; gap: 14px; align-items: start; margin: 16px 0;
     /* 420px min gives two columns at the 1060px wrap and one on a laptop in a
@@ -108,7 +108,7 @@
        whenever there were only two tiles to place. */
     grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
   }
-  /* No height:100% -- a short tile stretching to match a tall neighbour is
+  /* No height:100% -- a short tile stretching to match a tall neighbor is
      empty space pretending to be content. */
   .dash > .panel { margin: 0; }
   /* The tiles flow into balanced columns rather than being assigned to a fixed
@@ -151,8 +151,8 @@
   tbody tr.clickable:hover { background: var(--accent-soft); }
   .name { font-weight: 600; }
   /* The archetype pill keeps the accent whatever the confidence; a solid edge
-     means the read has cleared 50%, a dashed one means it has not. Colour on
-     its own was carrying that distinction, and dropping the colour to fix
+     means the read has cleared 50%, a dashed one means it has not. Color on
+     its own was carrying that distinction, and dropping the color to fix
      that lost the accent instead. */
   .tag.arch { border-color: var(--red); color: var(--ink); }
   .tag.arch:not(.on) { border-style: dashed; }
@@ -163,7 +163,7 @@
   }
   .tag.on { border-color: var(--red); color: var(--ink); }
   /* Same accent the archetype pill and sort caret already use for "this one
-     is notable" -- not a new colour for a new meaning. */
+     is notable" -- not a new color for a new meaning. */
   .hero-row-marker { background: var(--hero-soft); }
   .hero-tag { margin-left: 6px; border-color: var(--hero); color: var(--hero); font-weight: 600; }
   .scroller { overflow-x: auto; }

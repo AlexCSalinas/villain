@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from .priors import CONTINUOUS, NEIGHBOURS, REGIME_LABELS, SHORT, Estimate, logit, population_mean, prior_for, regime, shrink, sigmoid
+from .priors import CONTINUOUS, NEIGHBORS, REGIME_LABELS, SHORT, Estimate, logit, population_mean, prior_for, regime, shrink, sigmoid
 from .stats import VS_HERO, Meter, Ratio, StatBook
 
 # The features that define a player, in the order clustering expects.
@@ -178,7 +178,7 @@ def build_profile(book: StatBook, others: dict[str, StatBook] | None = None,
         player_id=book.player_id, name=book.name, hands=book.hands,
         regime=reg, table_size=book.mean("table_size") or 0.0,
         first_seen=book.first_seen, last_seen=book.last_seen,
-        borrowed_from=[r for r in NEIGHBOURS.get(reg, ()) if r in others],
+        borrowed_from=[r for r in NEIGHBORS.get(reg, ()) if r in others],
         priors=dict(priors),
     )
 

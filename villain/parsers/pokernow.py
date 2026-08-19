@@ -266,7 +266,7 @@ def _replay(hand: Hand, events: list[dict[str, Any]], by_seat: dict[int, Seat]) 
             # explains itself. It makes the money figures for this hand
             # slightly optimistic, but it says nothing about who folded to
             # what -- and dropping the hand outright, as a ``pot_mismatch``
-            # did, discarded every behavioural statistic in a raked game.
+            # did, discarded every behavioral statistic in a raked game.
             hand.flags.add("raked")
         elif hand.rake < 0:
             # More was paid out than went in. That cannot happen at a real

@@ -755,7 +755,7 @@ class Store:
         for row in self.conn.execute(
                 "SELECT regime, player_id, stat, hits, opps FROM ratios"):
             raw[(row["regime"], row["player_id"])][row["stat"]] = (row["hits"], row["opps"])
-            # A vs: counter is one player's behaviour against one opponent, so
+            # A vs: counter is one player's behavior against one opponent, so
             # the spread across players measures the opponent as much as the
             # pool. Fitting a population from it would feed that back into
             # everyone's shrinkage.

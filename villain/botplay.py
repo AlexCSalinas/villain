@@ -280,7 +280,7 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
         # Theory (GTO Wizard, blog.gtowizard.com/mdf-alpha): for a bet B into pot
         # P, MDF = P/(P+B) is the share of range you must defend, and pot-odds
         # equity to call = B/(2B+P). The player's own fold-to-a-bet-of-this-size
-        # frequency IS their defence; MDF is the theory default when thin. Facing
+        # frequency IS their defense; MDF is the theory default when thin. Facing
         # a bet the range beats random, so the equity bar adds ~half the bet
         # fraction on top of raw pot odds -- weak-live hands fold big bets.
         level = hand.raises                          # 1 = a bet, 2 = a raise, 3+ = a re-raise
@@ -326,7 +326,7 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
             return ("fold", 0,
                     f"folds — {depth}; below the top {defend:.0%} that continues, and "
                     f"{req_eq:.0%} pot odds do not rescue one pair")
-        # level 1: MDF defence, value-raise the top, call to pot odds.
+        # level 1: MDF defense, value-raise the top, call to pot odds.
         fold_f = _freq_n(profile, f"fold_vs_bet:{street}:{bucket}",
                          _freq_n(profile, f"fold_vs_bet:{street}", 1 - mdf, 20), 12)
         raise_f = min(_freq_n(profile, f"raise_vs_bet:{street}", 0.06, 12), 0.20)
@@ -342,7 +342,7 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
             return ("call", 0,
                     f"calls — top {continue_frac:.0%} they defend vs this size (MDF {mdf:.0%}), beats the {req_eq:.0%} pot odds")
         return ("fold", 0,
-                f"folds — below their {continue_frac:.0%} defence vs this size (MDF here is {mdf:.0%})")
+                f"folds — below their {continue_frac:.0%} defense vs this size (MDF here is {mdf:.0%})")
 
     # checked to
     if has_init:                                     # only the aggressor c-bets

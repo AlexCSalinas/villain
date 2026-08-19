@@ -231,7 +231,7 @@ def test_measured_bluff_size_prefers_faced_sizing():
 
 
 def test_bluff_severity_is_absolute_bb_per_100():
-    """Regression: an extra /100 priced every leak in bb/hand while labelling
+    """Regression: an extra /100 priced every leak in bb/hand while labeling
     it bb/100. Pin an absolute number so that cannot silently return."""
     from villain.exploits import RULES, _severity
     from villain.priors import shrink

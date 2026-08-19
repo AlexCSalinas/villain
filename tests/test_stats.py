@@ -422,7 +422,7 @@ def test_splitting_the_batch_does_not_change_the_books():
 
 
 def test_a_worker_failure_falls_back_instead_of_failing_the_import(monkeypatch):
-    """An optimisation must not be able to lose somebody's import."""
+    """An optimization must not be able to lose somebody's import."""
     import villain.features as features
     from tests.conftest import FIXTURE
     from villain.parsers import parse_file

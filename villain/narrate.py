@@ -24,7 +24,7 @@ committed by an absent-minded ``git add -A``. The file is a plain list of
 **It may not invent numbers.** The model is given a fact sheet built from the
 computed profile and asked to explain it; the output is then checked, and any
 figure that does not appear in the facts causes the whole response to be
-discarded in favour of the static text. A model that rounds 51% to "about half"
+discarded in favor of the static text. A model that rounds 51% to "about half"
 is fine; a model that decides they fold 70% is not, and there is no way to tell
 which happened by reading the prose. So the check is mechanical.
 
@@ -207,9 +207,9 @@ def unsupported_numbers(text: str, facts: str) -> list[str]:
     """Figures in ``text`` that do not appear in ``facts``.
 
     Percentages are matched as percentages: a fact sheet that says "Seen 78
-    times" must not authorise "folds 78%". Bare counts still need to appear as
+    times" must not authorize "folds 78%". Bare counts still need to appear as
     bare numbers. Deliberately strict — invented frequencies read like real
-    ones, so the only defence is refusing figures the arithmetic did not make.
+    ones, so the only defense is refusing figures the arithmetic did not make.
     """
     known_pcts: set[str] = set()
     for value in _PERCENT.findall(facts):
@@ -293,7 +293,7 @@ def fact_sheet(payload: dict) -> str:
                 f"- {leak['headline']}. {leak['in_words']} "
                 f"Worth about {leak['severity_bb100']} big blinds per 100 hands "
                 f"({leak['size']}, {leak['tier']} read). "
-                f"What they are doing: {leak['behaviour']} "
+                f"What they are doing: {leak['behavior']} "
                 f"Do: {leak['do']} Do not: {leak['dont']}")
     else:
         lines.append("No leak has enough evidence behind it yet.")
@@ -307,7 +307,7 @@ def fact_sheet(payload: dict) -> str:
 
 def narrate(payload: dict, *, url: str | None = None, model: str | None = None,
             timeout: int = TIMEOUT, attempts: int = ATTEMPTS) -> Narration:
-    """Ask the configured model to summarise a profile.
+    """Ask the configured model to summarize a profile.
 
     Retries the failures that are worth retrying: rate limits, gateway errors
     and timeouts, which a free tier produces regularly and which mean nothing

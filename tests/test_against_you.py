@@ -11,7 +11,7 @@ import json
 from villain.analyze import as_dict
 from villain.dynamics import adjustments
 from villain.features import record_hands
-from villain.glossary import VERSUS_BEHAVIOUR, stat_help, versus_behaviour
+from villain.glossary import VERSUS_BEHAVIOR, stat_help, versus_behavior
 from villain.profile import build_unified
 from villain.report import WIDTH, profile_card
 from villain.stats import VS_HERO, StatBook
@@ -56,7 +56,7 @@ def test_every_counter_that_has_a_slice_can_be_said_in_words(hands):
         if stat.startswith(VS_HERO)
     }
     assert families, "fixture should exercise the extractor"
-    missing = [f for f in families if versus_behaviour(f) == f]
+    missing = [f for f in families if versus_behavior(f) == f]
     assert not missing, f"no phrasing for {sorted(missing)}"
 
 
@@ -75,14 +75,14 @@ def test_every_counter_that_has_a_slice_has_an_explanation(hands):
 
 def test_the_phrasing_names_the_reader():
     """An adjustment is a person reacting to you, not a frequency."""
-    for stat in VERSUS_BEHAVIOUR:
-        said = versus_behaviour(f"{stat}:river" if "{street}" in
-                                VERSUS_BEHAVIOUR[stat] else stat)
+    for stat in VERSUS_BEHAVIOR:
+        said = versus_behavior(f"{stat}:river" if "{street}" in
+                                VERSUS_BEHAVIOR[stat] else stat)
         assert "you" in said or "your" in said, said
 
 
 def test_an_unknown_stat_falls_back_to_its_key():
-    assert versus_behaviour("not_a_stat:flop") == "not_a_stat:flop"
+    assert versus_behavior("not_a_stat:flop") == "not_a_stat:flop"
 
 
 # -- the card ---------------------------------------------------------------
@@ -137,7 +137,7 @@ def test_the_payload_carries_them_in_words_and_numbers():
     payload = as_dict(profile_with(STRONG))
     assert payload["adjustments"]
     first = payload["adjustments"][0]
-    assert first["behaviour"] != first["stat"]
+    assert first["behavior"] != first["stat"]
     assert first["direction"] in ("more", "less")
     assert first["sample"] >= 12
     assert 0 <= first["confidence"] <= 1

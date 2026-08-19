@@ -26,7 +26,7 @@ DISPLAY_STATS = [
     ("squeeze", "squeeze", "after a raise and a caller"),
     ("cold_call", "cold call", "calls a raise, no money in"),
     ("rfi", "open (RFI)", "first in, folded to them"),
-    ("bb_defend", "BB defence", "big blind vs a raise"),
+    ("bb_defend", "BB defense", "big blind vs a raise"),
     ("cbet:flop", "c-bet flop", "as the preflop raiser"),
     ("cbet:turn", "c-bet turn", "after betting the flop"),
     ("fold_vs_bet:flop", "fold vs flop bet", "facing a bet"),

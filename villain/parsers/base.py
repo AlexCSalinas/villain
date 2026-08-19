@@ -42,7 +42,7 @@ def parse_file(path: Path) -> list[Hand]:
             continue
         if claimed:
             return list(parse(path))
-    raise UnknownFormat(f"no parser recognises {path.name}")
+    raise UnknownFormat(f"no parser recognizes {path.name}")
 
 
 def parse_paths(paths: Iterable[Path]) -> Iterator[tuple[Path, list[Hand]]]:

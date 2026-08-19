@@ -1,7 +1,7 @@
 """All-in equity, used to separate results from decisions.
 
 A player's chip graph is mostly noise over a few hundred hands: getting it in
-as an 80% favourite and losing costs the same money as a punt, and a skill
+as an 80% favorite and losing costs the same money as a punt, and a skill
 rating that cannot tell those apart is a rating of luck. So every hand that
 gets all-in with cards known is scored twice -- what happened, and what the
 pot was worth at the moment the last chip went in.

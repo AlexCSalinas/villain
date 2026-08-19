@@ -50,9 +50,9 @@ def regime(table_size: float) -> str:
     return FULL
 
 
-#: When a player is thin in one regime, borrow from the nearest neighbours in
+#: When a player is thin in one regime, borrow from the nearest neighbors in
 #: this order rather than from an arbitrary default.
-NEIGHBOURS = {HEADS_UP: (THREE, SHORT, FULL), THREE: (HEADS_UP, SHORT, FULL),
+NEIGHBORS = {HEADS_UP: (THREE, SHORT, FULL), THREE: (HEADS_UP, SHORT, FULL),
               SHORT: (THREE, FULL, HEADS_UP), FULL: (SHORT, THREE, HEADS_UP)}
 
 
@@ -110,7 +110,7 @@ POPULATION: dict[str, dict[str, float]] = {
 
 # Three-handed sits between the two and is the most common short-table game
 # outside of full sites: everyone is in the blinds two hands out of three, so
-# defence frequencies stay near heads-up while opening ranges tighten.
+# defense frequencies stay near heads-up while opening ranges tighten.
 POPULATION[THREE] = dict(
     POPULATION[HEADS_UP],
     vpip=0.55, pfr=0.44, rfi=0.48, limp=0.05,
@@ -223,7 +223,7 @@ def spread_of(feature: str, table_regime: str = "",
 
     The change is worth making, but only against a validation harness that
     scores one half of a player's hands against the other. Tuning it against a
-    handful of hand-labelled players is how the prototypes were overfitted
+    handful of hand-labeled players is how the prototypes were overfitted
     twice already.
     """
     return SPREAD.get(feature, DEFAULT_SPREAD)

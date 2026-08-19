@@ -190,7 +190,7 @@ def texture_label(board: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# preflop range: counted, not modelled
+# preflop range: counted, not modeled
 # ---------------------------------------------------------------------------
 
 @dataclass

@@ -397,7 +397,7 @@ def _cmd_validate(args) -> int:
     print(result)
     print("\n  Stated confidence should track accuracy; the gap between them is\n"
           "  the calibration error. Halves agreeing is reproducibility, not\n"
-          "  correctness -- a player can be labelled the same way twice and be\n"
+          "  correctness -- a player can be labeled the same way twice and be\n"
           "  wrong both times.")
     return 0
 

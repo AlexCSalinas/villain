@@ -24,7 +24,7 @@ def test_no_orphan_playbook_entries():
 
 def test_every_entry_answers_all_four_questions():
     for leak_id, entry in PLAYBOOK.items():
-        for field in ("behaviour", "why", "do", "dont"):
+        for field in ("behavior", "why", "do", "dont"):
             text = getattr(entry, field)
             assert text and len(text) > 40, f"{leak_id}.{field} is too thin"
 
@@ -74,7 +74,7 @@ def test_leak_exposes_words_as_well_as_numbers(synth_profile):
     leaks = find_leaks(synth_profile("overfolder", regime="hu", opps=150))
     assert leaks
     leak = leaks[0]
-    for field in ("behaviour", "why", "do", "dont", "priority", "pressure", "in_words"):
+    for field in ("behavior", "why", "do", "dont", "priority", "pressure", "in_words"):
         assert getattr(leak, field), field
     assert "%" in leak.in_words
     assert leak.size in {"big", "solid", "modest", "small"}
@@ -100,7 +100,7 @@ def test_analyze_export_carries_the_language(tmp_path, hands):
     assert "combinations" in payload and "plan" in payload
     json.dumps(payload)
     for leak in payload["leaks"]:
-        for field in ("behaviour", "why", "do", "dont", "priority", "in_words"):
+        for field in ("behavior", "why", "do", "dont", "priority", "in_words"):
             assert leak[field], field
 
 
