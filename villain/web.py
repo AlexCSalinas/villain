@@ -236,7 +236,9 @@ def roster_payload(store: Store) -> list[dict]:
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", ""})
 
 #: Cap on a request body. The upload route holds what it reads in memory.
-MAX_BODY_BYTES = 64 * 1024 * 1024
+#: The UI uploads multiple hand-history JSON files in a single JSON payload,
+#: so large batches can exceed the default 64MB limit.
+MAX_BODY_BYTES = 256 * 1024 * 1024
 
 SESSIONS: dict[str, dict] = {}
 SESSION_TTL = 6 * 3600
@@ -952,6 +954,9 @@ class Handler(BaseHTTPRequestHandler):
                         "hands": store.conn.execute(
                             "SELECT COUNT(*) c FROM hands").fetchone()["c"],
                         "hero_id": _cached_hero_id(store),
+                        # An empty roster over a full hands table is a broken
+                        # import, not an empty database. Say which.
+                        "books_missing": store.books_missing(),
                         "fit_priors": {
                             "suggested": n_players >= 8 and n_fitted == 0,
                             "players": n_players,
