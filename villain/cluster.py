@@ -123,7 +123,7 @@ def _row(profile: Profile) -> np.ndarray:
 
     Zero means "no deviation from the population", which is the right thing to
     assume about a statistic nobody has observed: it keeps the player at the
-    centre on that axis instead of inventing a tendency.
+    center on that axis instead of inventing a tendency.
     """
     z = deviations(profile)
     return np.array([z.get(f, 0.0) for f in PROFILE_FEATURES], dtype=float)

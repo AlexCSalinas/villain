@@ -8,7 +8,7 @@ served from ``/static``; the server module is back to being about HTTP.
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 ASSETS = Path(__file__).parent / "assets"
@@ -19,7 +19,7 @@ TYPES = {".html": "text/html; charset=utf-8",
          ".js": "text/javascript; charset=utf-8"}
 
 
-@lru_cache(maxsize=None)
+@cache
 def _read(name: str) -> bytes:
     return (ASSETS / name).read_bytes()
 

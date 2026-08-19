@@ -1,6 +1,6 @@
 """The learned layers: clusters from a pool, hand strength from revealed cards.
 
-Both refuse to run on too little data, and that refusal is the behaviour worth
+Both refuse to run on too little data, and that refusal is the behavior worth
 testing hardest -- a model fitted to six players will produce clusters, and
 they will be noise.
 """
@@ -11,7 +11,7 @@ import pytest
 from villain.archetypes import ARCHETYPE_BY_NAME, target_frequency
 from villain.cluster import MIN_PROFILES, NotEnoughData, fit_clusters
 from villain.profile import PROFILE_FEATURES, build_profile
-from villain.reads import MIN_ROWS, texture, build_dataset, fit
+from villain.reads import MIN_ROWS, build_dataset, fit, texture
 from villain.reads import NotEnoughData as ReadsNotEnoughData
 from villain.stats import StatBook
 

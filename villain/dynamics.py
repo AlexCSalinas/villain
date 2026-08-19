@@ -46,7 +46,7 @@ from .stats import VS_HERO, StatBook
 #:
 #: Nothing in a database can fit this. It would take pairwise samples across
 #: many players to learn how much people vary between opponents, and a home
-#: game has one pair worth counting. So it is a judgement call, stated here
+#: game has one pair worth counting. So it is a judgment call, stated here
 #: rather than buried: raise it and an adjustment needs more evidence before it
 #: shows, lower it and normal variation starts reading as a read.
 ADJUSTMENT_PRIOR = 30.0

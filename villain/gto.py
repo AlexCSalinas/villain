@@ -7,7 +7,7 @@ is the part of their game a perfect opponent still could not exploit.
 Two fidelities, never blurred, each tagged on every row it produces:
 
 * **Preflop is a solver reference.** Opening, 3-betting, 4-betting and
-  blind-defence frequencies at 100bb are stable, well-published solver outputs;
+  blind-defense frequencies at 100bb are stable, well-published solver outputs;
   the preflop targets here are that consensus for each table-size class. They
   are exact as *category frequencies* -- the by-position openers assume the
   standard seats for the class, and true GTO shifts a little with stack depth
@@ -15,7 +15,7 @@ Two fidelities, never blurred, each tagged on every row it produces:
 * **Postflop is a benchmark.** Real postflop GTO is board-by-board and needs a
   solver in the loop, which this tool does not have. The postflop targets are
   equilibrium *benchmarks* -- board-averaged frequencies a balanced player
-  lands near -- and every postflop row is labelled ``benchmark`` so the number
+  lands near -- and every postflop row is labeled ``benchmark`` so the number
   is never mistaken for solver output.
 
 Nothing here invents precision it does not have: a stat is only scored when the
@@ -53,7 +53,7 @@ _TOL = 0.08
 
 #: GTO / equilibrium targets by table-size class. Preflop = solver consensus at
 #: 100bb; postflop = equilibrium benchmark. 6-max (SHORT) is written out; the
-#: others adjust the openers and defence for seat count.
+#: others adjust the openers and defense for seat count.
 GTO: dict[str, dict[str, float]] = {
     SHORT: {
         # -- preflop openers, standard 6-max seats (solver, 100bb) --
@@ -84,7 +84,7 @@ GTO: dict[str, dict[str, float]] = {
     },
 }
 
-# Three-handed: openers between heads-up and six-max, defence near heads-up.
+# Three-handed: openers between heads-up and six-max, defense near heads-up.
 GTO[THREE] = dict(
     GTO[SHORT],
     **{"rfi:CO": 0.34, "rfi:BTN": 0.50, "rfi:SB": 0.46},

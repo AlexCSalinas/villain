@@ -53,10 +53,9 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .model import Act, Street, STREET_LABELS
-from .reads import NotEnoughData, StrengthModel, build_dataset
+from .model import STREET_LABELS, Act, Street
+from .reads import StrengthModel, build_dataset, strength_by_street, texture
 from .reads import fit as fit_strength
-from .reads import strength_by_street, texture
 from .stats import Decision, HandView
 
 #: Below this fraction of a player's own hands having known cards, they are
@@ -191,7 +190,7 @@ def texture_label(board: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# preflop range: counted, not modelled
+# preflop range: counted, not modeled
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -268,7 +267,7 @@ def preflop_range(hands: list, hero_id: int) -> dict[str, PositionRange]:
     return by_position
 
 
-def combined_grid(ranges: dict[str, "PositionRange"]) -> dict[str, tuple[int, int]]:
+def combined_grid(ranges: dict[str, PositionRange]) -> dict[str, tuple[int, int]]:
     """Every hand class summed across position: (times played, times dealt).
 
     For the chart, which shows "how often do you play this hand" rather than

@@ -3,7 +3,7 @@
 import pytest
 
 from villain.db import Store
-from villain.evidence import describe, find, street_of
+from villain.evidence import find, street_of
 from villain.features import record_hands
 from villain.model import Street
 from villain.profile import build_unified

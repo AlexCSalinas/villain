@@ -18,7 +18,7 @@ it:
 
 * The exporting player's own cards are visible on every hand, including hands
   they folded, so their rows are an unbiased sample and are marked as such.
-* Rows are labelled with strength *at the street the action was taken*, not at
+* Rows are labeled with strength *at the street the action was taken*, not at
   the end, so a flop bet is scored against the flop board rather than against
   a river that had not arrived yet.
 
@@ -38,7 +38,7 @@ from .cards import card_ids, evaluate
 from .model import Act, Hand, Street
 from .stats import HandView
 
-#: Below this many labelled rows, a fitted model is decoration.
+#: Below this many labeled rows, a fitted model is decoration.
 MIN_ROWS = 300
 
 #: Pseudo-rows of prior for a per-player residual, shrunk toward zero.
@@ -122,7 +122,7 @@ class NotEnoughData(ValueError):
 
 
 def build_dataset(hands: list[Hand]) -> list[Row]:
-    """Every action whose player's cards are known, labelled by strength."""
+    """Every action whose player's cards are known, labeled by strength."""
     rows: list[Row] = []
     for hand in hands:
         if not hand.board:
@@ -176,7 +176,7 @@ def fit(rows: list[Row], random_state: int = 0) -> StrengthModel:
     """Fit the population model and each player's residual against it."""
     if len(rows) < MIN_ROWS:
         raise NotEnoughData(
-            f"need {MIN_ROWS} labelled rows to fit a strength model, have {len(rows)}; "
+            f"need {MIN_ROWS} labeled rows to fit a strength model, have {len(rows)}; "
             "keep importing sessions")
 
     from sklearn.ensemble import GradientBoostingRegressor

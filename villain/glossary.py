@@ -418,7 +418,7 @@ COMPONENTS: dict[str, dict] = {
                 "bluffing nor value betting thin is free against them.",
         "stats": ["fold_vs_bet:flop", "fold_vs_bet:turn", "fold_vs_bet:river"],
     },
-    "Showdown judgement": {
+    "Showdown judgment": {
         "measures": "How often they reach showdown, and how often they win "
                     "when they do.",
         "low": "They arrive at showdown with the wrong hands -- paying off "
@@ -496,12 +496,12 @@ def stat_help(stat: str) -> dict[str, str] | None:
 #:
 #: An adjustment is not a frequency, it is a person reacting to you, and "fold
 #: vs turn bet, 19%" does not read as one. The exploit layer already prefers
-#: behaviour to statistics for the same reason; this is that sentence with
+#: behavior to statistics for the same reason; this is that sentence with
 #: *you* in it, which is the whole difference between the two sections.
 #: Kept short enough to sit in a column beside the numbers: the terminal card
 #: has to fit on one screen, and a phrase that wraps costs more than the extra
 #: words are worth.
-VERSUS_BEHAVIOUR: dict[str, str] = {
+VERSUS_BEHAVIOR: dict[str, str] = {
     "fold_vs_bet": "folds to your {street} bets",
     "call_vs_bet": "calls your {street} bets",
     "raise_vs_bet": "raises your {street} bets",
@@ -514,10 +514,10 @@ VERSUS_BEHAVIOUR: dict[str, str] = {
 }
 
 
-def versus_behaviour(stat: str) -> str:
+def versus_behavior(stat: str) -> str:
     """How to say ``stat`` as a thing this player does to you."""
     base, _, street = stat.partition(":")
-    phrase = VERSUS_BEHAVIOUR.get(base)
+    phrase = VERSUS_BEHAVIOR.get(base)
     if phrase is None:
         return stat
     return phrase.format(street=street) if street else phrase

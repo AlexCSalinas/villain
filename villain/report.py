@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .analyze import enrich
 from .archetypes import ARCHETYPE_BY_NAME, deviations
-from .glossary import versus_behaviour
+from .glossary import versus_behavior
 from .model import STREET_LABELS
 from .playbook import combinations_for
 from .profile import Profile
@@ -65,7 +65,7 @@ def profile_card(profile: Profile, verbose: bool = False) -> str:
         for line in _wrap(leak.in_words, WIDTH - 6):
             out.append(f"      {line}")
         out.append("")
-        for label, text in (("what", leak.behaviour), ("why", leak.why),
+        for label, text in (("what", leak.behavior), ("why", leak.why),
                             ("do", leak.do), ("don't", leak.dont)):
             if not text:
                 continue
@@ -178,7 +178,7 @@ def _against_you(profile: Profile, verbose: bool) -> list[str]:
         # posterior, which will happily print certainty it cannot have.
         sure = min(a.confidence, 0.99)
         otherwise = f"({a.baseline:.0%} otherwise)"
-        out.append(f"    {versus_behaviour(a.stat):28s}{a.versus:5.0%}   "
+        out.append(f"    {versus_behavior(a.stat):28s}{a.versus:5.0%}   "
                    f"{otherwise:16s} {a.opps:.0f} seen, {sure:.0%} sure")
     out.append("")
     return out
@@ -219,7 +219,7 @@ def hero_card(name: str, visibility: float, hands: int, ranges: dict, fold_repor
 
     out: list[str] = [RULE, f"{name}  --  hero, cards known {visibility:.1%} of {hands} hands", ""]
 
-    out.append("PREFLOP RANGE  (counted directly from every hand you were dealt, not modelled)")
+    out.append("PREFLOP RANGE  (counted directly from every hand you were dealt, not modeled)")
     positions = sorted(ranges.values(), key=lambda p: POSITION_ORDER.get(p.position, 99))
     for pos in positions:
         if not pos.hands:

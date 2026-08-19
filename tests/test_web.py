@@ -7,8 +7,7 @@ import pytest
 
 from villain.db import Store, split_key
 from villain.identity import session_questions
-from villain.web import (MIN_ROSTER_HANDS, SESSIONS, commit_session, parse_upload,
-                         profile_payload, roster_payload, session_payload)
+from villain.web import MIN_ROSTER_HANDS, SESSIONS, commit_session, parse_upload, profile_payload, roster_payload, session_payload
 
 
 @pytest.fixture
@@ -212,12 +211,11 @@ def test_declining_a_rename_splits_the_identity(tmp_path, hands):
     with Store(db) as store:
         store.add_hands(hands)
         later = copy.deepcopy(hands)
-        account = None
         for hand in later:
             hand.hand_id += "-later"
             for seat in hand.seats:
                 if seat.name == "player1":
-                    account, seat.name = seat.player_id, "someone else"
+                    seat.name = "someone else"
         SESSIONS[token] = {"hands": later, "files": [], "created": 0.0,
                            "questions": store and session_questions(store, later)}
         rename = next(q for q in SESSIONS[token]["questions"] if q.kind == "rename")
@@ -266,7 +264,7 @@ def test_roster_hides_rounding_error_profiles(tmp_path, hands):
     by_player = defaultdict(list)
     for row in rows:
         by_player[row["player_id"]].append(row["hands"])
-    for player, counts in by_player.items():
+    for _player, counts in by_player.items():
         assert all(c >= MIN_ROSTER_HANDS for c in counts) or len(counts) == 1
 
 
@@ -464,6 +462,7 @@ def test_a_database_merge_shows_up_in_a_loaded_session(tmp_path, hands):
     in the database would contradict the database it is about to be saved into.
     """
     import copy
+
     from villain.web import SESSIONS, database_merges, session_payload
     token = "dbmerge"
     SESSIONS[token] = {"hands": copy.deepcopy(hands), "files": [], "created": 0.0}
@@ -474,7 +473,6 @@ def test_a_database_merge_shows_up_in_a_loaded_session(tmp_path, hands):
             # Merge two players who never share a hand.
             store.conn.execute(
                 "INSERT INTO players (display_name, created_at) VALUES ('Ghost', 0)")
-            ghost = store.conn.execute("SELECT MAX(id) m FROM players").fetchone()["m"]
             rows = store.conn.execute(
                 "SELECT site, account, player_id FROM aliases").fetchall()
             a, b = rows[0], next(r for r in rows[1:]
@@ -525,7 +523,7 @@ def test_the_payload_points_evidence_at_the_slice(tmp_path, hands):
     assert payload["adjustments"]
     for a in payload["adjustments"]:
         assert a["evidence_stat"] == "vs:" + a["stat"]
-        assert a["behaviour"] != a["stat"]
+        assert a["behavior"] != a["stat"]
 
 
 def test_an_uploaded_session_shows_them_too(session):

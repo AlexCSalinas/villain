@@ -7,15 +7,11 @@ model, and they are named for the mistake rather than the fix.
 import pytest
 
 from villain.archetypes import ARCHETYPES, IMPORTANCE, match, target_frequency
-from villain.exploits import (MIN_CONFIDENCE, MIN_OPPS, SHOWDOWN_MIN_OPPS,
-                              breakeven_fold, dedupe_leaks, find_leaks,
-                              measured_bluff_size, spots_to_confirm)
-from villain.priors import (HEADS_UP, POPULATION, REGIMES, THREE, Estimate,
-                            prior_for, population_mean, regime, shrink)
-from villain.profile import PROFILE_FEATURES, build_profile, build_profiles
+from villain.exploits import MIN_CONFIDENCE, MIN_OPPS, SHOWDOWN_MIN_OPPS, breakeven_fold, dedupe_leaks, find_leaks, measured_bluff_size, spots_to_confirm
+from villain.priors import POPULATION, Estimate, population_mean, prior_for, regime, shrink
+from villain.profile import PROFILE_FEATURES, build_profile
 from villain.skill import deduped_exploitability, rate
 from villain.stats import StatBook
-
 
 # -- priors -----------------------------------------------------------------
 
@@ -235,9 +231,9 @@ def test_measured_bluff_size_prefers_faced_sizing():
 
 
 def test_bluff_severity_is_absolute_bb_per_100():
-    """Regression: an extra /100 priced every leak in bb/hand while labelling
+    """Regression: an extra /100 priced every leak in bb/hand while labeling
     it bb/100. Pin an absolute number so that cannot silently return."""
-    from villain.exploits import CAPTURE, RULES, _severity
+    from villain.exploits import RULES, _severity
     from villain.priors import shrink
 
     book = StatBook(player_id="x", name="X", regime="hu", hands=100)
@@ -273,7 +269,7 @@ def test_limps_priced_as_preflop_isolation_not_flop_bluff():
 
 
 def test_overlapping_leaks_do_not_double_count_skill():
-    from villain.exploits import Leak, dedupe_leaks
+    from villain.exploits import Leak
     from villain.playbook import entry_for
 
     leaks = [

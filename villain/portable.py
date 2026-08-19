@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import gzip
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
-from .model import Hand, hand_from_dict, hand_to_dict
+from .model import Hand, hand_from_dict
 
 #: Bumped only when a reader would get a hand *wrong*, not when one is added.
 FORMAT_VERSION = 1

@@ -10,7 +10,6 @@ from villain.exploits import PRESSURE, RULES, TIERS, find_leaks, size_band
 from villain.narrate import Unavailable, enabled, fact_sheet, unsupported_numbers
 from villain.playbook import COMBINATIONS, PLAYBOOK, combinations_for, entry_for
 
-
 # -- coverage ---------------------------------------------------------------
 
 def test_every_rule_has_a_playbook_entry():
@@ -25,7 +24,7 @@ def test_no_orphan_playbook_entries():
 
 def test_every_entry_answers_all_four_questions():
     for leak_id, entry in PLAYBOOK.items():
-        for field in ("behaviour", "why", "do", "dont"):
+        for field in ("behavior", "why", "do", "dont"):
             text = getattr(entry, field)
             assert text and len(text) > 40, f"{leak_id}.{field} is too thin"
 
@@ -75,7 +74,7 @@ def test_leak_exposes_words_as_well_as_numbers(synth_profile):
     leaks = find_leaks(synth_profile("overfolder", regime="hu", opps=150))
     assert leaks
     leak = leaks[0]
-    for field in ("behaviour", "why", "do", "dont", "priority", "pressure", "in_words"):
+    for field in ("behavior", "why", "do", "dont", "priority", "pressure", "in_words"):
         assert getattr(leak, field), field
     assert "%" in leak.in_words
     assert leak.size in {"big", "solid", "modest", "small"}
@@ -101,7 +100,7 @@ def test_analyze_export_carries_the_language(tmp_path, hands):
     assert "combinations" in payload and "plan" in payload
     json.dumps(payload)
     for leak in payload["leaks"]:
-        for field in ("behaviour", "why", "do", "dont", "priority", "in_words"):
+        for field in ("behavior", "why", "do", "dont", "priority", "in_words"):
             assert leak[field], field
 
 
@@ -222,7 +221,7 @@ def test_narrate_reports_why_it_could_not_run(monkeypatch):
 def test_unified_profile_pools_every_table_size(hands):
     """A player seen at two table sizes gets one profile, not two."""
     from villain.features import record_hands
-    from villain.profile import build_profiles, build_unified
+    from villain.profile import build_unified
     books = record_hands(hands)
     multi = [by for by in books.values() if len([b for b in by.values() if b.hands]) > 1]
     assert multi, "fixture should have a player at more than one table size"
@@ -323,7 +322,6 @@ def test_watchlist_holds_near_misses_only(synth_profile):
 def test_watch_items_are_not_priced_as_reads(synth_profile):
     """No price on an unconfirmed read: the tool cannot say what it is worth."""
     from villain.analyze import as_dict
-    from villain.exploits import find_watchlist
     profile = synth_profile("limper", regime="3max", opps=30)
     payload = as_dict(profile)
     for item in payload["watchlist"]:
@@ -352,11 +350,11 @@ def test_weak_spots_explain_the_rating(synth_profile):
 
 def test_every_rated_component_is_explained():
     """A weakness nobody can interpret is not worth showing."""
+    from villain.archetypes import ARCHETYPE_BY_NAME, target_frequency
     from villain.glossary import component_help
+    from villain.profile import PROFILE_FEATURES, build_profile
     from villain.skill import rate
     from villain.stats import StatBook
-    from villain.profile import build_profile, PROFILE_FEATURES
-    from villain.archetypes import ARCHETYPE_BY_NAME, target_frequency
     book = StatBook(player_id="x", regime="6max", hands=300)
     for f in PROFILE_FEATURES:
         book.ratios[f].hits = target_frequency(ARCHETYPE_BY_NAME["tag"], f, "6max") * 60

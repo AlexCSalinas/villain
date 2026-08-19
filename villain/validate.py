@@ -3,7 +3,7 @@
 The prototypes were tuned twice against a simulation that generated players
 *from* the prototypes. In that world the model is correctly specified, so the
 harness cannot detect prototype misfit and will always endorse more confidence
-than the data supports. Hand-labelled players fail differently: six points
+than the data supports. Hand-labeled players fail differently: six points
 cannot constrain a hundred prototype constants, and once they are inside the
 tuning loop they stop being a test.
 
@@ -20,8 +20,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .archetypes import (ARCHETYPES, CONCENTRATION, _log_beta_binomial, match,
-                         target_frequency)
+from .archetypes import ARCHETYPES, _log_beta_binomial, match, target_frequency
 from .profile import PROFILE_FEATURES, build_profile
 
 #: A half needs this many hands before it is worth scoring at all.

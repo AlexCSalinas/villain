@@ -7,8 +7,8 @@ human reads it and is confused.
 
 Every entry answers four questions, in the order a player needs them:
 
-``behaviour``
-    What this person is actually doing at the table, described as behaviour
+``behavior``
+    What this person is actually doing at the table, described as behavior
     rather than as a statistic. "They fold the turn whenever they miss" is
     usable at the table; "fold_vs_bet:turn 61%" is not.
 ``why``
@@ -37,7 +37,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Entry:
-    behaviour: str
+    behavior: str
     why: str
     do: str
     dont: str
@@ -46,7 +46,7 @@ class Entry:
 #: Keyed by ``Rule.id`` in :mod:`villain.exploits`.
 PLAYBOOK: dict[str, Entry] = {
     "folds_blinds": Entry(
-        behaviour=(
+        behavior=(
             "They give up their blind rather than play out of position. When you "
             "raise from late position, they fold and wait for a better spot that "
             "mostly never comes."
@@ -65,7 +65,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "folds_to_three_bet": Entry(
-        behaviour=(
+        behavior=(
             "They open plenty of pots but abandon them the moment somebody "
             "re-raises. Their opening range is much wider than the range they "
             "will actually play a big pot with."
@@ -83,7 +83,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "no_three_bet": Entry(
-        behaviour=(
+        behavior=(
             "They almost never re-raise before the flop. They call with good "
             "hands rather than raising them, so their calls contain everything "
             "and their raises contain almost nothing."
@@ -101,7 +101,7 @@ PLAYBOOK: dict[str, Entry] = {
         dont="Do not confuse their passivity with weakness after the flop."
     ),
     "limps": Entry(
-        behaviour=(
+        behavior=(
             "They enter pots by calling the big blind instead of raising. Their "
             "limping range is wide, weak, and full of hands they are hoping to "
             "see a cheap flop with."
@@ -122,7 +122,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "no_defend": Entry(
-        behaviour=(
+        behavior=(
             "They surrender their big blind far too often, folding hands that are "
             "well worth a call against a late-position raise."
         ),
@@ -138,7 +138,7 @@ PLAYBOOK: dict[str, Entry] = {
         dont="Do not extend this to the times they do defend."
     ),
     "overfold_flop": Entry(
-        behaviour=(
+        behavior=(
             "They fold the flop whenever they miss. They call preflop hoping to "
             "connect, and when they do not, they are done with the hand."
         ),
@@ -159,7 +159,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "overfold_turn": Entry(
-        behaviour=(
+        behavior=(
             "They call the flop with hands that hoped to improve, then fold the "
             "turn when the card does not help them."
         ),
@@ -176,7 +176,7 @@ PLAYBOOK: dict[str, Entry] = {
         dont="Do not keep going on the river automatically."
     ),
     "overfold_river": Entry(
-        behaviour=(
+        behavior=(
             "They get to the river and cannot call. They talk themselves out of "
             "hands they held all the way, and fold for the last bet."
         ),
@@ -197,7 +197,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "overfold_cbet": Entry(
-        behaviour=(
+        behavior=(
             "When the preflop raiser bets the flop, they get out of the way. They "
             "treat a continuation bet as information rather than as something to "
             "be tested."
@@ -214,7 +214,7 @@ PLAYBOOK: dict[str, Entry] = {
         dont="Do not read their flop call as weakness because they usually fold."
     ),
     "station_flop": Entry(
-        behaviour=(
+        behavior=(
             "They call flop bets with far more than the price justifies -- "
             "any pair, any overcard, any backdoor draw."
         ),
@@ -236,12 +236,12 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "station_cbet": Entry(
-        behaviour=(
+        behavior=(
             "They defend against continuation bets far past the price, calling "
             "with hands that cannot continue on most turns."
         ),
         why=(
-            "Their defence frequency is below what the size demands, so the "
+            "Their defense frequency is below what the size demands, so the "
             "c-bet is profitable with the whole range and the turn is where "
             "the mistake gets paid for."
         ),
@@ -254,7 +254,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "station_turn": Entry(
-        behaviour=(
+        behavior=(
             "They do not fold once they have any piece of the board. Middle pair, "
             "bottom pair, a gutshot -- if it can win, they are calling to find "
             "out."
@@ -271,7 +271,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "station_river": Entry(
-        behaviour=(
+        behavior=(
             "They call the last bet with almost anything that beats a bluff. Ace "
             "high, bottom pair, a busted draw with a high card -- they want to "
             "see it."
@@ -293,7 +293,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "shows_down": Entry(
-        behaviour=(
+        behavior=(
             "They see a lot of showdowns. They want to know what you had, and "
             "they will pay for the information."
         ),
@@ -312,7 +312,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "no_showdown": Entry(
-        behaviour=(
+        behavior=(
             "They rarely reach a showdown. Somewhere on every street they find a "
             "reason to let the hand go."
         ),
@@ -332,7 +332,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "cbets_always": Entry(
-        behaviour=(
+        behavior=(
             "They bet the flop every time they raised before it, whether or not "
             "the board helped them."
         ),
@@ -353,7 +353,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "cbets_never": Entry(
-        behaviour=(
+        behavior=(
             "They raise before the flop and then check when they miss. Their "
             "check is an announcement that the flop did not help."
         ),
@@ -366,7 +366,7 @@ PLAYBOOK: dict[str, Entry] = {
         dont="Do not keep barrelling if they call the stab."
     ),
     "never_check_raises": Entry(
-        behaviour=(
+        behavior=(
             "They do not check-raise. When they check, they intend to call or "
             "fold, never to attack."
         ),
@@ -379,7 +379,7 @@ PLAYBOOK: dict[str, Entry] = {
         dont="Do not extend the assumption to their leads and turn raises."
     ),
     "barrels_flop": Entry(
-        behaviour=(
+        behavior=(
             "They bet and raise the flop far more often than the hands they "
             "could be holding justify. Every flop is a fight."
         ),
@@ -398,7 +398,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "barrels_river": Entry(
-        behaviour=(
+        behavior=(
             "They keep firing on the river at a frequency no value range can "
             "support, including on boards where nothing they played gets there."
         ),
@@ -416,7 +416,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "barrels_relentlessly": Entry(
-        behaviour=(
+        behavior=(
             "They keep betting -- flop, turn, and often the river -- at a rate no "
             "hand-reading can justify. They apply pressure by default rather than "
             "by plan."
@@ -436,7 +436,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "three_bets_light": Entry(
-        behaviour=(
+        behavior=(
             "They re-raise before the flop constantly, at a frequency no value "
             "range can support."
         ),
@@ -456,7 +456,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "bluffs_rivers": Entry(
-        behaviour=(
+        behavior=(
             "Their river bets are often nothing. They fire the last bullet with "
             "busted draws and hands that cannot win any other way."
         ),
@@ -472,7 +472,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "light_calls": Entry(
-        behaviour=(
+        behavior=(
             "They show up at showdown with hands that had no business calling. "
             "They pay to see it and then pay again."
         ),
@@ -491,7 +491,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "tank_folds": Entry(
-        behaviour=(
+        behavior=(
             "Long pauses before folding. When they tank and then act, the pause "
             "itself is the information."
         ),
@@ -510,7 +510,7 @@ PLAYBOOK: dict[str, Entry] = {
         )
     ),
     "snap_calls": Entry(
-        behaviour=(
+        behavior=(
             "Instant calls. No deliberation, no consideration of folding -- the "
             "call was decided before you bet."
         ),
@@ -529,7 +529,7 @@ PLAYBOOK: dict[str, Entry] = {
         ),
     ),
     "tank_folds_flop": Entry(
-        behaviour=(
+        behavior=(
             "Long pauses before folding the flop. The deliberation is concentrated "
             "on the first betting street after the cards come."
         ),
@@ -547,7 +547,7 @@ PLAYBOOK: dict[str, Entry] = {
         ),
     ),
     "tank_folds_turn": Entry(
-        behaviour=(
+        behavior=(
             "Long pauses before folding the turn. The expensive street is where "
             "their clock gives them away."
         ),
@@ -565,7 +565,7 @@ PLAYBOOK: dict[str, Entry] = {
         ),
     ),
     "tank_folds_river": Entry(
-        behaviour=(
+        behavior=(
             "Long pauses before folding the river. They talk themselves out of "
             "the final call after staring at it."
         ),
@@ -583,7 +583,7 @@ PLAYBOOK: dict[str, Entry] = {
         ),
     ),
     "snap_calls_flop": Entry(
-        behaviour=(
+        behavior=(
             "Instant flop calls. The call was decided before the bet finished "
             "landing."
         ),
@@ -601,7 +601,7 @@ PLAYBOOK: dict[str, Entry] = {
         ),
     ),
     "snap_calls_turn": Entry(
-        behaviour=(
+        behavior=(
             "Instant turn calls. No thought about folding or raising -- just the "
             "call."
         ),
@@ -619,7 +619,7 @@ PLAYBOOK: dict[str, Entry] = {
         ),
     ),
     "snap_calls_river": Entry(
-        behaviour=(
+        behavior=(
             "Instant river calls. The decision was made before they looked at the "
             "size."
         ),

@@ -54,10 +54,9 @@ prototypes, because a cluster id is not a strategy.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from .priors import (DEFAULT_SPREAD, SPREAD, logit, population_mean,
-                     sigmoid, spread_of)
+from .priors import logit, population_mean, sigmoid, spread_of
 from .profile import PROFILE_FEATURES, Profile
 
 #: How much each feature counts toward identifying a plan. Shared by every
@@ -315,7 +314,7 @@ CONCENTRATION = 40.0
 #: agree: the eigenvalue participation ratio of the importance-weighted
 #: correlation matrix over a real pool gives n_eff 7.06 of 32.0 (0.221), and
 #: held-out cross-validation -- fit on half a player's hands, score against the
-#: other half -- minimises log loss at 0.15-0.25.
+#: other half -- minimizes log loss at 0.15-0.25.
 #:
 #: Earlier values were tuned against a simulation that generated players *from*
 #: the prototypes. In that world the model is correctly specified, so no such
@@ -348,7 +347,7 @@ def deviations(profile: Profile) -> dict[str, float]:
 
 
 def target_frequency(arch: Archetype, feature: str, table_regime: str,
-                     profile: "Profile | None" = None) -> float:
+                     profile: Profile | None = None) -> float:
     """The frequency this archetype implies for a feature at this table size.
 
     Pass ``profile`` to measure against that player's fitted population rather
@@ -440,7 +439,7 @@ def _log_beta(a: float, b: float) -> float:
 
 
 def _log_gaussian(value: float, mean: float, spread: float) -> float:
-    """Unnormalised log density -- the normaliser is the same for every
+    """Unnormalised log density -- the normalizer is the same for every
     archetype (fixed ``spread``) so dropping it changes nothing about which
     archetype wins."""
     z = (value - mean) / spread

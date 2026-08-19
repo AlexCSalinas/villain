@@ -8,36 +8,13 @@ reason to carry.
 
 from __future__ import annotations
 
-import gzip
-import json
-import secrets
-import tempfile
-import threading
-import time
-import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, urlparse
-
 from ..analyze import as_dict, enrich
 from ..archetypes import ARCHETYPE_BY_NAME, deviations
-from ..db import DEFAULT_PATH, Store, split_key
-from ..dynamics import adjustments
+from ..db import Store
 from ..exploits import RULES, find_watchlist
-from ..features import record_hands
-from ..evidence import find as find_evidence
-from ..glossary import payload as glossary_payload, stat_help
-from ..model import hand_from_dict, hand_to_dict
-from ..identity import askable_questions, auto_answers, session_questions, suggest_links
-from ..skill import weaknesses
-from ..narrate import Unavailable, enabled as narrator_enabled, narrate
-from ..parsers import UnknownFormat, parse_file
 from ..priors import population_mean
-from ..profile import build_profiles, build_unified, primary_regime
-from ..stats import VS_HERO
+from ..skill import weaknesses
 from ..timing import timing_tells
-from ..replay import replay
-
 
 DISPLAY_STATS = [
     ("vpip", "VPIP", "hands played"),
@@ -49,7 +26,7 @@ DISPLAY_STATS = [
     ("squeeze", "squeeze", "after a raise and a caller"),
     ("cold_call", "cold call", "calls a raise, no money in"),
     ("rfi", "open (RFI)", "first in, folded to them"),
-    ("bb_defend", "BB defence", "big blind vs a raise"),
+    ("bb_defend", "BB defense", "big blind vs a raise"),
     ("cbet:flop", "c-bet flop", "as the preflop raiser"),
     ("cbet:turn", "c-bet turn", "after betting the flop"),
     ("fold_vs_bet:flop", "fold vs flop bet", "facing a bet"),
@@ -143,7 +120,8 @@ def profile_payload(profile, player_id: int | None = None) -> dict:
          "label": c.label, "read": c.read}
         for c in timing_tells(profile)
     ]
-    from ..gto import compare as _gto_compare, rating as _gto_rating
+    from ..gto import compare as _gto_compare
+    from ..gto import rating as _gto_rating
     _grows = _gto_compare(profile)
     payload["gto"] = {
         "rating": _gto_rating(_grows),
@@ -161,7 +139,8 @@ MIN_ROSTER_HANDS = 5
 
 def roster_payload(store: Store) -> list[dict]:
     """One row per player. Table sizes are pooled, not listed separately."""
-    from ..gto import compare as _gto_compare, rating as _gto_rating
+    from ..gto import compare as _gto_compare
+    from ..gto import rating as _gto_rating
     rows = []
     for player in store.players():
         profile = store.profile(int(player["id"]))

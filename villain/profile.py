@@ -16,8 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from .priors import (CONTINUOUS, NEIGHBOURS, REGIME_LABELS, SHORT, Estimate, logit,
-                     population_mean, prior_for, regime, shrink, sigmoid)
+from .priors import CONTINUOUS, NEIGHBORS, REGIME_LABELS, SHORT, Estimate, logit, population_mean, prior_for, regime, shrink, sigmoid
 from .stats import VS_HERO, Meter, Ratio, StatBook
 
 # The features that define a player, in the order clustering expects.
@@ -179,7 +178,7 @@ def build_profile(book: StatBook, others: dict[str, StatBook] | None = None,
         player_id=book.player_id, name=book.name, hands=book.hands,
         regime=reg, table_size=book.mean("table_size") or 0.0,
         first_seen=book.first_seen, last_seen=book.last_seen,
-        borrowed_from=[r for r in NEIGHBOURS.get(reg, ()) if r in others],
+        borrowed_from=[r for r in NEIGHBORS.get(reg, ()) if r in others],
         priors=dict(priors),
     )
 
@@ -321,8 +320,8 @@ def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, in
     for stat, meter in source.meters.items():
         merged.meters[stat].merge(meter)
 
-    for regime, book in live.items():
-        if regime == home:
+    for reg, book in live.items():
+        if reg == home:
             continue
         for stat, ratio in book.ratios.items():
             # Translation re-expresses a rate against another table size's
@@ -332,7 +331,7 @@ def unified_book(by_regime: dict[str, StatBook]) -> tuple[StatBook, dict[str, in
             # does not describe it.
             if ratio.opps <= 0 or stat.startswith(VS_HERO):
                 continue
-            translated = _translate_rate(stat, ratio, regime, home)
+            translated = _translate_rate(stat, ratio, reg, home)
             weight = CROSS_REGIME_DISCOUNT * ratio.opps
             merged.ratios[stat].hits += translated * weight
             merged.ratios[stat].opps += weight

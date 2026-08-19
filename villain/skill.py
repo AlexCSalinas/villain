@@ -27,14 +27,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .archetypes import ARCHETYPE_BY_NAME, target_frequency
-from .exploits import Leak, dedupe_leaks, find_leaks, leak_family
+from .exploits import Leak, find_leaks, leak_family
 from .profile import Profile
 
 TIERS = [
     (82, "expert", "Frequencies hold up under pressure; no cheap edge available."),
     (68, "strong", "Solid and hard to attack, with only narrow leaks to work on."),
     (54, "competent", "Understands the game; exploitable in specific, fixable spots."),
-    (38, "developing", "Recognisable strategy with leaks that cost real money."),
+    (38, "developing", "Recognizable strategy with leaks that cost real money."),
     (22, "recreational", "Plays by feel; several large and reliable leaks."),
     (0, "beginner", "Fundamental errors on most streets."),
 ]
@@ -204,7 +204,7 @@ def _showdown_judgement(profile: Profile) -> Component | None:
     score = _band_score(wsd, _solid(profile, "wsd") + 0.04, 0.16)
     if wtsd is not None and profile.opps("wtsd") >= 12:
         score = 0.65 * score + 0.35 * _band_score(wtsd, _solid(profile, "wtsd"), 0.10)
-    return Component("Showdown judgement", score, 1.0)
+    return Component("Showdown judgment", score, 1.0)
 
 
 def _sizing(profile: Profile) -> Component | None:
@@ -268,11 +268,11 @@ def _adjusted_winrate(profile: Profile) -> float | None:
     total = net * hands
     ev_n = profile.means.get("ev_net_bb#n", 0)
     if ev_n:
-        # Swap the realised result of all-in pots for their equity, so a
+        # Swap the realized result of all-in pots for their equity, so a
         # cooler and a punt stop looking alike.
-        realised = profile.means.get("allin_realised_bb", 0.0) * ev_n
+        realized = profile.means.get("allin_realised_bb", 0.0) * ev_n
         expected = profile.means.get("ev_net_bb", 0.0) * ev_n
-        total += expected - realised
+        total += expected - realized
     # Shrink hard toward breakeven: 200 hands says almost nothing about winrate.
     prior_hands = 800.0
     return round(100.0 * total / (hands + prior_hands), 2)

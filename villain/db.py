@@ -23,14 +23,13 @@ import json
 import sqlite3
 import time
 from collections import defaultdict
-from contextlib import closing
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
+from .dynamics import adjustments
 from .features import record_hands
 from .model import Hand, hand_from_dict, hand_to_dict
-from .dynamics import adjustments
 from .stats import VS_HERO, Meter, Ratio, StatBook
 
 SCHEMA = """
@@ -277,7 +276,7 @@ class Store:
     def close(self) -> None:
         self.conn.close()
 
-    def __enter__(self) -> "Store":
+    def __enter__(self) -> Store:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -756,7 +755,7 @@ class Store:
         for row in self.conn.execute(
                 "SELECT regime, player_id, stat, hits, opps FROM ratios"):
             raw[(row["regime"], row["player_id"])][row["stat"]] = (row["hits"], row["opps"])
-            # A vs: counter is one player's behaviour against one opponent, so
+            # A vs: counter is one player's behavior against one opponent, so
             # the spread across players measures the opponent as much as the
             # pool. Fitting a population from it would feed that back into
             # everyone's shrinkage.

@@ -7,10 +7,11 @@ of HTML, CSS and JavaScript. It is a package now. This module stays so that
 
 from __future__ import annotations
 
-from .webapp import *          # noqa: F401,F403
-from .webapp import __all__    # noqa: F401
-from .webapp import main
-
+from .webapp import *  # noqa: F401,F403
+from .webapp import (
+    __all__,  # noqa: F401
+    main,
+)
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,12 +1,10 @@
 """Export and re-import: the history survives a trip between machines."""
 
-from pathlib import Path
 
 import pytest
 
 from villain.db import Store
-from villain.portable import (UnreadableExport, export_hands, import_export,
-                              read_export)
+from villain.portable import UnreadableExport, export_hands, import_export, read_export
 
 
 def _store(tmp_path, name="a.db"):
@@ -66,7 +64,8 @@ def test_a_file_that_is_not_an_export_is_refused(tmp_path):
 
 
 def test_an_export_from_a_newer_villain_is_refused(tmp_path):
-    import gzip, json
+    import gzip
+    import json
     newer = tmp_path / "newer.gz"
     with gzip.open(newer, "wt") as fh:
         fh.write(json.dumps({"villain_export": 99}) + "\n")

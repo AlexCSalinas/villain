@@ -3,13 +3,34 @@
 import pytest
 
 from villain.db import Store
-from villain.hero import (MARGIN, MIN_SIZING_HANDS, MIN_TIMING_HANDS,
-                          MISSED_VALUE_MARGIN, SIZING_TELL_GAP, TIMING_TELL_GAP,
-                          FoldGrade, FoldReport, MissedValue, MissedValueReport,
-                          SizeBucket, SizingTell, StreetStrength, TimeBucket, TimingTell,
-                          combined_grid, find_hero, fold_grades, hand_class,
-                          hero_visibility, missed_value, preflop_range, range_narrowing,
-                          sizing_tell, texture_label, timing_tell)
+from villain.hero import (
+    MARGIN,
+    MIN_SIZING_HANDS,
+    MIN_TIMING_HANDS,
+    MISSED_VALUE_MARGIN,
+    SIZING_TELL_GAP,
+    TIMING_TELL_GAP,
+    FoldGrade,
+    FoldReport,
+    MissedValue,
+    MissedValueReport,
+    SizeBucket,
+    SizingTell,
+    StreetStrength,
+    TimeBucket,
+    TimingTell,
+    combined_grid,
+    find_hero,
+    fold_grades,
+    hand_class,
+    hero_visibility,
+    missed_value,
+    preflop_range,
+    range_narrowing,
+    sizing_tell,
+    texture_label,
+    timing_tell,
+)
 
 
 @pytest.fixture
@@ -384,10 +405,10 @@ def test_range_narrowing_only_counts_streets_hero_actually_saw(stored):
 # just relabelled as your own. So both routes to the answer are checked, along
 # with the refusal to guess when neither is clear.
 
-from dataclasses import replace                                     # noqa: E402
+from dataclasses import replace  # noqa: E402
 
-from villain.hero import MIN_UNBIASED, hero_of                      # noqa: E402
-from villain.model import hand_from_dict, hand_to_dict              # noqa: E402
+from villain.hero import MIN_UNBIASED, hero_of  # noqa: E402
+from villain.model import hand_from_dict, hand_to_dict  # noqa: E402
 
 EXPORTER = "1oC_kmhrYm"     # the ``playerId`` in the fixture export
 

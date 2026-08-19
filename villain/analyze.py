@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from .archetypes import ARCHETYPE_BY_NAME, match
 from .exploits import find_leaks, find_watchlist
-from .glossary import (component_entry, component_help, component_reading,
-                       component_stats, versus_behaviour)
+from .glossary import component_entry, component_help, component_reading, component_stats, versus_behavior
 from .playbook import combinations_for
 from .profile import Profile
 from .skill import WEAK_COMPONENT, rate, weaknesses
@@ -94,7 +93,7 @@ def as_dict(profile: Profile) -> dict:
              "sample": l.opps, "advice": l.advice, "stat": l.stat,
              "direction": l.direction,
              # the plain-language layer
-             "behaviour": l.behaviour, "why": l.why, "do": l.do, "dont": l.dont,
+             "behavior": l.behavior, "why": l.why, "do": l.do, "dont": l.dont,
              "size": l.size, "priority": l.priority, "pressure": l.pressure,
              "in_words": l.in_words}
             for l in profile.tags
@@ -103,7 +102,7 @@ def as_dict(profile: Profile) -> dict:
         # what an adjustment is worth depends on how you were playing when
         # they made it, which is not in the hand history.
         "adjustments": [
-            {"stat": a.stat, "behaviour": versus_behaviour(a.stat),
+            {"stat": a.stat, "behavior": versus_behavior(a.stat),
              # The counter the evidence panel opens on: the against-you slice,
              # not its parent, so the hands shown are the ones being described.
              "evidence_stat": VS_HERO + a.stat,

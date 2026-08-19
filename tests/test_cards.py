@@ -4,8 +4,7 @@ import random
 import numpy as np
 import pytest
 
-from villain.cards import (card_id, card_ids, card_text, describe, evaluate,
-                           evaluate_cards)
+from villain.cards import card_id, card_text, describe, evaluate, evaluate_cards
 
 
 @pytest.mark.parametrize("cards,expected", [

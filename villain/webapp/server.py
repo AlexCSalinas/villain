@@ -9,7 +9,6 @@ from __future__ import annotations
 import gzip
 import json
 import secrets
-import tempfile
 import threading
 import time
 import webbrowser
@@ -17,32 +16,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from ..analyze import as_dict, enrich
-from ..archetypes import ARCHETYPE_BY_NAME, deviations
 from ..db import DEFAULT_PATH, Store, split_key
-from ..dynamics import adjustments
-from ..exploits import RULES, find_watchlist
-from ..features import record_hands
 from ..evidence import find as find_evidence
-from ..glossary import payload as glossary_payload, stat_help
-from ..model import hand_from_dict, hand_to_dict
-from ..identity import askable_questions, auto_answers, session_questions, suggest_links
-from ..skill import weaknesses
-from ..narrate import Unavailable, enabled as narrator_enabled, narrate
-from ..parsers import UnknownFormat, parse_file
-from ..priors import population_mean
-from ..profile import build_profiles, build_unified, primary_regime
-from ..stats import VS_HERO
-from ..timing import timing_tells
+from ..glossary import payload as glossary_payload
+from ..glossary import stat_help
+from ..identity import auto_answers, session_questions, suggest_links
+from ..model import hand_from_dict
+from ..narrate import Unavailable, narrate
+from ..narrate import enabled as narrator_enabled
+from ..parsers import UnknownFormat
 from ..replay import replay
-
+from ..stats import VS_HERO
 from .assets import page, static
-from .heroview import _cached_hero_id, _hero_model, hero_payload
+from .heroview import _cached_hero_id, hero_payload
 from .leaderboard import leaderboard_payload
 from .payloads import MIN_ROSTER_HANDS, profile_payload, roster_payload
-from .sessions import (SESSIONS, SIM_GAMES, _reap_sessions, apply_answers,
-                       commit_session, parse_upload, question_payload,
-                       session_payload)
+from .sessions import SESSIONS, SIM_GAMES, _reap_sessions, apply_answers, commit_session, parse_upload, question_payload, session_payload
+
 #: Hostnames the UI may be reached on. Anything else is a rebinding attempt.
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", ""})
 
@@ -181,8 +171,8 @@ class Handler(BaseHTTPRequestHandler):
                 found = find_evidence(hands, str(player_id), stat)
                 hits = [e for e in found if e.hit]
                 misses = [e for e in found if not e.hit]
-                recent = lambda xs: sorted(
-                    xs, key=lambda e: e.started_at or 0, reverse=True)
+                def recent(xs):
+                    return sorted(xs, key=lambda e: e.started_at or 0, reverse=True)
                 shown = recent(hits)[:60] + recent(misses)[:max(0, 60 - len(hits))]
                 # One line saying what the count actually means, from the
                 # glossary's own high/low readings -- a number without a

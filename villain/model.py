@@ -18,9 +18,9 @@ them:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Iterator
 
 
 class Street(IntEnum):

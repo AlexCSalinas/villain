@@ -581,7 +581,7 @@ function profileCard(p, opts) {
       div.className = "leak";
       div.innerHTML = `
         <div class="leak-head">
-          <div class="headline"><b>${esc(a.behaviour)}</b></div>
+          <div class="headline"><b>${esc(a.behavior)}</b></div>
           <div class="num small muted">${fmtPct(Math.min(a.confidence, 0.99))} sure</div>
         </div>
         <div class="small muted numbers"></div>`;
@@ -608,14 +608,14 @@ function profileCard(p, opts) {
         link.className = "linkbtn";
         link.textContent = seen;
         link.title = "show the hands behind this";
-        link.onclick = () => showEvidence(p.player_id, a.evidence_stat, a.behaviour);
+        link.onclick = () => showEvidence(p.player_id, a.evidence_stat, a.behavior);
         numbers.appendChild(link);
       } else {
         numbers.appendChild(document.createTextNode(seen));
       }
       numbers.appendChild(document.createTextNode(
         ` · ${Math.round(a.baseline_sample)} against everybody else`));
-      numbers.appendChild(info(statTip(a.stat, a.behaviour)));
+      numbers.appendChild(info(statTip(a.stat, a.behavior)));
       adjGrid.appendChild(div);
     }
     wideTiles.push(adjBox);
@@ -1989,7 +1989,7 @@ function statLabel(stat, rows) {
   return hit ? hit.label : (STAT_LABELS[stat] || stat);
 }
 
-function normaliseName(name) {
+function normalizeName(name) {
   const text = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   return text.replace(/\d+$/, "") || text;
 }
@@ -1997,7 +1997,7 @@ function normaliseName(name) {
 /* The pairwise reason says "both shorten to jay", which is wrong on a group of
    three. Describe the group itself. */
 function groupReason(members, questions) {
-  const roots = new Set(members.map(m => normaliseName(m.name)));
+  const roots = new Set(members.map(m => normalizeName(m.name)));
   const exact = new Set(members.map(m => displayKey(m.name)));
   if (exact.size === 1) {
     return `all ${members.length} appeared as \u201c${members[0].name}\u201d`;

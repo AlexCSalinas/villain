@@ -20,10 +20,9 @@ Three families of signal are collected:
 
 from __future__ import annotations
 
-from typing import Iterable
-
 import math
 import os
+from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -126,7 +125,7 @@ def record_hands(hands: Iterable[Hand], books: Books | None = None,
         except Exception:
             # A sandbox with no process spawning, a pickling failure, a worker
             # killed for memory: fall back rather than fail an import over an
-            # optimisation. Books are empty on this path or partially filled,
+            # optimization. Books are empty on this path or partially filled,
             # so start clean.
             books.clear()
 
@@ -667,7 +666,7 @@ def _all_in_ev(hand: Hand, view: HandView, books: Books, reg: str,
     """Score all-in pots by equity as well as by outcome.
 
     Over a few hundred hands a chip graph is mostly variance: getting it in as
-    an 80% favourite and losing costs exactly as much as punting, and a rating
+    an 80% favorite and losing costs exactly as much as punting, and a rating
     that cannot tell those apart is rating luck. So when the money goes in with
     cards face up, the pot is also credited by equity at that moment.
 
@@ -696,7 +695,7 @@ def _all_in_ev(hand: Hand, view: HandView, books: Books, reg: str,
         return
     invested = [s.invested for s in hand.seats]
     depths = {s.invested for s in hand.seats if s.invested > 0}
-    if len(depths) > 1 and len([a for a in all_in_actions]) > 1:
+    if len(depths) > 1 and len(all_in_actions) > 1:
         # Unequal stacks all-in: layered pots, which this does not model.
         hand.flags.add("side_pot")
     for (seat, _), share in zip(known.items(), shares):
@@ -704,7 +703,7 @@ def _all_in_ev(hand: Hand, view: HandView, books: Books, reg: str,
         player = hand.seat(seat)
         eligible = sum(min(other, player.invested) for other in invested)
         book.measure("ev_net_bb", (share * eligible - player.invested) / hand.big_blind)
-        # The realised result of the same pots, so a rating can swap one for
+        # The realized result of the same pots, so a rating can swap one for
         # the other instead of counting the all-in twice.
         book.measure("allin_realised_bb", player.net / hand.big_blind)
         book.measure("allin_equity", share)

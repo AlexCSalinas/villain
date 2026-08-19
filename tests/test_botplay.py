@@ -70,7 +70,8 @@ def test_a_station_folds_less_to_bets_than_a_nit():
     for k in range(200):
         h = Hand(_seats(200, 200), button=0, sb=1, bb=2, rng=np.random.default_rng(k))
         # get to the flop cheaply, then have the button face a bet
-        h.act("call"); h.act("check")            # to the flop
+        h.act("call")
+        h.act("check")                           # to the flop
         h.act("raise", h.legal().min_raise_to + int(0.9 * h.pot))  # BB-first bets ~pot
         nit_folds += decide(h, h.to_act, nit, rng)[0] == "fold"
         station_folds += decide(h, h.to_act, station, rng)[0] == "fold"
@@ -110,19 +111,25 @@ def test_opening_is_position_dependent_in_frequency_and_size():
                  "open_bb:BTN": 3.5, "open_bb:BTN#n": 100.0, "open_bb": 2.8, "open_bb#n": 100.0}
     from villain.botplay import _position
     def open_at(pos, n=1200):
-        rng = np.random.default_rng(1); opens = tot = 0; sizes = []
+        rng = np.random.default_rng(1)
+        opens = tot = 0
+        sizes = []
         for _ in range(n):
             h = Hand([Seat(str(i), 1000) for i in range(6)], button=0, sb=1, bb=2, rng=rng)
             g = 0
             while not h.over and h.raises == 0 and _position(h, h.to_act) != pos and g < 6:
-                h.act("fold"); g += 1
+                h.act("fold")
+                g += 1
             if h.over or h.raises > 0 or _position(h, h.to_act) != pos:
                 continue
             tot += 1
             k, amt, _ = decide(h, h.to_act, _Pos(), rng)
-            if k == "raise": opens += 1; sizes.append(amt)
+            if k == "raise":
+                opens += 1
+                sizes.append(amt)
         return (opens / tot if tot else 0), (np.mean(sizes) if sizes else 0)
-    uf, us = open_at("UTG"); bf, bs = open_at("BTN")
+    uf, us = open_at("UTG")
+    bf, bs = open_at("BTN")
     assert bf > uf + 0.25          # opens far wider from the button
     assert bs > us                 # ...and to a bigger size
 
@@ -228,8 +235,7 @@ def test_the_nuts_still_get_it_in_at_reraise_depth():
 
 def test_a_pot_sized_raise_reproduces_the_cutoffs_it_replaced():
     """The calibration claim in the comment, asserted rather than trusted."""
-    from villain.botplay import (JAM_SHARE, RAISE_VALUE_WEIGHT, RERAISE_SHARE,
-                                 RERAISE_VALUE_WEIGHT)
+    from villain.botplay import JAM_SHARE, RAISE_VALUE_WEIGHT, RERAISE_SHARE, RERAISE_VALUE_WEIGHT
     mdf = 0.5                              # a pot-sized raise
     raised = mdf * RAISE_VALUE_WEIGHT
     reraised = mdf * RERAISE_VALUE_WEIGHT

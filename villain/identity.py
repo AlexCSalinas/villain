@@ -1,11 +1,11 @@
-"""Recognising a player you have seen before.
+"""Recognizing a player you have seen before.
 
 Home games are full of the same humans under slightly different names --
 ``DavidMazour`` becomes ``DavidMazour2`` after a reconnect, and a profile that
 restarts each time is worthless. Two independent signals are combined:
 
 * **Name similarity**, after stripping the noise accounts accumulate: case,
-  punctuation, and trailing digits. ``Arnav`` and ``Arnav2`` normalise to the
+  punctuation, and trailing digits. ``Arnav`` and ``Arnav2`` normalize to the
   same string. Only a high name match is offered as a possible merge; play
   style is not used — two tight-passives looking alike is not evidence they
   are one person.
@@ -32,11 +32,11 @@ from .stats import StatBook
 #: A Bayes factor above this is strong evidence for one player, below it for two.
 STRONG_EVIDENCE = 4.0
 
-#: Minimum hands each side needs before behaviour is worth testing at all.
+#: Minimum hands each side needs before behavior is worth testing at all.
 MIN_HANDS_FOR_BEHAVIOUR = 60
 
 #: Name similarity required before we even mention a possible merge. Trailing
-#: digits and punctuation already normalise away (``Arnav`` / ``Arnav2`` score
+#: digits and punctuation already normalize away (``Arnav`` / ``Arnav2`` score
 #: 1.0); this bar is for everything else. Play style is not used — agreeing
 #: that two tight-passives are "similar" is not evidence they are one person.
 HIGH_NAME_SCORE = 0.92
@@ -58,14 +58,14 @@ class Suggestion:
     keep_name: str
     absorb_name: str
     name_score: float
-    behaviour_log_bf: float | None
+    behavior_log_bf: float | None
     confidence: float
     reason: str
     matched_a: str = ""
     matched_b: str = ""
 
 
-def normalise(name: str) -> str:
+def normalize(name: str) -> str:
     """Strip the noise a screen name accumulates across sessions."""
     text = re.sub(r"[^a-z0-9]+", "", name.lower())
     stripped = re.sub(r"\d+$", "", text)
@@ -75,7 +75,7 @@ def normalise(name: str) -> str:
 def display_key(name: str) -> str:
     """Case- and punctuation-insensitive, but digits intact.
 
-    :func:`normalise` deliberately strips trailing digits so ``Arnav`` and
+    :func:`normalize` deliberately strips trailing digits so ``Arnav`` and
     ``Arnav2`` compare equal. That is the wrong tool for asking whether two
     accounts are literally showing the same screen name, where ``Vik`` and
     ``Vik2`` are different answers.
@@ -92,7 +92,7 @@ def name_similarity(a: str, b: str) -> float:
     name being retyped from memory -- ``DavidMazour`` reappearing as
     ``DamivDazour`` scores 0.73 on shared runs but 0.82 on edit distance.
     """
-    na, nb = normalise(a), normalise(b)
+    na, nb = normalize(a), normalize(b)
     if not na or not nb:
         return 0.0
     if na == nb:
@@ -141,10 +141,10 @@ def _levenshtein(a: str, b: str) -> int:
     return previous[-1]
 
 
-def behaviour_log_bf(a: StatBook, b: StatBook) -> float | None:
+def behavior_log_bf(a: StatBook, b: StatBook) -> float | None:
     """Log Bayes factor for "one player" over "two players".
 
-    Positive favours a merge. Each statistic contributes the difference between
+    Positive favors a merge. Each statistic contributes the difference between
     the marginal likelihood of the pooled counts and that of the two samples
     scored separately, so agreeing on a rare tendency counts for far more than
     agreeing on a common one.
@@ -170,7 +170,7 @@ def behaviour_log_bf(a: StatBook, b: StatBook) -> float | None:
 def suggest_links(store, min_name_score: float = HIGH_NAME_SCORE) -> list[Suggestion]:
     """Candidate merges, most confident first.
 
-    Name match only, and only at a high bar. Behavioural similarity is not
+    Name match only, and only at a high bar. Behavioral similarity is not
     offered: two nits looking alike is not evidence they are one person, and
     a wrong merge corrupts both profiles. Pairs already marked distinct are
     skipped. Nothing merges automatically.
@@ -207,7 +207,7 @@ def suggest_links(store, min_name_score: float = HIGH_NAME_SCORE) -> list[Sugges
                 keep_name=players[keep]["display_name"],
                 absorb_name=players[absorb]["display_name"],
                 name_score=round(score, 3),
-                behaviour_log_bf=None,
+                behavior_log_bf=None,
                 confidence=round(confidence, 3), reason=reason,
                 matched_a=matched_a, matched_b=matched_b,
             ))
@@ -223,11 +223,11 @@ def _name_match_reason(a: str, b: str, score: float) -> str:
     """
     if a == b:
         return f"both appeared as “{a}”"
-    if normalise(a) == normalise(b):
+    if normalize(a) == normalize(b):
         # Same root, different strings. Saying "both appeared as Jay2" when one
         # of them is "Jay 5:30" states something that did not happen.
-        return f"both shorten to “{normalise(a)}”"
-    if _skeleton_score(normalise(a), normalise(b)):
+        return f"both shorten to “{normalize(a)}”"
+    if _skeleton_score(normalize(a), normalize(b)):
         return f"“{a}” is “{b}” with the vowels dropped"
     return f"“{a}” ≈ “{b}” ({score:.0%})"
 
