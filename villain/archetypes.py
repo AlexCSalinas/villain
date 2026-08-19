@@ -346,6 +346,53 @@ def deviations(profile: Profile) -> dict[str, float]:
     return out
 
 
+#: Below this, a prototype has been shrunk so far it no longer describes the
+#: thing it is named after; leave it unreachable rather than quietly relabel it.
+MIN_PROTOTYPE_SCALE = 0.45
+
+#: Off restores the authored traits exactly, for A/B against the harness.
+PROTOTYPE_RESCALE = True
+
+
+def prototype_scale(arch: Archetype, profile: Profile | None) -> float:
+    """How far a prototype must shrink for every target to be humanly posted.
+
+    The traits were authored as multiples of a spread -- "folds 2.2 spreads
+    less than the field" -- without checking the frequency that implies, and
+    the spread constant is roughly twice the pool's real scatter on postflop
+    features. The two errors compound: ``station`` demands a turn fold of
+    0.258 where the tightest player in a 63-player pool folds 0.353, so nobody
+    could be a station however they played.
+
+    One factor for the whole vector, not a clamp per feature. A prototype is a
+    shape -- which frequencies deviate, and how far relative to each other --
+    and clamping the ones that stick out flattens exactly the features that
+    made it distinctive. Scaling moves it toward the field while keeping it
+    recognizably itself.
+
+    Player-blind: the factor depends on the pool's observed range and the
+    prototype's own traits, never on any individual's numbers.
+    """
+    if not PROTOTYPE_RESCALE or profile is None or not profile.priors:
+        return 1.0
+    scale = 1.0
+    for feature, deviation in arch.traits.items():
+        band = profile.priors.get(f"range:{feature}")
+        if not band or not deviation:
+            continue
+        low, high = band
+        pop = profile.population(feature)
+        spread = spread_of(feature, profile.regime, profile.priors)
+        step = deviation * spread
+        if not step:
+            continue
+        edge = logit(high if deviation > 0 else low) - logit(pop)
+        if edge / step <= 0:          # already pointing into the band
+            continue
+        scale = min(scale, edge / step)
+    return max(min(scale, 1.0), MIN_PROTOTYPE_SCALE)
+
+
 def target_frequency(arch: Archetype, feature: str, table_regime: str,
                      profile: Profile | None = None) -> float:
     """The frequency this archetype implies for a feature at this table size.
@@ -359,7 +406,8 @@ def target_frequency(arch: Archetype, feature: str, table_regime: str,
         else population_mean(feature, table_regime)
     spread = spread_of(feature, table_regime,
                        profile.priors if profile is not None else None)
-    return sigmoid(logit(pop) + arch.deviation(feature) * spread)
+    return sigmoid(logit(pop) + arch.deviation(feature) * spread
+                   * prototype_scale(arch, profile))
 
 
 # Two attempts at the reachability problem -- station, maniac, nit and trapper

@@ -1009,13 +1009,29 @@ class Store:
         sample should not be able to stretch the band, and the point of the
         band is to say what is *normal* here, not what is possible.
         """
+        from .profile import DERIVED
+
         by: dict[str, dict[str, list[float]]] = {}
+        raw: dict[tuple[str, int], dict[str, tuple[float, float]]] = {}
         for row in self.conn.execute(
-                "SELECT regime, stat, hits, opps FROM ratios WHERE opps >= 40"):
+                "SELECT regime, player_id, stat, hits, opps FROM ratios WHERE opps >= 40"):
+            raw.setdefault((row["regime"], row["player_id"]), {})[row["stat"]] = (
+                row["hits"], row["opps"])
             if row["stat"].startswith(("seat:", "saw:", "act:", VS_HERO)):
                 continue
             by.setdefault(row["regime"], {}).setdefault(row["stat"], []).append(
                 row["hits"] / row["opps"])
+        # aggression:* is assembled from raw action counters and never stored
+        # as a ratio of its own, so a band read off this table alone had no
+        # entry for it -- and `maniac`, whose whole identity is aggression,
+        # was the archetype that needed one most.
+        for (regime, _pid), stats in raw.items():
+            for stat, (num_keys, den_keys) in DERIVED.items():
+                den = sum(stats.get(k, (0.0, 0.0))[0] for k in den_keys)
+                if den < 40:
+                    continue
+                num = sum(stats.get(k, (0.0, 0.0))[0] for k in num_keys)
+                by.setdefault(regime, {}).setdefault(stat, []).append(num / den)
         out: dict[str, dict[str, tuple[float, float]]] = {}
         for regime, stats in by.items():
             for stat, vals in stats.items():
@@ -1126,18 +1142,42 @@ class Store:
             return (accounts.get((site, split_key(account, name)))
                     or accounts.get((site, account)))
 
+        query = "SELECT site, payload FROM hands ORDER BY started_at"
+        if player_id is not None:
+            # Pick the hand ids out of the seat index first. Asking for one
+            # player used to decompress and parse every hand in the database
+            # and throw almost all of them away -- and `villain validate` does
+            # that once per player, which on this database was eight million
+            # hand parses and eleven minutes. The seat table is small and
+            # uncompressed; `rebuild` has always narrowed this way.
+            mine = {key for key, pid in accounts.items() if pid == player_id}
+            wanted = {
+                row["hand_id"]
+                for row in self.conn.execute(
+                    "SELECT hand_id, site, account, name FROM hand_seats")
+                if (row["site"], row["account"]) in mine
+                or (row["site"], split_key(row["account"], row["name"])) in mine
+            }
+            if not wanted:
+                return []
+            self.conn.execute("DROP TABLE IF EXISTS temp.player_hand_ids")
+            self.conn.execute(
+                "CREATE TEMP TABLE player_hand_ids (hand_id TEXT PRIMARY KEY)")
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO temp.player_hand_ids (hand_id) VALUES (?)",
+                [(h,) for h in wanted])
+            query = ("SELECT h.site, h.payload FROM hands h"
+                     " JOIN temp.player_hand_ids w ON w.hand_id = h.hand_id"
+                     " ORDER BY h.started_at")
+
         out = []
-        for row in self.conn.execute(
-                "SELECT site, payload FROM hands ORDER BY started_at"):
+        for row in self.conn.execute(query):
             data = json.loads(gzip.decompress(row["payload"]))
             hand = hand_from_dict(data)
-            ids = []
             for seat in hand.seats:
                 pid = resolve(hand.site, seat.player_id, seat.name)
                 seat.player_id = str(pid) if pid is not None else seat.player_id
-                ids.append(pid)
-            if player_id is None or player_id in ids:
-                out.append(hand)
+            out.append(hand)
         return out
 
     def reset(self) -> dict[str, int]:

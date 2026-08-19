@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .archetypes import ARCHETYPES, _log_beta_binomial, match, target_frequency
+from .archetypes import ARCHETYPE_BY_NAME, ARCHETYPES, _log_beta_binomial, match, target_frequency
 from .profile import PROFILE_FEATURES, build_profile
 
 #: A half needs this many hands before it is worth scoring at all.
@@ -39,6 +39,10 @@ class Score:
     calibration_error: float
     mean_confidence: float
     agreement: float
+    #: Negative log likelihood per opportunity of the held-out half's counts,
+    #: under the read taken from the other half. The only figure here that is
+    #: not scored against a ground truth built by the function under test.
+    predictive_loss: float | None = None
 
     def __str__(self) -> str:
         return (f"{self.players} players scored on disjoint halves\n"
@@ -46,7 +50,9 @@ class Score:
                 f"  top-1 accuracy          {self.accuracy:.3f}\n"
                 f"  calibration error       {self.calibration_error:.3f}\n"
                 f"  mean stated confidence  {self.mean_confidence:.3f}\n"
-                f"  halves agree            {self.agreement:.3f}")
+                f"  halves agree            {self.agreement:.3f}"
+                + (f"\n  held-out predictive loss {self.predictive_loss:.5f}"
+                   if self.predictive_loss is not None else ""))
 
 
 def _halves(store, player_id: int):
@@ -111,9 +117,45 @@ def _best_supported(profile) -> str:
     return best or "unknown"
 
 
+def predictive_loss(train, test) -> tuple[float, float]:
+    """How well the read from one half predicts the other half's actual counts.
+
+    The metric the label scores cannot be: the thing being predicted is
+    observed data, not a label built by the function under test. A change to
+    ``target_frequency`` moves the prediction, and the hands decide whether it
+    moved the right way -- which is exactly what the label-based score is
+    unable to say, since it moves its own ground truth in the same direction.
+
+    Returns ``(negative log likelihood, opportunities)`` so the caller can
+    weight per opportunity rather than per player; a player with ten times the
+    data should not count ten times as much toward a mean.
+    """
+    _label, _confidence, mix = match(train)
+    weights = [(ARCHETYPE_BY_NAME[name], w) for name, w in mix if w > 1e-4]
+    if not weights:
+        return 0.0, 0.0
+    total, opportunities = 0.0, 0.0
+    for feature in PROFILE_FEATURES:
+        est = test.stats.get(feature)
+        if est is None or not est.opps or est.raw is None:
+            continue
+        # The mixture's predicted frequency, not the winner's: a 55/45 read is
+        # a claim about both, and scoring only the winner throws away the part
+        # of the answer that says how sure it was.
+        predicted = sum(w * target_frequency(arch, feature, test.regime, test)
+                        for arch, w in weights)
+        predicted = min(max(predicted, 1e-4), 1 - 1e-4)
+        n = est.opps
+        made = est.raw * n
+        total -= made * math.log(predicted) + (n - made) * math.log(1 - predicted)
+        opportunities += n
+    return total, opportunities
+
+
 def score(store, min_hands: int = 2 * MIN_HALF_HANDS) -> Score | None:
     """Score every player with enough hands to halve."""
     losses, hits, confs, agree = [], [], [], []
+    pred_loss, pred_opps = 0.0, 0.0
     for row in store.players():
         pair = _halves(store, int(row["id"]))
         if pair is None:
@@ -126,6 +168,10 @@ def score(store, min_hands: int = 2 * MIN_HALF_HANDS) -> Score | None:
         hits.append(1.0 if name == target else 0.0)
         confs.append(conf)
         agree.append(1.0 if name == match(b)[0] else 0.0)
+        for train, test in ((a, b), (b, a)):        # both directions, no waste
+            loss, opps = predictive_loss(train, test)
+            pred_loss += loss
+            pred_opps += opps
     if not losses:
         return None
     n = len(losses)
@@ -133,4 +179,5 @@ def score(store, min_hands: int = 2 * MIN_HALF_HANDS) -> Score | None:
     mean_conf = sum(confs) / n
     return Score(players=n, log_loss=sum(losses) / n, accuracy=acc,
                  calibration_error=abs(mean_conf - acc),
-                 mean_confidence=mean_conf, agreement=sum(agree) / n)
+                 mean_confidence=mean_conf, agreement=sum(agree) / n,
+                 predictive_loss=(pred_loss / pred_opps) if pred_opps else None)
