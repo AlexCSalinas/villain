@@ -12,6 +12,8 @@
     villain validate                 score the classifier on hands it has not seen
     villain backtest                 walk leaks forward: found early, checked late
     villain hero                     what only your own hand history can show
+    villain export <file>            write every hand to a portable archive
+    villain import-db <file>         merge an archive from another machine
 """
 
 from __future__ import annotations
@@ -81,6 +83,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("hero", help="what only your own hand history can show")
     p.add_argument("--player", help="hero's id or name, if auto-detection picks wrong")
 
+    p = sub.add_parser("export", help="write every hand to a portable archive")
+    p.add_argument("path", type=Path)
+
+    p = sub.add_parser("import-db", help="merge an archive from another machine")
+    p.add_argument("path", type=Path)
+
     p = sub.add_parser("ui", help="serve the local web interface")
     p.add_argument("--port", type=int, default=8766)
     p.add_argument("--no-browser", action="store_true")
@@ -90,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("body", nargs="+")
 
     args = parser.parse_args(argv)
-    handler = globals()[f"_cmd_{args.command}"]
+    handler = globals()[f"_cmd_{args.command.replace('-', '_')}"]
     return handler(args)
 
 
@@ -113,6 +121,28 @@ def _cmd_import(args) -> int:
     if report.files == 0:
         print("No file matched a known format.", file=sys.stderr)
         return 1
+    print(report)
+    return 0
+
+
+def _cmd_export(args) -> int:
+    from .portable import export_hands
+    with Store(args.db) as store:
+        print(export_hands(store, args.path))
+    return 0
+
+
+def _cmd_import_db(args) -> int:
+    from .portable import UnreadableExport, import_export
+    if not args.path.exists():
+        print(f"No such file: {args.path}", file=sys.stderr)
+        return 1
+    with Store(args.db) as store:
+        try:
+            report = import_export(store, args.path)
+        except UnreadableExport as exc:
+            print(exc, file=sys.stderr)
+            return 1
     print(report)
     return 0
 

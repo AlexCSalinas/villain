@@ -598,10 +598,20 @@ class Store:
             }
             if not wanted_ids:
                 return 0
-            marks = ",".join("?" * len(wanted_ids))
-            query = (f"SELECT site, payload FROM hands WHERE hand_id IN ({marks})"
-                     " ORDER BY started_at")
-            params = tuple(wanted_ids)
+            # Via a temp table, not an IN clause. A bulk import touches every
+            # player, so the id list is the whole hands table -- and SQLite
+            # caps how many variables one statement may bind, so the IN form
+            # failed outright with "too many SQL variables" on exactly the
+            # large imports that most need the narrowing.
+            self.conn.execute("DROP TABLE IF EXISTS temp.rebuild_ids")
+            self.conn.execute(
+                "CREATE TEMP TABLE rebuild_ids (hand_id TEXT PRIMARY KEY)")
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO temp.rebuild_ids (hand_id) VALUES (?)",
+                [(h,) for h in wanted_ids])
+            query = ("SELECT h.site, h.payload FROM hands h"
+                     " JOIN temp.rebuild_ids r ON r.hand_id = h.hand_id"
+                     " ORDER BY h.started_at")
         for row in self.conn.execute(query, params):
             data = json.loads(gzip.decompress(row["payload"]))
             hand = hand_from_dict(data)
