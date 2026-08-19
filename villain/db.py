@@ -27,7 +27,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .dynamics import adjustments
+from .dynamics import adjustments, versus_read
 from .features import record_hands
 from .model import Hand, hand_from_dict, hand_to_dict
 from .stats import VS_HERO, Meter, Ratio, StatBook
@@ -111,6 +111,17 @@ CREATE TABLE IF NOT EXISTS fitted_priors (
     regime TEXT NOT NULL, stat TEXT NOT NULL,
     mean REAL NOT NULL, strength REAL NOT NULL, players INTEGER NOT NULL,
     fitted_at INTEGER NOT NULL,
+    -- Between-player spread of this stat in log-odds, measured directly from
+    -- how far apart the players actually are. The mean was fitted per regime
+    -- while the spread an archetype's deviation is multiplied by stayed a
+    -- built-in constant, and on a real pool the two disagree by 2x on every
+    -- postflop feature -- which put station, maniac, nit and trapper outside
+    -- anything a human in the pool does.
+    spread REAL,
+    -- The range players actually occupy, as robust percentiles. An
+    -- archetype target outside it asks for a frequency nobody posts,
+    -- which is how station, maniac, nit and trapper became unreachable.
+    floor REAL, ceiling REAL,
     PRIMARY KEY (regime, stat)
 );
 CREATE TABLE IF NOT EXISTS notes (
@@ -136,7 +147,7 @@ SPURIOUS_OVERLAP = 2
 
 #: Feature / display-stat definition stamp. Bump when ``rebuild`` is required
 #: for existing databases to grow new counters or fix old ones.
-DEFINITIONS_VERSION = "2026-08-19.iso-and-cbet-slices"
+DEFINITIONS_VERSION = "2026-08-19.after-call-and-board-height"
 
 
 def split_key(account: str, name: str) -> str:
@@ -203,6 +214,10 @@ class Store:
             # the honest floor: it is the least the overlap can have been.
             self.conn.execute(
                 "ALTER TABLE distinct_pairs ADD COLUMN hands INTEGER NOT NULL DEFAULT 1")
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(fitted_priors)")}
+        for col in ("spread", "floor", "ceiling"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE fitted_priors ADD COLUMN {col} REAL")
         self._repair_distinct_pairs()
         self._backfill_hand_seats()
 
@@ -349,9 +364,18 @@ class Store:
             return
         overlap = self.shared_hands(keep, absorb)
         if overlap > SPURIOUS_OVERLAP:
+            # By name, not by internal id. "players 41 and 118" told the reader
+            # nothing about who the tool was refusing to merge, or why they
+            # should believe it.
+            names = {
+                int(r["id"]): (r["display_name"] or f"player {r['id']}")
+                for r in self.conn.execute(
+                    "SELECT id, display_name FROM players WHERE id IN (?, ?)",
+                    (keep, absorb))}
             raise ValueError(
-                f"players {keep} and {absorb} were dealt into {overlap} hands "
-                "together and cannot be the same person")
+                f"\u201c{names.get(keep, keep)}\u201d and "
+                f"\u201c{names.get(absorb, absorb)}\u201d were dealt into "
+                f"{overlap} hands together, so they are two different people")
         self.conn.execute("UPDATE aliases SET player_id = ? WHERE player_id = ?",
                           (keep, absorb))
         self.conn.execute("UPDATE notes SET player_id = ? WHERE player_id = ?",
@@ -932,11 +956,101 @@ class Store:
 
     # -- fitted priors ----------------------------------------------------
 
+    #: Players needed before a spread is trusted, and the range it is held to.
+    #: A degenerate fit must not be able to amplify every deviation at once --
+    #: the failure that made fitting the spread from a Beta strength unusable.
+    MIN_SPREAD_PLAYERS = 12
+    SPREAD_BOUNDS = (0.15, 1.60)
+
+    def fitted_spreads(self, regime: str) -> dict[str, float]:
+        return {
+            r["stat"]: float(r["spread"])
+            for r in self.conn.execute(
+                "SELECT stat, spread FROM fitted_priors"
+                " WHERE regime = ? AND spread IS NOT NULL", (regime,))
+        }
+
+    def _spread_samples(self) -> dict[str, dict[str, float]]:
+        """Between-player sd of each stat, in log-odds, per regime.
+
+        Measured from the players themselves rather than derived from a fitted
+        Beta: where the pool cannot be separated a Beta returns a large
+        strength, implying a tiny spread, and a tiny spread amplifies every
+        deviation measured against it. The observed scatter has no such
+        failure mode -- when players really are alike, it is simply small.
+        """
+        import statistics
+
+        from .priors import logit
+        lo, hi = self.SPREAD_BOUNDS
+        by: dict[str, dict[str, list[float]]] = {}
+        for row in self.conn.execute(
+                "SELECT regime, stat, hits, opps FROM ratios WHERE opps >= 40"):
+            if row["stat"].startswith(("seat:", "saw:", "act:", VS_HERO)):
+                continue
+            rate = row["hits"] / row["opps"]
+            by.setdefault(row["regime"], {}).setdefault(row["stat"], []).append(
+                logit(min(max(rate, 0.005), 0.995)))
+        out: dict[str, dict[str, float]] = {}
+        for regime, stats in by.items():
+            for stat, vals in stats.items():
+                if len(vals) < self.MIN_SPREAD_PLAYERS:
+                    continue
+                sd = statistics.pstdev(vals)
+                if sd <= 0:
+                    continue
+                out.setdefault(regime, {})[stat] = min(max(sd, lo), hi)
+        return out
+
+    def _observed_ranges(self) -> dict[str, dict[str, tuple[float, float]]]:
+        """Per stat, the band of frequencies players in this pool occupy.
+
+        Robust percentiles rather than min and max: one player on a thin
+        sample should not be able to stretch the band, and the point of the
+        band is to say what is *normal* here, not what is possible.
+        """
+        from .profile import DERIVED
+
+        by: dict[str, dict[str, list[float]]] = {}
+        raw: dict[tuple[str, int], dict[str, tuple[float, float]]] = {}
+        for row in self.conn.execute(
+                "SELECT regime, player_id, stat, hits, opps FROM ratios WHERE opps >= 40"):
+            raw.setdefault((row["regime"], row["player_id"]), {})[row["stat"]] = (
+                row["hits"], row["opps"])
+            if row["stat"].startswith(("seat:", "saw:", "act:", VS_HERO)):
+                continue
+            by.setdefault(row["regime"], {}).setdefault(row["stat"], []).append(
+                row["hits"] / row["opps"])
+        # aggression:* is assembled from raw action counters and never stored
+        # as a ratio of its own, so a band read off this table alone had no
+        # entry for it -- and `maniac`, whose whole identity is aggression,
+        # was the archetype that needed one most.
+        for (regime, _pid), stats in raw.items():
+            for stat, (num_keys, den_keys) in DERIVED.items():
+                den = sum(stats.get(k, (0.0, 0.0))[0] for k in den_keys)
+                if den < 40:
+                    continue
+                num = sum(stats.get(k, (0.0, 0.0))[0] for k in num_keys)
+                by.setdefault(regime, {}).setdefault(stat, []).append(num / den)
+        out: dict[str, dict[str, tuple[float, float]]] = {}
+        for regime, stats in by.items():
+            for stat, vals in stats.items():
+                if len(vals) < self.MIN_SPREAD_PLAYERS:
+                    continue
+                vals.sort()
+                lo = vals[max(0, int(0.02 * (len(vals) - 1)))]
+                hi = vals[min(len(vals) - 1, int(round(0.98 * (len(vals) - 1))))]
+                if hi > lo:
+                    out.setdefault(regime, {})[stat] = (lo, hi)
+        return out
+
     def fit_priors(self, min_players: int = 8) -> dict[str, int]:
         """Re-estimate population priors from the players in this database."""
         from .priors import fit_empirical
         fitted: dict[str, int] = {}
         now = int(time.time())
+        all_spreads = self._spread_samples()
+        all_ranges = self._observed_ranges()
         for regime, samples in self.population_samples().items():
             result = fit_empirical(samples, min_players=min_players)
             if not result:
@@ -944,23 +1058,37 @@ class Store:
             players = self.conn.execute(
                 "SELECT COUNT(DISTINCT player_id) c FROM books WHERE regime = ?",
                 (regime,)).fetchone()["c"]
+            spreads = all_spreads.get(regime, {})
+            ranges = all_ranges.get(regime, {})
             self.conn.executemany(
                 "INSERT OR REPLACE INTO fitted_priors"
-                " (regime, stat, mean, strength, players, fitted_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                [(regime, stat, mean, strength, players, now)
+                " (regime, stat, mean, strength, players, fitted_at, spread, floor, ceiling)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(regime, stat, mean, strength, players, now, spreads.get(stat),
+                  ranges.get(stat, (None, None))[0], ranges.get(stat, (None, None))[1])
                  for stat, (mean, strength) in result.items()])
             fitted[regime] = len(result)
         self.conn.commit()
         return fitted
 
-    def fitted_priors(self, regime: str) -> dict[str, tuple[float, float]]:
-        return {
-            row["stat"]: (row["mean"], row["strength"])
-            for row in self.conn.execute(
-                "SELECT stat, mean, strength FROM fitted_priors WHERE regime = ?",
-                (regime,))
-        }
+    def fitted_priors(self, regime: str) -> dict:
+        """``stat -> (mean, strength)``, plus ``spread:<stat> -> sd`` entries.
+
+        One dict because it travels as one thing all the way to
+        :func:`villain.priors.spread_of`; the prefix keeps the two kinds of
+        entry apart without a second parameter on every call in between.
+        """
+        out: dict = {}
+        for row in self.conn.execute(
+                "SELECT stat, mean, strength, spread, floor, ceiling"
+                " FROM fitted_priors WHERE regime = ?",
+                (regime,)):
+            out[row["stat"]] = (row["mean"], row["strength"])
+            if row["spread"] is not None:
+                out[f"spread:{row['stat']}"] = float(row["spread"])
+            if row["floor"] is not None and row["ceiling"] is not None:
+                out[f"range:{row['stat']}"] = (float(row["floor"]), float(row["ceiling"]))
+        return out
 
     def profiles(self, player_id: int, min_hands: int = 1) -> list:
         """One profile per table size. The detailed view, not the default."""
@@ -976,6 +1104,8 @@ class Store:
             # own -- pooling here would undo the split it exists to show.
             profile.adjustments = adjustments(
                 {profile.regime: books[profile.regime]}, priors=priors)
+            profile.versus = versus_read({profile.regime: books[profile.regime]},
+                                         priors=priors)
         return built
 
     def profile(self, player_id: int):
@@ -992,6 +1122,7 @@ class Store:
         profile = build_unified(books, priors=priors)
         if profile is not None:
             profile.adjustments = adjustments(books, priors=priors)
+            profile.versus = versus_read(books, priors=priors)
         return profile
 
     def player_hands(self, player_id: int | None = None) -> list[Hand]:
@@ -1014,18 +1145,42 @@ class Store:
             return (accounts.get((site, split_key(account, name)))
                     or accounts.get((site, account)))
 
+        query = "SELECT site, payload FROM hands ORDER BY started_at"
+        if player_id is not None:
+            # Pick the hand ids out of the seat index first. Asking for one
+            # player used to decompress and parse every hand in the database
+            # and throw almost all of them away -- and `villain validate` does
+            # that once per player, which on this database was eight million
+            # hand parses and eleven minutes. The seat table is small and
+            # uncompressed; `rebuild` has always narrowed this way.
+            mine = {key for key, pid in accounts.items() if pid == player_id}
+            wanted = {
+                row["hand_id"]
+                for row in self.conn.execute(
+                    "SELECT hand_id, site, account, name FROM hand_seats")
+                if (row["site"], row["account"]) in mine
+                or (row["site"], split_key(row["account"], row["name"])) in mine
+            }
+            if not wanted:
+                return []
+            self.conn.execute("DROP TABLE IF EXISTS temp.player_hand_ids")
+            self.conn.execute(
+                "CREATE TEMP TABLE player_hand_ids (hand_id TEXT PRIMARY KEY)")
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO temp.player_hand_ids (hand_id) VALUES (?)",
+                [(h,) for h in wanted])
+            query = ("SELECT h.site, h.payload FROM hands h"
+                     " JOIN temp.player_hand_ids w ON w.hand_id = h.hand_id"
+                     " ORDER BY h.started_at")
+
         out = []
-        for row in self.conn.execute(
-                "SELECT site, payload FROM hands ORDER BY started_at"):
+        for row in self.conn.execute(query):
             data = json.loads(gzip.decompress(row["payload"]))
             hand = hand_from_dict(data)
-            ids = []
             for seat in hand.seats:
                 pid = resolve(hand.site, seat.player_id, seat.name)
                 seat.player_id = str(pid) if pid is not None else seat.player_id
-                ids.append(pid)
-            if player_id is None or player_id in ids:
-                out.append(hand)
+            out.append(hand)
         return out
 
     def reset(self) -> dict[str, int]:

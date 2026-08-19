@@ -305,6 +305,7 @@
     background: repeating-linear-gradient(45deg, #7c5c3b, #7c5c3b 4px, #6c4f33 4px, #6c4f33 8px); }
   .cardback.sm { width: 21px; height: 29px; }
   .won-amt { color: var(--hero); font-weight: 600; }
+  .won-amt.down { color: var(--red); }
   .sim-layout { display: grid; grid-template-columns: 1fr 208px; gap: 20px; align-items: start; }
   @media (max-width: 780px) { .sim-layout { grid-template-columns: 1fr; } }
   .sim-side { border-left: 1px solid var(--line); padding-left: 18px; }
@@ -332,6 +333,18 @@
   .a-vs-row:first-child { border-top: 0; }
   .up { color: #45b881; } .down { color: var(--danger); }
   .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 4px; min-height: 34px; }
+  /* Armed / not armed, as fill rather than a tick: the state has to be
+     readable at a glance from across the table view. */
+  .cf-toggle { border: 1px solid var(--edge); background: transparent; color: var(--muted); }
+  .cf-toggle::before {
+    content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    border: 1px solid currentColor; margin-right: 7px; vertical-align: -1px;
+  }
+  .cf-toggle.on {
+    background: var(--accent); color: var(--panel); border-color: var(--accent);
+    font-weight: 600;
+  }
+  .cf-toggle.on::before { background: currentColor; }
   .raise-wrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .raise-wrap input[type=range] { accent-color: var(--red); }
   .raise-amt { font-variant-numeric: tabular-nums; min-width: 58px; }

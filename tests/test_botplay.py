@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+import pytest
 
 from villain.botplay import decide, preflop_strength
 from villain.holdem import Hand, Seat
@@ -260,3 +261,134 @@ def test_a_bigger_raise_is_defended_tighter_than_a_small_one():
 
 def test_a_player_who_raises_more_is_defended_wider():
     assert _defended(0.5, 0.12) > _defended(0.5, 0.03)
+
+
+# -- the price has to bind, on every street ----------------------------------
+
+def _facing(street_idx, bet_frac, profile, seed=3, trials=140):
+    """Lowest hand strength the bot continues with, facing bet_frac x pot."""
+    from villain.botplay import hand_strength
+    rng = np.random.default_rng(seed)
+    kept = []
+    for _ in range(trials):
+        h = Hand(_seats(4000, 4000), button=0, sb=1, bb=2,
+                 rng=np.random.default_rng(int(rng.integers(1e9))))
+        h.act("call")
+        h.act("check")
+        h.street = street_idx
+        size = 3 if street_idx == 1 else 4 if street_idx == 2 else 5
+        h.board = list(rng.choice(52, size=size, replace=False))
+        if set(h.seats[0].hole) & set(h.board) or set(h.seats[1].hole) & set(h.board):
+            continue
+        h.pot_settled, h.bet = 100, 0
+        h.act("raise", max(1, int(bet_frac * 100)))
+        who = h.to_act
+        if who is None:
+            continue
+        kind, _, _ = decide(h, who, profile, np.random.default_rng(0))
+        if kind in ("call", "raise"):
+            kept.append(hand_strength(h.seats[who].hole, h.board))
+    return min(kept) if kept else None
+
+
+def _sized_profile():
+    p = _Prof(**{f"fold_vs_bet:{s}": 0.45 for s in ("flop", "turn", "river")})
+    p.means = {}
+    for s in ("flop", "turn", "river"):
+        p.means[f"faced_size:{s}"] = 0.66
+        p.means[f"faced_size:{s}#n"] = 200.0
+    return p
+
+
+@pytest.mark.parametrize("street_idx,name", [(1, "flop"), (2, "turn"), (3, "river")])
+def test_a_bigger_bet_is_continued_against_tighter(street_idx, name):
+    """A pooled fold frequency is measured at the sizes they usually face.
+
+    Applied unchanged it made the bot's threshold identical at every size --
+    MDF and pot odds were computed and then never bound.
+    """
+    prof = _sized_profile()
+    small = _facing(street_idx, 0.33, prof)
+    big = _facing(street_idx, 1.75, prof)
+    assert small is not None and big is not None
+    assert big > small + 0.15, f"{name}: {small:.3f} -> {big:.3f} is not price-sensitive"
+
+
+def test_the_threshold_pivots_on_the_size_they_usually_face():
+    """At their average faced size the bot uses their measured rate untouched."""
+    prof = _sized_profile()
+    at_usual = _facing(1, 0.66, prof)
+    assert at_usual is not None
+    assert abs(at_usual - 0.45) < 0.06
+
+
+def test_the_bet_depth_in_the_reason_matches_the_action_named():
+    """"3-bets ... at 2-bet depth" contradicted itself in one sentence.
+
+    The blind is the 1-bet and an open is the 2-bet, so raising over an open
+    makes a 3-bet. The label said so; the explanation said 2-bet depth.
+    """
+    import re
+    profile = _Prof(three_bet=0.99, four_bet=0.99, five_bet=0.99)
+    rng = np.random.default_rng(0)
+    seen = 0
+    for level, opener_to in ((1, 6), (2, 20), (3, 60)):
+        for _ in range(60):
+            h = Hand(_seats(4000, 4000, 4000), button=2, sb=1, bb=2,
+                     rng=np.random.default_rng(int(rng.integers(1e9))))
+            h.act("raise", opener_to)
+            while h.raises < level and h.to_act is not None:
+                h.act("raise", h.bet * 3)
+            if h.to_act is None or h.raises != level:
+                continue
+            kind, _, why = decide(h, h.to_act, profile, rng)
+            if kind != "raise" or "bet depth" not in why:
+                continue
+            named = re.search(r"(\d+)-bets", why)
+            depth = re.search(r"at (\d+)-bet depth", why)
+            if not named or not depth:
+                continue
+            assert named.group(1) == depth.group(1), why
+            seen += 1
+    assert seen, "no raise reasons were produced to check"
+
+
+# -- the sim plays the table it is actually at --------------------------------
+
+def test_a_villain_uses_the_book_for_the_table_size():
+    """Heads-up and six-handed are two strategies, not one with a label."""
+    from villain.sim import MIN_REGIME_HANDS, Villain
+
+    class Book:
+        def __init__(self, regime, hands):
+            self.regime, self.hands = regime, hands
+
+    pooled = Book("6max", 9999)
+    hu = Book("hu", MIN_REGIME_HANDS + 1)
+    six = Book("6max", MIN_REGIME_HANDS + 1)
+    v = Villain(pooled, {"hu": hu, "6max": six})
+    assert v.at(2) is hu
+    assert v.at(6) is six
+
+
+def test_a_thin_regime_book_falls_back_to_the_pooled_one():
+    """A book on forty hands describes the right game and nothing else."""
+    from villain.sim import MIN_REGIME_HANDS, Villain
+
+    class Book:
+        def __init__(self, regime, hands):
+            self.regime, self.hands = regime, hands
+
+    pooled = Book("6max", 9999)
+    thin = Book("hu", MIN_REGIME_HANDS - 1)
+    v = Villain(pooled, {"hu": thin})
+    assert v.at(2) is pooled
+
+
+def test_a_villain_without_regime_books_still_plays():
+    from villain.sim import Villain
+
+    class Book:
+        regime, hands = "6max", 500
+    pooled = Book()
+    assert Villain(pooled).at(6) is pooled

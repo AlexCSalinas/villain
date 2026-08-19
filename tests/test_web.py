@@ -562,3 +562,84 @@ def test_auto_merges_do_not_swallow_the_questions_that_need_a_human(session, tmp
             apply_answers(SESSIONS[session], {human[0].id: {"same": False}})
             payload = session_payload(session, store)
         assert payload["answered"]
+
+
+def test_a_read_that_only_holds_at_one_table_size_survives(tmp_path):
+    """Translating every table size into the home one can cancel a real read.
+
+    One player folds to turn bets 31% of the time heads-up against the hero
+    and 54% against everybody else, while six-handed the same gap runs the
+    other way. Averaged they cancel and nothing is reported, which is how the
+    strongest against-you read in the database went missing.
+    """
+    from villain.dynamics import REGIME_MIN_OPPS, adjustments
+    from villain.stats import VS_HERO, Ratio, StatBook
+
+    def book(regime, vs_hits, vs_opps, other_hits, other_opps):
+        b = StatBook(player_id="1", name="x", regime=regime, hands=int(other_opps))
+        b.ratios["fold_vs_bet:turn"] = Ratio(hits=vs_hits + other_hits,
+                                             opps=vs_opps + other_opps)
+        b.ratios[VS_HERO + "fold_vs_bet:turn"] = Ratio(hits=vs_hits, opps=vs_opps)
+        return b
+
+    n = REGIME_MIN_OPPS * 3
+    by_regime = {
+        # Heads-up: folds to the hero far less than to anyone else.
+        "hu": book("hu", vs_hits=0.22 * n, vs_opps=n, other_hits=0.52 * n, other_opps=n),
+        # Six-handed: the opposite, and enough of it to cancel the average.
+        "6max": book("6max", vs_hits=0.56 * n, vs_opps=n, other_hits=0.46 * n, other_opps=n),
+    }
+    found = adjustments(by_regime)
+    regimes = {a.regime for a in found if a.stat == "fold_vs_bet:turn"}
+    assert "hu" in regimes, "the heads-up read must survive being averaged away"
+    hu = next(a for a in found if a.regime == "hu")
+    assert hu.gap < 0, "heads-up he folds less, not more"
+
+
+def test_the_against_you_read_is_detail_only(tmp_path):
+    """The roster is how everybody plays the field; one reference per list.
+
+    Mixing "how they play the table" with "how they play you" in one column is
+    how the field read stopped meaning anything in the first place.
+    """
+    from tests.conftest import FIXTURE
+    from villain.analyze import as_dict
+    from villain.parsers import parse_file
+    from villain.web import roster_payload
+
+    with Store(tmp_path / "v.db") as store:
+        store.add_hands(parse_file(FIXTURE))
+        rows = roster_payload(store)
+        assert rows, "need at least one player to check"
+        assert all("versus" not in row for row in rows)
+        detail = as_dict(store.profile(rows[0]["player_id"]))
+    assert "versus" in detail, "the detailed view carries it"
+
+
+def test_the_against_you_archetype_is_taken_at_one_table_size():
+    """Pooling is what hid the read: it must name a regime, never blend them."""
+    from villain.dynamics import MIN_VERSUS_DECISIONS, versus_read
+    from villain.stats import VS_HERO, Ratio, StatBook
+
+    def book(regime, rate, n):
+        b = StatBook(player_id="1", name="x", regime=regime, hands=n)
+        for stat in ("fold_vs_bet:flop", "fold_vs_bet:turn", "vpip", "pfr"):
+            b.ratios[VS_HERO + stat] = Ratio(hits=rate * n, opps=n)
+            b.ratios[stat] = Ratio(hits=rate * n, opps=n)
+        return b
+
+    n = MIN_VERSUS_DECISIONS          # each book carries 4 counters of n
+    read = versus_read({"hu": book("hu", 0.2, n), "6max": book("6max", 0.5, n // 4)})
+    assert read is not None
+    assert read.regime == "hu", "the table size with the most shared history"
+    assert read.regime_label == "heads-up"
+
+
+def test_no_against_you_read_without_enough_shared_history():
+    from villain.dynamics import versus_read
+    from villain.stats import VS_HERO, Ratio, StatBook
+
+    b = StatBook(player_id="1", name="x", regime="6max", hands=20)
+    b.ratios[VS_HERO + "vpip"] = Ratio(hits=5, opps=20)
+    b.ratios["vpip"] = Ratio(hits=5, opps=20)
+    assert versus_read({"6max": b}) is None

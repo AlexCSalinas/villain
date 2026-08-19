@@ -208,23 +208,47 @@ def spread_of(feature: str, table_regime: str = "",
               priors: dict | None = None) -> float:
     """Between-player spread of a stat, in log-odds.
 
-    Still a global constant, and the arguments are accepted but unused. That is
-    a known inconsistency -- the population *mean* is fitted per regime while
-    the spread it is measured in is not, and the two disagree by up to 3x in
-    both directions on a real pool (fold_to_cbet:flop 0.45 built-in against a
-    fitted 0.14 heads-up; donk:flop 0.70 against 2.80).
+    An archetype is a deviation from the field, and this is the unit that
+    deviation is measured in -- so getting it wrong moves every prototype's
+    target without moving any player. It was a global constant while the
+    population *mean* was fitted per regime, and on a real 63-player pool the
+    two disagreed by about 2x on every postflop feature:
 
-    Fitting it was tried and reverted. A Beta(mean, strength) implies a spread
-    of ``1/sqrt(m(1-m)(s+1))``, which comes free from the fitted pair -- but
+        fold_vs_bet:turn   assumed 0.48   actual 0.22
+        fold_vs_bet:river  assumed 0.50   actual 0.25
+        wtsd               assumed 0.42   actual 0.23
+        raise_share        assumed 0.55   actual 0.83
+
+    Twice the real spread puts a -2.0 deviation twice as far out as it should
+    be, which is why station, maniac, nit and trapper asked for frequencies no
+    player in the pool posts and could never be anybody's label. Preflop
+    features were close, so preflop archetypes worked and postflop ones did
+    not.
+
+    Fitted from the observed scatter between players, not from a Beta
+    strength. That distinction is the whole reason this is now safe to fit:
     where ``fit_empirical`` cannot separate the pool it returns a large
-    strength, implying a tiny spread, and a tiny spread *amplifies* every
-    deviation measured against it. Ten features hit that on a real pool and
-    drove archetype confidence back to 1.00 by themselves.
+    strength, implying a *tiny* spread, and a tiny spread amplifies every
+    deviation measured against it -- ten features hit that and drove
+    confidence to 1.00 on their own. Observed scatter has no such inversion;
+    when players really are alike it is simply small, and it is held inside
+    ``Store.SPREAD_BOUNDS`` besides.
 
-    The change is worth making, but only against a validation harness that
-    scores one half of a player's hands against the other. Tuning it against a
-    handful of hand-labeled players is how the prototypes were overfitted
-    twice already.
+    Fitting it from the pool was tried and measured: the observed scatter is
+    about half the assumed value on every postflop feature and 1.5x it on
+    ``raise_share``. Substituting those numbers made the model *worse* -- log
+    loss 1.295 -> 1.362, calibration error 0.003 -> 0.015, accuracy unchanged
+    -- because widening ``raise_share`` amplified the one feature that already
+    decided the label. Clamping the target into the observed band instead was
+    also tried and also rejected (1.343 / 0.566 / 0.022).
+
+    So the measurement stands, and whether the substitution helps is currently
+    unknowable. The reachability problem it was aimed at is still open, and
+    the evidence now points at the prototypes' own traits rather than at this
+    constant: they were authored as multiples of a spread without checking the
+    frequency that implies. Fix the harness before trying again, and do not
+    tune this against a handful of hand-labeled players -- that is how the
+    prototypes were overfitted twice already.
     """
     return SPREAD.get(feature, DEFAULT_SPREAD)
 

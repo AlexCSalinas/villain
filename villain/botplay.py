@@ -265,7 +265,11 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
             cont, cont_why = 0.02, "calls the shove"
         if lg.can_raise and strength >= rr_gate:
             _, to = _raise_to(hand, lg, rr_to)
-            return ("raise", to, f"{rr_label} to {to} — a premium at {level + 1}-bet depth")
+            # The blind is the 1-bet and an open is the 2-bet, so raising at
+            # `level` makes an (level + 2)-bet -- which is what rr_label
+            # already says ("3-bets" facing an open). The reason said one
+            # less and contradicted the label in the same sentence.
+            return ("raise", to, f"{rr_label} to {to} — a premium at {level + 2}-bet depth")
         if lg.can_call and strength >= 1 - cont:
             return ("call", 0, f"{cont_why} — roughly their top {cont:.0%} facing this")
         if lg.can_check:
@@ -327,8 +331,20 @@ def decide(hand, seat: int, profile, rng: np.random.Generator, name: str = "") -
                     f"folds — {depth}; below the top {defend:.0%} that continues, and "
                     f"{req_eq:.0%} pot odds do not rescue one pair")
         # level 1: MDF defense, value-raise the top, call to pot odds.
-        fold_f = _freq_n(profile, f"fold_vs_bet:{street}:{bucket}",
-                         _freq_n(profile, f"fold_vs_bet:{street}", 1 - mdf, 20), 12)
+        # Their own rate sets the level; the price sets the slope. A pooled
+        # fold frequency was measured against the sizes they usually face, so
+        # applying it unchanged to a 175%-pot overbet made the bot's continue
+        # threshold identical at every size on every street -- MDF and pot
+        # odds were computed and then never bound. Shift the pooled rate by
+        # the change in breakeven between their average faced size and this
+        # one, which is exactly what MDF says the difference should be.
+        fold_f = _freq_n(profile, f"fold_vs_bet:{street}:{bucket}", None, 12)
+        if fold_f is None:
+            fold_f = _freq_n(profile, f"fold_vs_bet:{street}", 1 - mdf, 20)
+            usual = _size(profile, f"faced_size:{street}", None, 20)
+            if usual and usual > 0:
+                be_usual = usual / (1.0 + usual)
+                fold_f = _clamp(fold_f + ((1 - mdf) - be_usual), 0.02, 0.98)
         raise_f = min(_freq_n(profile, f"raise_vs_bet:{street}", 0.06, 12), 0.20)
         if s.street_put == 0:                          # a raise here is a check-raise
             raise_f = max(raise_f, min(_freq_n(profile, f"check_raise:{street}", raise_f, 15), 0.20))

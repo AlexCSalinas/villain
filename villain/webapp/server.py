@@ -28,7 +28,7 @@ from ..parsers import UnknownFormat
 from ..replay import replay
 from ..stats import VS_HERO
 from .assets import page, static
-from .heroview import _cached_hero_id, hero_payload
+from .heroview import _cached_hero_id, hero_begin, hero_payload, hero_status
 from .leaderboard import leaderboard_payload
 from .payloads import MIN_ROSTER_HANDS, profile_payload, roster_payload
 from .sessions import SESSIONS, SIM_GAMES, _reap_sessions, apply_answers, commit_session, parse_upload, question_payload, session_payload
@@ -147,6 +147,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, leaderboard_payload(store))
             if path == "/api/hero":
                 with Store(self.db_path) as store:
+                    # Never block the request on the build. A cold hero is
+                    # ~90s of model fitting; the page asks again rather than
+                    # holding a socket open and showing nothing.
+                    status = hero_status(store)
+                    if status != "ready":
+                        hero_begin(store)
+                        return self._send(202, {
+                            "status": "building",
+                            "message": "Reading your hands -- fitting the "
+                                       "strength model over every one of them. "
+                                       "This runs once per import.",
+                        })
                     payload = hero_payload(store)
                     if payload is None:
                         return self._send(404, {
@@ -358,7 +370,7 @@ class Handler(BaseHTTPRequestHandler):
     def _sim_new(self, body: dict):
         import secrets
 
-        from ..sim import Game
+        from ..sim import Game, Villain
         vids = [int(x) for x in (body.get("villains") or [])][:5]
         if not vids:
             return self._send(400, {"error": "pick at least one villain"})
@@ -370,7 +382,10 @@ class Handler(BaseHTTPRequestHandler):
             known = {int(r["id"]): r["display_name"] for r in store.players()}
             for pid in vids:
                 names.append(known.get(pid, f"Villain {pid}"))
-                profiles.append(store.profile(pid))
+                # Both books: the pooled one, and one per table size. Which is
+                # used depends on how many seats the game actually has.
+                by_regime = {p.regime: p for p in store.profiles(pid)}
+                profiles.append(Villain(store.profile(pid), by_regime))
         token = secrets.token_urlsafe(9)
         game = Game(names, profiles, hero_seat=0, start_stack=stack, sb=sb, bb=bb)
         SIM_GAMES[token] = game

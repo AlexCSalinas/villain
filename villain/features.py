@@ -63,6 +63,18 @@ def _default_workers() -> int:
     return max(1, min(8, (os.cpu_count() or 2) - 1))
 
 
+def _can_spawn() -> bool:
+    """Whether worker processes can re-import ``__main__``.
+
+    A spawned worker re-imports the parent's ``__main__``, which does not
+    exist when the caller is a REPL or a ``python -`` heredoc. The pool then
+    fails *after* each child has printed its own traceback, so the fallback
+    worked but buried the real output in noise. Cheaper to ask first.
+    """
+    import sys
+    return bool(getattr(sys.modules.get("__main__"), "__file__", None))
+
+
 def merge_books(into: Books, extra: Books) -> Books:
     """Fold one set of books into another, in place."""
     for pid, by_regime in extra.items():
@@ -113,7 +125,7 @@ def record_hands(hands: Iterable[Hand], books: Books | None = None,
     hero = hero_of(hands)
 
     n_workers = _default_workers() if workers is None else workers
-    if n_workers > 1 and len(hands) >= PARALLEL_MIN_HANDS and not books:
+    if n_workers > 1 and len(hands) >= PARALLEL_MIN_HANDS and not books and _can_spawn():
         size = math.ceil(len(hands) / n_workers)
         chunks = [(hands[i:i + size], locks, hero)
                   for i in range(0, len(hands), size)]
@@ -365,6 +377,16 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
     pace_events: dict[tuple[int, str], tuple[str, str]] = {}
     # Tags waiting for a later bet faced (fold-next opportunity).
     pending_fold: dict[int, list[tuple[str, str, str]]] = {}
+    # Who called a bet on the street just gone, and who was in position doing
+    # it. Every other counter in this module asks "at this decision, what did
+    # they do"; nothing asked what happened *next*, so the whole family of
+    # reads that live in a sequence -- called the flop and folded the turn,
+    # called the flop and took it away -- was unmeasurable.
+    called_prev: set[int] = set()
+    called_prev_ip: set[int] = set()
+    called_here: set[int] = set()
+    called_here_ip: set[int] = set()
+    resolved_after_call: set[int] = set()
 
     for d in view.decisions():
         if d.street is Street.PREFLOP:
@@ -373,12 +395,20 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
             street = d.street
             first_bettor, bettor_had_initiative = None, False
             checked, faced_bet_size, faced_bet_already = set(), {}, set()
+            called_prev, called_prev_ip = called_here, called_here_ip
+            called_here, called_here_ip = set(), set()
+            resolved_after_call = set()
             # Two-way, not the four-way split reads.texture returns: a c-bet
             # rate split four ways runs out of sample on all but a handful of
             # players, and "did the board connect with anything" is the part
             # that actually moves the decision.
-            paired, suited, connected, _high = texture(hand.board_at(street))
+            paired, suited, connected, high = texture(hand.board_at(street))
             tex = "wet" if (suited or connected or paired) else "dry"
+            # Two ways, not four. A four-way split runs out of sample on all
+            # but a couple of players; high-vs-low is the one that changes
+            # which ranges connect, and it clears the opportunity floor for
+            # most of the pool.
+            hilo = "hi" if high else "lo"
             faced_bet_from = {}
             for seat in view.saw[street]:
                 _book(hand, books, seat, reg).count(f"saw:{street.label}", True)
@@ -392,6 +422,21 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
         folded = a.act is Act.FOLD
         checkd = a.act is Act.CHECK
         initiative = view.initiative_at(street)
+
+        # What they did on the street after calling a bet. Once per seat per
+        # street: a raise war would otherwise book several follow-ups to one
+        # call, the same way the fold counters are guarded.
+        if d.seat in called_prev and d.seat not in resolved_after_call:
+            resolved_after_call.add(d.seat)
+            if d.facing_bet:
+                book.count(f"after_call:{s}:fold", folded)
+                book.count(f"after_call:{s}:raise", raised)
+            else:
+                # Checked to after calling: betting here is the second half of
+                # a float, and giving up is what a hand with nothing does.
+                book.count(f"after_call:{s}:stab", bet)
+                if d.seat in called_prev_ip:
+                    book.count(f"after_call:{s}:stab:ip", bet)
 
         # Resolve fold-next for earlier pace tags before this facing-bet action
         # becomes a new tag of its own.
@@ -477,8 +522,14 @@ def _postflop(hand: Hand, view: HandView, books: Books, reg: str,
                 book.count(f"fold_vs_bet:{s}:{pot_kind}", folded)
                 pos_kind = "ip" if d.in_position else "oop"
                 book.count(f"fold_vs_bet:{s}:{pos_kind}", folded)
+                # An ace-high board and a low one are different bluffs.
+                book.count(f"fold_vs_bet:{s}:{hilo}", folded)
                 book.count(f"raise_vs_bet:{s}", raised)
                 book.count(f"call_vs_bet:{s}", called)
+                if called:
+                    called_here.add(d.seat)
+                    if d.in_position:
+                        called_here_ip.add(d.seat)
                 if first_bettor is not None and bettor_had_initiative:
                     book.count(f"fold_to_cbet:{s}", folded)
                     book.count(f"raise_cbet:{s}", raised)

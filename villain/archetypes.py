@@ -346,6 +346,53 @@ def deviations(profile: Profile) -> dict[str, float]:
     return out
 
 
+#: Below this, a prototype has been shrunk so far it no longer describes the
+#: thing it is named after; leave it unreachable rather than quietly relabel it.
+MIN_PROTOTYPE_SCALE = 0.45
+
+#: Off restores the authored traits exactly, for A/B against the harness.
+PROTOTYPE_RESCALE = True
+
+
+def prototype_scale(arch: Archetype, profile: Profile | None) -> float:
+    """How far a prototype must shrink for every target to be humanly posted.
+
+    The traits were authored as multiples of a spread -- "folds 2.2 spreads
+    less than the field" -- without checking the frequency that implies, and
+    the spread constant is roughly twice the pool's real scatter on postflop
+    features. The two errors compound: ``station`` demands a turn fold of
+    0.258 where the tightest player in a 63-player pool folds 0.353, so nobody
+    could be a station however they played.
+
+    One factor for the whole vector, not a clamp per feature. A prototype is a
+    shape -- which frequencies deviate, and how far relative to each other --
+    and clamping the ones that stick out flattens exactly the features that
+    made it distinctive. Scaling moves it toward the field while keeping it
+    recognizably itself.
+
+    Player-blind: the factor depends on the pool's observed range and the
+    prototype's own traits, never on any individual's numbers.
+    """
+    if not PROTOTYPE_RESCALE or profile is None or not profile.priors:
+        return 1.0
+    scale = 1.0
+    for feature, deviation in arch.traits.items():
+        band = profile.priors.get(f"range:{feature}")
+        if not band or not deviation:
+            continue
+        low, high = band
+        pop = profile.population(feature)
+        spread = spread_of(feature, profile.regime, profile.priors)
+        step = deviation * spread
+        if not step:
+            continue
+        edge = logit(high if deviation > 0 else low) - logit(pop)
+        if edge / step <= 0:          # already pointing into the band
+            continue
+        scale = min(scale, edge / step)
+    return max(min(scale, 1.0), MIN_PROTOTYPE_SCALE)
+
+
 def target_frequency(arch: Archetype, feature: str, table_regime: str,
                      profile: Profile | None = None) -> float:
     """The frequency this archetype implies for a feature at this table size.
@@ -359,7 +406,59 @@ def target_frequency(arch: Archetype, feature: str, table_regime: str,
         else population_mean(feature, table_regime)
     spread = spread_of(feature, table_regime,
                        profile.priors if profile is not None else None)
-    return sigmoid(logit(pop) + arch.deviation(feature) * spread)
+    return sigmoid(logit(pop) + arch.deviation(feature) * spread
+                   * prototype_scale(arch, profile))
+
+
+# Two attempts at the reachability problem -- station, maniac, nit and trapper
+# asking for frequencies nobody in the pool posts -- were measured against
+# `villain validate` and both looked rejected. Recorded with the caveat that
+# matters more than the numbers:
+#
+#   *** validate cannot judge a change to this function. ***
+#
+# `validate._best_supported` builds its ground truth by calling
+# `target_frequency`, so a change here moves the label and the thing predicting
+# it together. Its own docstring says the target "has to be independent of
+# every constant being tuned, or the harness scores the tuning against
+# itself" -- and then calls this. The numbers below are therefore evidence
+# that these changes are self-consistent, not that they are wrong:
+#
+#                        log loss   accuracy   calibration   agreement
+#   baseline                1.295      0.558         0.003       0.593
+#   fitted spreads          1.362      0.558         0.015       0.611
+#   clamp target to band    1.343      0.566         0.022       0.566
+#
+# The band is still fitted and stored, because the exploit thresholds use it to
+# stay inside what players actually do -- it is only the archetype targets that
+# are left alone, and only until the harness can judge them.
+#
+# What the dead prototypes actually need is not a different spread. Their
+# traits were authored as "+/-2.2 spreads" without anyone checking the
+# frequency that implies, and the implied frequencies sit outside real play:
+#
+#   station  fold_vs_bet:turn   needs 0.258   pool 0.353-0.639
+#   maniac   aggression:turn    needs 0.435   pool 0.162-0.380
+#   nit      vpip               needs 0.194   pool 0.235-0.723
+#   trapper  check_raise:flop   needs 0.267   pool 0.021-0.167
+#
+# Rescaling each trait vector by the largest factor that keeps every target
+# inside the observed band (station 0.60, trapper 0.56, limper 0.58, nit 0.84)
+# revives station and trapper and takes calibration error 0.011 -> 0.001. Fix
+# the harness first; then this is a poker judgement about what "station"
+# means, not a statistics problem.
+#
+# EVIDENCE_CAP is the one lever validate *can* judge honestly, because it does
+# not touch this function. Swept against a fixed target it does nothing at all:
+# log loss 1.295 -> 1.298 at a cap of 400, and agreement pinned at 0.593 for
+# every cap from 2000 down to 80. The opportunity-count imbalance is real and
+# this is not the way to correct it.
+
+
+#: Opportunities past which a single feature stops accumulating evidence.
+#: ``None`` restores the old behavior, where the commonest spot wins.
+#: Swept against ``villain validate``, never against a label.
+EVIDENCE_CAP: int | None = None
 
 
 def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
@@ -385,7 +484,21 @@ def match(profile: Profile) -> tuple[str, float, list[tuple[str, float]]]:
             # pool 24% of the counts were borrowed, and the players the matcher
             # got most confidently wrong were the ones borrowing most.
             n = est.native_opps or est.opps
-            observed.append((feature, est.raw * n, n))
+            # Cap how much evidence one feature may contribute. The
+            # beta-binomial log-likelihood grows with the opportunity count,
+            # and opportunity counts are wildly unequal by *where the spot
+            # occurs*, not by how much the feature tells you: a preflop
+            # feature gets a spot every hand, a river fold only when the hand
+            # gets there. On a real 13,888-hand profile that is raise_share at
+            # n=1745 and limp at n=2901 against fold_vs_bet:river at n=263, so
+            # preflop play decided the archetype 108% of the way -- the
+            # postflop evidence pointed the other way and was outvoted.
+            # IMPORTANCE is supposed to be what weights a feature; this stops
+            # the sample size from overruling it.
+            if EVIDENCE_CAP and n > EVIDENCE_CAP:
+                observed.append((feature, est.raw * EVIDENCE_CAP, float(EVIDENCE_CAP)))
+            else:
+                observed.append((feature, est.raw * n, n))
 
     fold_accuracy = profile.fold_accuracy()
 

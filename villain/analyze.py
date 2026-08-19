@@ -12,6 +12,7 @@ from .archetypes import ARCHETYPE_BY_NAME, match
 from .exploits import find_leaks, find_watchlist
 from .glossary import component_entry, component_help, component_reading, component_stats, versus_behavior
 from .playbook import combinations_for
+from .priors import REGIME_LABELS
 from .profile import Profile
 from .skill import WEAK_COMPONENT, rate, weaknesses
 from .stats import VS_HERO
@@ -101,6 +102,20 @@ def as_dict(profile: Profile) -> dict:
         # Where they treat you differently from everyone else. Never priced:
         # what an adjustment is worth depends on how you were playing when
         # they made it, which is not in the hand history.
+        # Who they are on the hands they played against *you*, at the table
+        # size the two of you share most. Deliberately absent from the roster:
+        # a list of everybody is a list of how they play the field, and mixing
+        # the two references in one column is how the field read stopped
+        # meaning anything.
+        "versus": ({
+            "archetype": profile.versus.archetype,
+            "confidence": round(profile.versus.confidence, 3),
+            "regime": profile.versus.regime,
+            "regime_label": profile.versus.regime_label,
+            "decisions": round(profile.versus.decisions),
+            "mix": [{"archetype": k, "share": round(v, 3)}
+                    for k, v in profile.versus.mix[:3]],
+        } if getattr(profile, "versus", None) else None),
         "adjustments": [
             {"stat": a.stat, "behavior": versus_behavior(a.stat),
              # The counter the evidence panel opens on: the against-you slice,
@@ -108,6 +123,10 @@ def as_dict(profile: Profile) -> dict:
              "evidence_stat": VS_HERO + a.stat,
              "versus": round(a.versus, 4), "baseline": round(a.baseline, 4),
              "gap": round(a.gap, 4), "direction": a.direction,
+             # Which table size this holds at. A read can run one way heads-up
+             # and the other way six-handed, so an unlabeled pair of them reads
+             # as the tool contradicting itself.
+             "regime": a.regime, "regime_label": REGIME_LABELS.get(a.regime, a.regime),
              "sample": a.opps, "baseline_sample": a.baseline_opps,
              "confidence": round(a.confidence, 3)}
             for a in getattr(profile, "adjustments", [])

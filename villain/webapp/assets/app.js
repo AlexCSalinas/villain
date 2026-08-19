@@ -3,7 +3,7 @@ const fmtPct = v => (100 * v).toFixed(0) + "%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const SVG = "http://www.w3.org/2000/svg";
-const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: false,
+const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: false, checkFoldHand: null, heroPoll: null,
                sessionId: null};
 
 /* An "i" that explains a term on hover. Everything the tool says in shorthand
@@ -392,6 +392,26 @@ function profileCard(p, opts) {
   conf.appendChild(info(`${termTip("confidence")}<br><br>
     <span class="hl">also plausibly</span><br>${
       p.archetype_mix.slice(1, 4).map(([n, v]) => `${esc(n)} ${fmtPct(v)}`).join("<br>")}`));
+  // Who they are on the hands they played against you. Only here, never on
+  // the roster: the roster is how everybody plays the field, and two
+  // references in one list is how "tag" stopped meaning anything.
+  if (p.versus) {
+    const vs = document.createElement("span");
+    vs.style.marginLeft = "12px";
+    vs.innerHTML = `<span class="tag arch on">vs you: ${esc(p.versus.archetype)}</span>`;
+    vs.appendChild(info(`<span class="hl">against you</span><br>
+      On the ${p.versus.decisions.toLocaleString()} decisions they made with you
+      on the other side, ${esc(p.versus.regime_label)}, they play like
+      <b>${esc(p.versus.archetype)}</b> (${fmtPct(p.versus.confidence)} sure)
+      &mdash; against <b>${esc(p.archetype)}</b> for the field.<br><br>
+      <span class="hl">also plausibly</span><br>${
+        p.versus.mix.slice(1, 3).map(m =>
+          `${esc(m.archetype)} ${fmtPct(m.share)}`).join("<br>")}<br><br>
+      One table size, never pooled: a player can be one thing against you
+      heads-up and another six-handed, and the average of those describes
+      neither table you sat at.`));
+    line.appendChild(vs);
+  }
   const fieldChip = document.createElement("span");
   fieldChip.style.marginLeft = "12px";
   fieldChip.textContent = "vs the field";
@@ -581,7 +601,8 @@ function profileCard(p, opts) {
       div.className = "leak";
       div.innerHTML = `
         <div class="leak-head">
-          <div class="headline"><b>${esc(a.behavior)}</b></div>
+          <div class="headline"><b>${esc(a.behavior)}</b>${
+            a.regime_label ? ` <span class="tag">${esc(a.regime_label)}</span>` : ""}</div>
           <div class="num small muted">${fmtPct(Math.min(a.confidence, 0.99))} sure</div>
         </div>
         <div class="small muted numbers"></div>`;
@@ -1375,12 +1396,12 @@ function checkSound() {
     const ctx = _actx, t = ctx.currentTime;
     for (let k = 0; k < 2; k++) {
       const o = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
-      o.type = "sine"; o.frequency.value = 165 - k * 25;
-      f.type = "lowpass"; f.frequency.value = 420;
-      const s0 = t + k * 0.085;
+      o.type = "triangle"; o.frequency.value = 220 - k * 40;
+      f.type = "lowpass"; f.frequency.value = 1400;
+      const s0 = t + k * 0.075;
       g.gain.setValueAtTime(0.0001, s0);
-      g.gain.exponentialRampToValueAtTime(0.05, s0 + 0.005);
-      g.gain.exponentialRampToValueAtTime(0.0001, s0 + 0.09);
+      g.gain.exponentialRampToValueAtTime(0.16, s0 + 0.003);
+      g.gain.exponentialRampToValueAtTime(0.0001, s0 + 0.11);
       o.connect(f); f.connect(g); g.connect(ctx.destination);
       o.start(s0); o.stop(s0 + 0.1);
     }
@@ -1406,11 +1427,11 @@ function foldSound() {
     const src = ctx.createBufferSource(), g = ctx.createGain(), f = ctx.createBiquadFilter();
     src.buffer = noiseBuffer(ctx);
     f.type = "lowpass";
-    f.frequency.setValueAtTime(2400, t);
-    f.frequency.exponentialRampToValueAtTime(600, t + 0.18);
+    f.frequency.setValueAtTime(3200, t);
+    f.frequency.exponentialRampToValueAtTime(700, t + 0.2);
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.035, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+    g.gain.exponentialRampToValueAtTime(0.13, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
     src.connect(f); f.connect(g); g.connect(ctx.destination);
     src.start(t); src.stop(t + 0.22);
   } catch (e) {}
@@ -1471,8 +1492,6 @@ function renderTable(view, data) {
         state.descOn ? " checked" : ""}> explain decisions</label>
       <label class="desc-toggle" style="margin-top:8px"><input type="checkbox" id="snd-on"${
         state.muted ? "" : " checked"}> table sounds</label>
-      <label class="desc-toggle" style="margin-top:8px"><input type="checkbox" id="cf-on"${
-        state.checkFold ? " checked" : ""}> check / fold</label>
       <button class="act small" id="end-session" style="margin-top:18px">End &amp; analyze</button>
     </div>
   </div></div>`;
@@ -1492,7 +1511,8 @@ function renderTable(view, data) {
         <div class="tseat-name">${esc(s.name)}${
           s.is_hero ? ' <span class="tag hero-tag">you</span>' : ""}</div>
         <div class="tseat-stack">${s.stack}${
-          s.won ? ` <span class="won-amt">+${s.won}</span>` : ""}</div>
+          st.over && s.net ? ` <span class="won-amt${s.net < 0 ? " down" : ""}">${
+            s.net > 0 ? "+" : ""}${s.net}</span>` : ""}</div>
       </div>`;
     const ev = state.lastEvent;
     if (ev && ev.seat === i && !s.is_hero) {
@@ -1526,7 +1546,6 @@ function renderTable(view, data) {
   };
   $("#desc-on").onchange = (e) => { state.descOn = e.target.checked; };
   $("#snd-on").onchange = (e) => { state.muted = !e.target.checked; if (!state.muted) ensureAudio(); };
-  const cf = $("#cf-on"); if (cf) cf.onchange = (e) => { state.checkFold = e.target.checked; };
   $("#end-session").onclick = () => endSession();
   renderControls($("#controls"), data);
   if (!st.over && !st.your_turn) {           // pace the villains so you can watch
@@ -1547,6 +1566,34 @@ async function stepBots(token) {
   } catch (err) { /* game gone or navigated away */ }
 }
 
+function cfArmed(st) {
+  // Armed for *this hand*, not for the session. It has to survive the whole
+  // hand -- you arm it on the flop and it should still fold the river -- but
+  // a standing instruction that outlives the hand is how you fold aces two
+  // hands later without touching anything.
+  return state.checkFold && state.checkFoldHand === st.hand_no;
+}
+
+function cfToggle(st) {
+  // Shown in every state of the table, including while the villains act,
+  // which is exactly when you want to set it.
+  const armed = cfArmed(st);
+  const b = document.createElement("button");
+  b.className = "act cf-toggle" + (armed ? " on" : "");
+  b.textContent = "Check / Fold";
+  b.setAttribute("aria-pressed", armed ? "true" : "false");
+  b.title = armed
+    ? "Armed for this hand: checks when it can, folds when it cannot. Click to disarm."
+    : "Check when possible, fold when facing a bet — for the rest of this hand.";
+  b.onclick = () => {
+    const on = !cfArmed(st);
+    state.checkFold = on;
+    state.checkFoldHand = on ? st.hand_no : null;
+    renderTable($("#view"), state.game);
+  };
+  return b;
+}
+
 function renderControls(el, data) {
   const st = data.state; el.innerHTML = "";
   if (st.over) {
@@ -1557,6 +1604,7 @@ function renderControls(el, data) {
       }));
     }
     el.appendChild(actbtn("Deal now", () => simPost("/api/sim/next"), "primary"));
+    el.appendChild(cfToggle(st));
     el.appendChild(actbtn("End & analyze", () => endSession()));
     const won = st.seats.filter(s => s.won);
     if (won.length) {
@@ -1567,18 +1615,26 @@ function renderControls(el, data) {
     }
     return;
   }
-  if (!st.your_turn) { el.innerHTML = '<span class="small muted">villains acting…</span>'; return; }
-  const lg = st.legal;
-  if (state.checkFold) {                       // pre-selected while the villains acted
-    state.checkFold = false;
-    act(lg.can_check ? "check" : "fold");
+  if (!st.your_turn) {
+    const note = document.createElement("span");
+    note.className = "small muted"; note.textContent = "villains acting…";
+    el.appendChild(note);
+    el.appendChild(cfToggle(st));
     return;
   }
+  const lg = st.legal;
   const act = (kind, amount) => {
     actionSound(kind);
     simPost("/api/sim/act", {kind, amount: amount || 0});
   };
-  el.appendChild(actbtn("Check / Fold", () => act(lg.can_check ? "check" : "fold")));
+  if (cfArmed(st)) {
+    // `act` is declared above this on purpose -- calling it from here while
+    // it was still a `const` below threw a ReferenceError every time, so the
+    // option silently did nothing.
+    act(lg.can_check ? "check" : "fold");
+    return;
+  }
+  el.appendChild(cfToggle(st));
   if (lg.can_fold) el.appendChild(actbtn("Fold", () => act("fold")));
   if (lg.can_check) el.appendChild(actbtn("Check", () => act("check")));
   else if (lg.can_call) el.appendChild(actbtn(`Call ${lg.call_amount}`, () => act("call")));
@@ -1657,6 +1713,18 @@ async function viewHero() {
   let data;
   try {
     data = await get("/api/hero");
+    if (data && data.status === "building") {
+      // The build runs once per import and takes about a minute and a half.
+      // Say so and keep asking, rather than holding the request open with a
+      // blank tab behind it.
+      view.innerHTML = `<div class="panel"><h2>Hero</h2>
+        <p>${esc(data.message || "Reading your hands…")}</p>
+        <p class="small muted">This page will appear on its own when it is ready.</p></div>`;
+      if (state.heroPoll) clearTimeout(state.heroPoll);
+      state.heroPoll = setTimeout(() => { if (state.tab === "hero") viewHero(); }, 4000);
+      return;
+    }
+    if (state.heroPoll) { clearTimeout(state.heroPoll); state.heroPoll = null; }
   } catch (err) {
     $("#modal").innerHTML = "";
     view.innerHTML = `<div class="panel"><h2>hero</h2>
