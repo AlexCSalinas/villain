@@ -1,0 +1,185 @@
+"""A seat at the table: you against villains who play like their profiles.
+
+Wraps the :mod:`villain.holdem` engine and the :mod:`villain.botplay` policy
+into a session you can sit in. It rotates the button, tops a short stack back
+up so the reps keep coming, runs every villain automatically until the action
+is on you, and serialises a state the UI can draw -- with the villains' cards
+hidden until a showdown actually turns them over.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from .botplay import decide
+from .cards import card_text
+from .holdem import STREETS, Hand, Seat
+
+
+class Game:
+    def __init__(self, names: list[str], profiles: list, hero_seat: int,
+                 start_stack: int, sb: int, bb: int, seed: int | None = None):
+        self.names = names
+        self.profiles = profiles            # per seat; None for the hero seat
+        self.hero_seat = hero_seat
+        self.start_stack = start_stack
+        self.sb, self.bb = sb, bb
+        self.rng = np.random.default_rng(seed)
+        self.stacks = [start_stack] * len(names)
+        self.button = len(names) - 1        # so the first deal makes seat 0 the SB-ish
+        self.hand_no = 0
+        self.hand: Hand | None = None
+        self.history: list[str] = []
+        self.pnl = 0                          # your cumulative session profit/loss
+        self._hero_start = start_stack
+        self.vs = {n: 0 for i, n in enumerate(names) if i != hero_seat}
+        self.results: list[dict] = []
+        self.stats = {"hands": 0, "vpip": 0, "pfr": 0,
+                      "post_aggr": 0, "post_acts": 0, "sd_seen": 0, "sd_won": 0}
+        self.new_hand()
+
+    # -- hand lifecycle ------------------------------------------------------
+
+    def new_hand(self) -> None:
+        # Keep the game going: anyone too short to post is topped back up.
+        self.stacks = [s if s >= self.bb else self.start_stack for s in self.stacks]
+        self._hero_start = self.stacks[self.hero_seat]
+        self.button = (self.button + 1) % len(self.names)      # button and blinds move
+        seats = [Seat(n, self.stacks[i]) for i, n in enumerate(self.names)]
+        self.hand = Hand(seats, self.button, self.sb, self.bb, self.rng)
+        self.hand_no += 1
+        self._starts = list(self.stacks)
+        self._hero_vol = self._hero_pfr = False
+        self._hero_post_aggr = self._hero_post_acts = 0
+
+    def step(self) -> dict | None:
+        """Advance exactly one villain's action, or ``None`` if it is your turn
+        or the hand is over. Returns what they did and why -- the UI paces these
+        so you can watch the table play."""
+        h = self.hand
+        if h.over or h.to_act == self.hero_seat:
+            return None
+        seat = h.to_act
+        kind, amount, reason = decide(h, seat, self.profiles[seat], self.rng,
+                                      self.names[seat])
+        h.act(kind, amount)
+        if h.over:
+            self._bank()
+        return {"seat": seat, "name": self.names[seat], "action": kind,
+                "amount": amount, "reason": reason}
+
+    def act(self, kind: str, amount: int = 0) -> None:
+        if self.hand is None or self.hand.over or self.hand.to_act != self.hero_seat:
+            raise RuntimeError("not your turn")
+        street = self.hand.street
+        self.hand.act(kind, amount)
+        if street == 0:
+            if kind in ("call", "raise"):
+                self._hero_vol = True
+            if kind == "raise":
+                self._hero_pfr = True
+        else:
+            self._hero_post_acts += 1
+            if kind == "raise":
+                self._hero_post_aggr += 1
+        if self.hand.over:
+            self._bank()
+
+    def _bank(self) -> None:
+        seats = self.hand.seats
+        ends = [s.stack for s in seats]
+        for i, name in enumerate(self.names):
+            if i != self.hero_seat:
+                self.vs[name] = self.vs.get(name, 0) + (ends[i] - self._starts[i])
+        hero_net = ends[self.hero_seat] - self._starts[self.hero_seat]
+        self.pnl += hero_net
+        showdown = len(self.hand._in_hand()) > 1
+        hero_folded = seats[self.hero_seat].folded
+        hero_won = (self.hand.winners or {}).get(self.hero_seat, 0) > 0
+        st = self.stats
+        st["hands"] += 1
+        st["vpip"] += int(self._hero_vol)
+        st["pfr"] += int(self._hero_pfr)
+        st["post_aggr"] += self._hero_post_aggr
+        st["post_acts"] += self._hero_post_acts
+        if showdown and not hero_folded:
+            st["sd_seen"] += 1
+            st["sd_won"] += int(hero_won)
+        self.results.append({"hand_no": self.hand_no, "net": hero_net,
+                             "pot": sum(s.hand_put for s in seats)})
+        self.stacks = ends
+        for line in self.hand.log:
+            self.history.append(line)
+
+    def analysis(self) -> dict:
+        """A read on the session so far: your line, your P/L, and how you did
+        against each villain."""
+        st = self.stats
+        n = max(st["hands"], 1)
+        bb = self.bb
+        def pct(a, b):
+            return round(100 * a / b, 1) if b else None
+        results = sorted(self.results, key=lambda r: r["net"])
+        return {
+            "hands": st["hands"],
+            "pnl": self.pnl,
+            "pnl_bb": round(self.pnl / bb, 1) if bb else 0,
+            "bb100": round((self.pnl / bb) / n * 100, 1) if bb else 0,
+            "vpip": pct(st["vpip"], st["hands"]),
+            "pfr": pct(st["pfr"], st["hands"]),
+            "aggression": pct(st["post_aggr"], st["post_acts"]),
+            "went_to_showdown": pct(st["sd_seen"], st["hands"]),
+            "won_at_showdown": pct(st["sd_won"], st["sd_seen"]),
+            "vs": sorted(
+                [{"name": k, "net": v, "net_bb": round(v / bb, 1) if bb else 0}
+                 for k, v in self.vs.items()], key=lambda d: d["net"]),
+            "worst": results[0] if results else None,
+            "best": results[-1] if results else None,
+        }
+
+    # -- view ----------------------------------------------------------------
+
+    def state(self) -> dict:
+        h = self.hand
+        showdown = h.over and len(h._in_hand()) > 1
+        seats = []
+        for i, s in enumerate(h.seats):
+            reveal = i == self.hero_seat or (showdown and not s.folded)
+            seats.append({
+                "name": s.name,
+                "stack": s.stack,
+                "committed": s.street_put,
+                "folded": s.folded,
+                "all_in": s.all_in,
+                "is_hero": i == self.hero_seat,
+                "is_button": i == self.button,
+                "to_act": (not h.over) and h.to_act == i,
+                "won": (h.winners or {}).get(i, 0),
+                "hole": [card_text(c) for c in s.hole] if reveal else None,
+                "all_hole": [card_text(c) for c in s.hole] if h.over else None,
+            })
+        legal = None
+        if not h.over and h.to_act == self.hero_seat:
+            lg = h.legal()
+            legal = {
+                "can_check": lg.can_check, "can_call": lg.can_call,
+                "call_amount": lg.call_amount, "can_raise": lg.can_raise,
+                "min_raise_to": lg.min_raise_to, "max_raise_to": lg.max_raise_to,
+                "can_fold": lg.can_fold, "committed": h.seats[self.hero_seat].street_put,
+            }
+        return {
+            "hand_no": self.hand_no,
+            "pnl": self.pnl,
+            "sb": self.sb, "bb": self.bb,
+            "street": STREETS[h.street],
+            "board": [card_text(c) for c in h.board],
+            "pot": h.pot,
+            "button": self.button,
+            "hero_seat": self.hero_seat,
+            "seats": seats,
+            "over": h.over,
+            "showdown": showdown,
+            "your_turn": (not h.over) and h.to_act == self.hero_seat,
+            "legal": legal,
+            "log": h.log[-12:],
+        }

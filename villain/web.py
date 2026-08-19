@@ -163,6 +163,14 @@ def profile_payload(profile, player_id: int | None = None) -> dict:
          "label": c.label, "read": c.read}
         for c in timing_tells(profile)
     ]
+    from .gto import compare as _gto_compare, rating as _gto_rating
+    _grows = _gto_compare(profile)
+    payload["gto"] = {
+        "rating": _gto_rating(_grows),
+        "rows": [{"stat": r.stat, "player": r.player, "target": r.target,
+                  "deviation": round(r.deviation, 4), "fidelity": r.fidelity,
+                  "opps": round(r.opps, 1)} for r in _grows],
+    }
     return payload
 
 
@@ -173,6 +181,7 @@ MIN_ROSTER_HANDS = 5
 
 def roster_payload(store: Store) -> list[dict]:
     """One row per player. Table sizes are pooled, not listed separately."""
+    from .gto import compare as _gto_compare, rating as _gto_rating
     rows = []
     for player in store.players():
         profile = store.profile(int(player["id"]))
@@ -215,6 +224,7 @@ def roster_payload(store: Store) -> list[dict]:
                 "skill_tier": profile.skill.tier,
                 "skill_confidence": profile.skill.confidence,
                 "exploitability": profile.skill.exploitability,
+                "gto": _gto_rating(_gto_compare(profile)),
                 "top_leak": headline,
                 "top_leak_status": status,
                 "top_leak_note": note,
@@ -241,6 +251,8 @@ LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", ""})
 MAX_BODY_BYTES = 256 * 1024 * 1024
 
 SESSIONS: dict[str, dict] = {}
+#: Live practice games, held in memory only. Keyed by an opaque token.
+SIM_GAMES: dict = {}
 SESSION_TTL = 6 * 3600
 MAX_SESSIONS = 12
 
@@ -703,7 +715,7 @@ def _hero_model(store: Store):
 #: Bump whenever _build_hero_payload's returned shape changes, so an old
 #: cache file from a previous version of this module is a miss rather than a
 #: served-stale response with fields the current frontend does not expect.
-_HERO_CACHE_VERSION = 6
+_HERO_CACHE_VERSION = 7
 
 
 def _hero_disk_cache_path(store: Store) -> Path:
@@ -1147,6 +1159,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route == "/api/upload":
                 return self._upload(body)
+            if route == "/api/sim/new":
+                return self._sim_new(body)
+            if route == "/api/sim/act":
+                return self._sim_act(body)
+            if route == "/api/sim/step":
+                return self._sim_step(body)
+            if route == "/api/sim/next":
+                return self._sim_next(body)
+            if route == "/api/sim/analysis":
+                return self._sim_analysis(body)
             if route == "/api/narrate":
                 try:
                     result = narrate(body.get("profile") or {})
@@ -1198,6 +1220,59 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(409, {"error": str(exc)})
         except Exception as exc:
             return self._send(500, {"error": str(exc)})
+
+    def _sim_new(self, body: dict):
+        import secrets
+
+        from .sim import Game
+        vids = [int(x) for x in (body.get("villains") or [])][:5]
+        if not vids:
+            return self._send(400, {"error": "pick at least one villain"})
+        stack = max(20, int(body.get("stack", 200)))
+        bb = max(2, int(body.get("bb", 2)))
+        sb = max(1, int(body.get("sb", bb // 2)))
+        names, profiles = ["You"], [None]
+        with Store(self.db_path) as store:
+            known = {int(r["id"]): r["display_name"] for r in store.players()}
+            for pid in vids:
+                names.append(known.get(pid, f"Villain {pid}"))
+                profiles.append(store.profile(pid))
+        token = secrets.token_urlsafe(9)
+        game = Game(names, profiles, hero_seat=0, start_stack=stack, sb=sb, bb=bb)
+        SIM_GAMES[token] = game
+        for stale in list(SIM_GAMES)[:-8]:          # bound memory to a few games
+            SIM_GAMES.pop(stale, None)
+        return self._send(200, {"token": token, "state": game.state()})
+
+    def _sim_act(self, body: dict):
+        game = SIM_GAMES.get(body.get("token"))
+        if game is None:
+            return self._send(404, {"error": "game not found -- start a new one"})
+        try:
+            game.act(str(body.get("kind")), int(body.get("amount", 0)))
+        except (RuntimeError, ValueError) as exc:
+            return self._send(400, {"error": str(exc)})
+        return self._send(200, {"state": game.state()})
+
+    def _sim_step(self, body: dict):
+        game = SIM_GAMES.get(body.get("token"))
+        if game is None:
+            return self._send(404, {"error": "game not found -- start a new one"})
+        event = game.step()
+        return self._send(200, {"state": game.state(), "event": event})
+
+    def _sim_next(self, body: dict):
+        game = SIM_GAMES.get(body.get("token"))
+        if game is None:
+            return self._send(404, {"error": "game not found -- start a new one"})
+        game.new_hand()
+        return self._send(200, {"state": game.state()})
+
+    def _sim_analysis(self, body: dict):
+        game = SIM_GAMES.get(body.get("token"))
+        if game is None:
+            return self._send(404, {"error": "game not found -- start a new one"})
+        return self._send(200, {"analysis": game.analysis()})
 
     def _upload(self, body: dict):
         """Parse uploaded files into a session held in memory."""
@@ -1544,6 +1619,92 @@ PAGE = r"""<!doctype html>
   .comp.weak .comp-score { color: var(--red); font-weight: 600; }
   .comp-bar { min-width: 0; }
   .comp-bar svg { display: block; width: 100%; height: auto; }
+  .gto-badge { font-variant-numeric: tabular-nums; display: inline-flex; align-items: baseline; gap: 2px; }
+  .gto-badge b { font-size: 20px; letter-spacing: -0.02em; }
+  .gto-badge .of { color: var(--muted); font-size: 12px; }
+  .gto-row { display: grid; grid-template-columns: minmax(0,1fr) auto 30px; gap: 12px;
+             align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line); }
+  .gto-row:first-child { border-top: 0; }
+  .gto-nums { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .gto-dev { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .gto-fid { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em;
+             margin-left: 7px; padding: 1px 6px; border-radius: 999px;
+             border: 1px solid var(--line); color: var(--muted); vertical-align: 1px; }
+  .gto-fid.solver { border-color: var(--edge); color: var(--ink); }
+  .card.big { font-size: 17px; min-width: 34px; padding: 6px 8px; }
+  .poker-table { position: relative; width: 100%; max-width: 880px; aspect-ratio: 1.7 / 1;
+                 margin: 22px auto 12px; }
+  .felt-oval { position: absolute; inset: 0; border-radius: 50% / 50%;
+    background: radial-gradient(ellipse at 50% 40%, #2f7d5b 0%, #226349 66%, #17503a 100%);
+    box-shadow: inset 0 0 0 9px #0f3728, inset 0 0 60px rgba(0,0,0,.35), 0 24px 55px rgba(0,0,0,.45); }
+  .table-center { position: absolute; left: 50%; top: 43%; transform: translate(-50%,-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .pot-pill { background: rgba(0,0,0,.32); color: #fff; padding: 4px 15px; border-radius: 999px;
+    font-variant-numeric: tabular-nums; font-size: 14px; }
+  .table-center .board { display: flex; gap: 5px; min-height: 44px; align-items: center; }
+  .tseat { position: absolute; transform: translate(-50%,-50%); width: 118px; text-align: center; z-index: 2; }
+  .tseat-cards { display: flex; gap: 3px; justify-content: center; min-height: 26px; margin-bottom: 4px; }
+  .tseat-body { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 5px 8px; }
+  .tseat.acting .tseat-body { border-color: var(--red); box-shadow: 0 0 0 2px var(--red); }
+  .tseat.folded { opacity: .42; }
+  .tseat.won .tseat-body { border-color: var(--hero); box-shadow: 0 0 0 2px var(--hero); }
+  .tseat.me .tseat-body { background: var(--hero-soft); }
+  .tseat-name { font-weight: 600; font-size: 13px; display: flex; gap: 5px;
+    justify-content: center; align-items: center; }
+  .tseat-stack { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+  .dealer-btn { position: absolute; transform: translate(-50%,-50%); width: 22px; height: 22px;
+    border-radius: 50%; background: #fff; color: #111; font-weight: 700; font-size: 11px; z-index: 3;
+    display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 5px rgba(0,0,0,.4); }
+  .tbet { position: absolute; transform: translate(-50%,-50%); font-size: 12px; z-index: 2;
+    font-variant-numeric: tabular-nums; color: #fff; background: rgba(0,0,0,.34);
+    padding: 2px 9px; border-radius: 999px; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .chip-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red);
+    box-shadow: 0 0 0 2px rgba(255,255,255,.25); display: inline-block; }
+  .cardback { width: 22px; height: 30px; border-radius: 4px; border: 1px solid #0002;
+    background: repeating-linear-gradient(45deg, #7c5c3b, #7c5c3b 4px, #6c4f33 4px, #6c4f33 8px); }
+  .cardback.sm { width: 21px; height: 29px; }
+  .won-amt { color: var(--hero); font-weight: 600; }
+  .sim-layout { display: grid; grid-template-columns: 1fr 208px; gap: 20px; align-items: start; }
+  @media (max-width: 780px) { .sim-layout { grid-template-columns: 1fr; } }
+  .sim-side { border-left: 1px solid var(--line); padding-left: 18px; }
+  .side-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .pnl-big { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums;
+             letter-spacing: -0.02em; margin: 3px 0; }
+  .pnl-big.up { color: #45b881; }
+  .pnl-big.down { color: var(--danger); }
+  .desc-toggle { display: flex; align-items: center; gap: 7px; margin-top: 18px;
+                 font-size: 13px; cursor: pointer; }
+  .desc-toggle input { accent-color: var(--red); }
+  .think-bubble { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 7px 10px;
+    width: 188px; box-shadow: 0 8px 22px rgba(0,0,0,.45); z-index: 6; font-size: 12px; text-align: left; }
+  .think-bubble.below { bottom: auto; top: calc(100% + 8px); }
+  .think-bubble .why { color: var(--muted); margin-top: 3px; line-height: 1.35; }
+  .think-bubble::after { content: ""; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%); border: 6px solid transparent; border-top-color: var(--panel); }
+  .think-bubble.below::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: var(--panel); }
+  .a-headline { border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .astats { display: flex; gap: 26px; flex-wrap: wrap; }
+  .astat-v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .astat-l { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .a-vs-row { display: flex; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--line); }
+  .a-vs-row:first-child { border-top: 0; }
+  .up { color: #45b881; } .down { color: var(--danger); }
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 4px; min-height: 34px; }
+  .raise-wrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .raise-wrap input[type=range] { accent-color: var(--red); }
+  .raise-amt { font-variant-numeric: tabular-nums; min-width: 58px; }
+  .presets { display: flex; gap: 4px; }
+  .handlog { margin-top: 14px; max-height: 118px; overflow-y: auto; line-height: 1.6; }
+  .pick-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+               gap: 8px; margin-bottom: 18px; }
+  .pick { text-align: left; border: 1px solid var(--line); border-radius: 10px;
+          padding: 10px 12px; background: var(--panel); cursor: pointer;
+          display: flex; flex-direction: column; gap: 2px; }
+  .pick.on { border-color: var(--red); background: var(--accent-soft); }
+  .sit-controls { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  .sit-controls input { background: transparent; border: 1px solid var(--line);
+    border-radius: 6px; color: var(--ink); padding: 5px 8px; width: 66px; font: inherit; }
   .cards-row { display: inline-flex; gap: 3px; vertical-align: middle; }
   .card {
     display: inline-flex; align-items: center; gap: 1px;
@@ -1898,6 +2059,7 @@ PAGE = r"""<!doctype html>
     <button data-tab="players" class="on">Database</button>
     <button data-tab="sessions">Sessions</button>
     <button data-tab="hero">Hero</button>
+    <button data-tab="play">Simulate</button>
   </nav>
   <div id="view"></div>
 </div>
@@ -1910,7 +2072,7 @@ const fmtPct = v => (100 * v).toFixed(0) + "%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const SVG = "http://www.w3.org/2000/svg";
-const state = {tab: "players", session: null, player: null, glossary: null,
+const state = {tab: "players", session: null, player: null, glossary: null, game: null, lastEvent: null, stepTimer: null, descOn: true, revealed: false, checkFold: false,
                sessionId: null};
 
 /* An "i" that explains a term on hover. Everything the tool says in shorthand
@@ -2081,6 +2243,7 @@ function rosterTable(players, opts) {
       <th data-k="name">player</th>
       <th data-k="hands" class="num">hands</th><th data-k="archetype">read</th>
       <th data-k="skill" class="num">skill</th>
+      <th data-k="gto" class="num">GTO</th>
       <th data-k="exploitability" class="num">worth bb/100</th>
       <th data-k="top_leak">biggest leak</th>
     </tr></thead><tbody></tbody></table>`;
@@ -2088,7 +2251,9 @@ function rosterTable(players, opts) {
   let sort = {key: "skill", dir: -1};
   function draw() {
     const rows = [...players].sort((a, b) => {
-      const x = a[sort.key], y = b[sort.key];
+      let x = a[sort.key], y = b[sort.key];
+      if (x == null) x = -Infinity;
+      if (y == null) y = -Infinity;
       const cmp = (typeof x === "number" && typeof y === "number")
         ? x - y : String(x).localeCompare(String(y));
       return cmp * sort.dir;
@@ -2122,6 +2287,7 @@ function rosterTable(players, opts) {
         <td><span class="tag arch ${p.confidence >= 0.5 ? "on" : ""}">${esc(p.archetype)}</span>
             <div class="small muted">${fmtPct(p.confidence)} sure</div></td>
         <td class="num"></td>
+        <td class="num gto-cell">${p.gto != null ? Math.round(p.gto) : "\u2014"}</td>
         <td class="num worth${p.exploitability > 10 ? " big" : ""}">${
           p.exploitability ? p.exploitability.toFixed(1) : "\u2014"}</td>
         <td class="small leakcell">${p.top_leak ? esc(p.top_leak)
@@ -2172,6 +2338,66 @@ function rosterTable(players, opts) {
   });
   draw();
   return wrap;
+}
+
+/* vs GTO -- how close a player's frequencies sit to an optimal baseline, with
+   one rating. Preflop rows are a solver reference (exact as category
+   frequencies), postflop are board-averaged benchmarks; the fidelity rides
+   every row and the tooltip says which is which. */
+function renderGto(gto) {
+  if (!gto || gto.rating == null || !(gto.rows || []).length) return null;
+  const box = document.createElement("div");
+  box.className = "panel";
+  box.innerHTML = `<div class="spread"><h2 style="margin:0">vs GTO</h2>
+      <span class="gto-badge"><b>${Math.round(gto.rating)}</b><span class="of">/100</span></span>
+    </div><div class="gto-rows"></div>`;
+  $(".gto-badge", box).appendChild(info(`<span class="hl">GTO rating</span><br>
+    How close these frequencies sit to a game-theory-optimal baseline — the
+    part of a game a perfect opponent still could not exploit.<br><br>
+    <b>Preflop</b> is a solver reference at 100bb, exact as category
+    frequencies.<br><b>Postflop</b> is an equilibrium benchmark, board-averaged
+    — not a live solver. Preflop rows weigh double in the score.`));
+  const host = $(".gto-rows", box);
+  for (const r of gto.rows.slice(0, 8)) {
+    const dir = r.deviation > 0 ? "+" : "−";
+    const row = document.createElement("div");
+    row.className = "gto-row";
+    row.innerHTML = `
+      <span class="gto-name">${esc(statLabel(r.stat, null))}<span
+        class="gto-fid ${r.fidelity === "solver" ? "solver" : ""}">${
+        r.fidelity === "solver" ? "solver" : "bench"}</span></span>
+      <span class="gto-nums small muted">you ${fmtPct(r.player)} · gto ${fmtPct(r.target)}</span>
+      <span class="gto-dev">${dir}${Math.round(Math.abs(r.deviation) * 100)}</span>`;
+    host.appendChild(row);
+  }
+  if (gto.rows.length > 8) {
+    const link = document.createElement("button");
+    link.className = "linkbtn how-link";
+    link.textContent = `See all ${gto.rows.length}`;
+    link.onclick = () => {
+      const modal = $("#modal");
+      modal.innerHTML = `<div class="veil"><div class="sheet">
+        <div class="spread"><h2 style="margin:0">vs GTO — every stat</h2>
+          <button class="act" id="close">Close</button></div>
+        <div class="gto-rows" id="gto-all"></div></div></div>`;
+      const all = $("#gto-all", modal);
+      for (const r of gto.rows) {
+        const dir = r.deviation > 0 ? "+" : "−";
+        const row = document.createElement("div");
+        row.className = "gto-row";
+        row.innerHTML = `
+          <span class="gto-name">${esc(statLabel(r.stat, null))}<span
+            class="gto-fid ${r.fidelity === "solver" ? "solver" : ""}">${
+            r.fidelity === "solver" ? "solver" : "bench"}</span></span>
+          <span class="gto-nums small muted">you ${fmtPct(r.player)} · gto ${fmtPct(r.target)}</span>
+          <span class="gto-dev">${dir}${Math.round(Math.abs(r.deviation) * 100)}</span>`;
+        all.appendChild(row);
+      }
+      $("#close").onclick = () => { modal.innerHTML = ""; };
+    };
+    box.appendChild(link);
+  }
+  return box;
 }
 
 function profileCard(p, opts) {
@@ -2552,6 +2778,8 @@ function profileCard(p, opts) {
   }
 
   cols.appendChild(skillBox);
+  const gtoBox = renderGto(p.gto);
+  if (gtoBox) cols.appendChild(gtoBox);
 
   const detail = document.createElement("div");
   detail.className = "panel";
@@ -3120,6 +3348,317 @@ function renderHeroSelf(dash, self) {
     }
     dash.appendChild(box);
   }
+}
+
+const SUIT = {s: "♠", h: "♥", d: "♦", c: "♣"};
+function cardHtml(txt, big) {
+  const red = txt[1] === "h" || txt[1] === "d";
+  return `<span class="card ${red ? "red" : "black"}${big ? " big" : ""}"><span
+    class="r">${esc(txt[0] === "T" ? "10" : txt[0])}</span>${SUIT[txt[1]] || ""}</span>`;
+}
+function actbtn(label, on, cls) {
+  const b = document.createElement("button");
+  b.className = "act" + (cls ? " " + cls : "");
+  b.textContent = label; b.onclick = on; return b;
+}
+
+async function viewPlay() {
+  const view = $("#view");
+  if (state.game) { renderTable(view, state.game); return; }
+  view.innerHTML = `<div class="panel"><h2>Simulate</h2>
+    <div class="small muted" style="margin:-6px 0 16px">Sit at a table and play real hands
+      against players from your database. Each villain acts from their own measured profile —
+      loose ones call wide, nits fold, aggressive ones barrel — so it plays like practice
+      against the people you actually face. Pick up to five and sit down.</div>
+    <div id="pick-list" class="pick-list"><div class="empty">loading…</div></div>
+    <div class="sit-controls">
+      <label class="small muted">stack <input id="sit-stack" type="number" value="200" min="20"></label>
+      <label class="small muted">blinds <input id="sit-sb" type="number" value="1" min="1">
+        / <input id="sit-bb" type="number" value="2" min="2"></label>
+      <button class="act primary" id="sit-go" disabled>Sit down</button>
+    </div></div>`;
+  const roster = await get("/api/roster");
+  const players = (roster.players || [])
+    .filter(p => p.player_id != null && p.player_id !== roster.hero_id && p.hands >= 30)
+    .sort((a, b) => b.hands - a.hands);
+  const list = $("#pick-list"); list.innerHTML = "";
+  if (!players.length) { list.innerHTML = `<div class="small muted">No players with
+    enough hands yet — import some on the Database tab.</div>`; return; }
+  const picked = new Set();
+  for (const p of players) {
+    const b = document.createElement("button");
+    b.className = "pick";
+    b.innerHTML = `<span class="name">${esc(p.name)}</span>
+      <span class="small muted">${p.hands} hands · ${esc(p.archetype)} · GTO ${
+        p.gto != null ? Math.round(p.gto) : "—"}</span>`;
+    b.onclick = () => {
+      if (picked.has(p.player_id)) { picked.delete(p.player_id); b.classList.remove("on"); }
+      else if (picked.size < 5) { picked.add(p.player_id); b.classList.add("on"); }
+      $("#sit-go").disabled = picked.size === 0;
+    };
+    list.appendChild(b);
+  }
+  $("#sit-go").onclick = async () => {
+    $("#sit-go").disabled = true;
+    ensureAudio();
+    try {
+      const data = await post("/api/sim/new", {villains: [...picked],
+        stack: +$("#sit-stack").value, sb: +$("#sit-sb").value, bb: +$("#sit-bb").value});
+      state.game = data;
+      renderTable($("#view"), data);
+    } catch (err) { $("#sit-go").disabled = false; alert(err.message); }
+  };
+}
+
+const SIM_DELAY = 4000;                 // ~4s per action so you can watch it
+let _actx = null;
+function ensureAudio() {
+  try {
+    _actx = _actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (_actx.state === "suspended") _actx.resume();
+  } catch (e) {}
+}
+function chipSound() {
+  if (state.muted || !_actx) return;
+  try {
+    const ctx = _actx, t = ctx.currentTime;
+    for (let k = 0; k < 3; k++) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "triangle"; o.frequency.value = 850 + Math.random() * 550;
+      const s0 = t + k * 0.028;
+      g.gain.setValueAtTime(0.0001, s0);
+      g.gain.exponentialRampToValueAtTime(0.07, s0 + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, s0 + 0.06);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(s0); o.stop(s0 + 0.07);
+    }
+  } catch (e) {}
+}
+
+function actionText(ev) {
+  if (!ev) return "";
+  if (ev.action === "fold") return "Folds";
+  if (ev.action === "check") return "Checks";
+  if (ev.action === "call") return "Calls";
+  return `Raises to ${ev.amount}`;
+}
+
+async function simPost(route, extra) {
+  if (state.stepTimer) { clearTimeout(state.stepTimer); state.stepTimer = null; }
+  const token = state.game.token;
+  try {
+    const d = await post(route, Object.assign({token}, extra || {}));
+    state.game = {token, state: d.state};
+    if (route === "/api/sim/next") { state.lastEvent = null; state.revealed = false; }
+    renderTable($("#view"), state.game);
+  } catch (err) { /* game gone or navigated away */ }
+}
+
+function renderTable(view, data) {
+  if (state.stepTimer) { clearTimeout(state.stepTimer); state.stepTimer = null; }
+  const st = data.state, n = st.seats.length;
+  const pnl = st.pnl || 0;
+  const pnlBb = st.bb ? (pnl / st.bb).toFixed(1) : "0";
+  view.innerHTML = `<div class="panel sim-panel"><div class="sim-layout">
+    <div class="sim-main">
+      <div class="spread"><h2 style="margin:0">hand ${st.hand_no} <span
+        class="muted" style="font-weight:400">· ${esc(st.street)}</span></h2>
+        <button class="linkbtn" id="leave">leave table</button></div>
+      <div class="poker-table" id="ptable">
+        <div class="felt-oval"></div>
+        <div class="table-center">
+          <div class="pot-pill">pot <b>${st.pot}</b></div>
+          <div class="board" id="board"></div>
+        </div>
+      </div>
+      <div class="controls" id="controls"></div>
+      <div class="handlog small muted" id="handlog"></div>
+    </div>
+    <div class="sim-side">
+      <div class="side-label">session P/L</div>
+      <div class="pnl-big ${pnl >= 0 ? "up" : "down"}">${pnl >= 0 ? "+" : ""}${pnl}</div>
+      <div class="small muted">${pnl >= 0 ? "+" : ""}${pnlBb} bb · ${st.hand_no} hands</div>
+      <div class="small muted" style="margin-top:3px">blinds ${st.sb}/${st.bb}</div>
+      <label class="desc-toggle"><input type="checkbox" id="desc-on"${
+        state.descOn ? " checked" : ""}> explain decisions</label>
+      <label class="desc-toggle" style="margin-top:8px"><input type="checkbox" id="snd-on"${
+        state.muted ? "" : " checked"}> chip sounds</label>
+      <label class="desc-toggle" style="margin-top:8px"><input type="checkbox" id="cf-on"${
+        state.checkFold ? " checked" : ""}> check / fold</label>
+      <button class="act small" id="end-session" style="margin-top:18px">End &amp; analyze</button>
+    </div>
+  </div></div>`;
+  const table = $("#ptable");
+  st.seats.forEach((s, i) => {
+    const theta = Math.PI / 2 + (i / n) * 2 * Math.PI;   // you (0) at the bottom
+    const x = 50 + 45 * Math.cos(theta), y = 50 + 44 * Math.sin(theta);
+    const seat = document.createElement("div");
+    seat.className = "tseat" + (s.is_hero ? " me hero-scope" : "")
+      + (s.folded ? " folded" : "") + (s.to_act ? " acting" : "") + (s.won ? " won" : "");
+    seat.style.left = x + "%"; seat.style.top = y + "%";
+    const shownHole = (state.revealed && s.all_hole) ? s.all_hole : s.hole;
+    const cards = shownHole ? shownHole.map(c => cardHtml(c, s.is_hero)).join("")
+      : (s.folded ? "" : '<span class="cardback sm"></span><span class="cardback sm"></span>');
+    seat.innerHTML = `<div class="tseat-cards">${cards}</div>
+      <div class="tseat-body">
+        <div class="tseat-name">${esc(s.name)}${
+          s.is_hero ? ' <span class="tag hero-tag">you</span>' : ""}</div>
+        <div class="tseat-stack">${s.stack}${
+          s.won ? ` <span class="won-amt">+${s.won}</span>` : ""}</div>
+      </div>`;
+    const ev = state.lastEvent;
+    if (ev && ev.seat === i && !s.is_hero) {
+      const why = (ev.reason || "").split("—").slice(1).join("—").trim();
+      const bubble = document.createElement("div");
+      bubble.className = "think-bubble" + (y > 50 ? " below" : "");  // outward, off the felt
+      bubble.innerHTML = `<b>${esc(actionText(ev))}</b>${
+        state.descOn && why ? `<div class="why">${esc(why)}</div>` : ""}`;
+      seat.appendChild(bubble);
+    }
+    table.appendChild(seat);
+    if (s.is_button) {
+      const d = document.createElement("div"); d.className = "dealer-btn"; d.textContent = "D";
+      d.style.left = (50 + 33 * Math.cos(theta - 0.4)) + "%";
+      d.style.top = (50 + 32 * Math.sin(theta - 0.4)) + "%";
+      table.appendChild(d);
+    }
+    if (s.committed > 0 && !st.over) {
+      const chip = document.createElement("div"); chip.className = "tbet";
+      chip.style.left = (50 + 27 * Math.cos(theta)) + "%";
+      chip.style.top = (50 + 26 * Math.sin(theta)) + "%";
+      chip.innerHTML = `<span class="chip-dot"></span>${s.committed}`;
+      table.appendChild(chip);
+    }
+  });
+  $("#board").innerHTML = st.board.length ? st.board.map(c => cardHtml(c, true)).join("") : "";
+  $("#handlog").innerHTML = (st.log || []).map(l => `<div>${esc(l)}</div>`).join("");
+  $("#leave").onclick = () => {
+    if (state.stepTimer) clearTimeout(state.stepTimer);
+    state.game = null; state.lastEvent = null; viewPlay();
+  };
+  $("#desc-on").onchange = (e) => { state.descOn = e.target.checked; };
+  $("#snd-on").onchange = (e) => { state.muted = !e.target.checked; if (!state.muted) ensureAudio(); };
+  const cf = $("#cf-on"); if (cf) cf.onchange = (e) => { state.checkFold = e.target.checked; };
+  $("#end-session").onclick = () => endSession();
+  renderControls($("#controls"), data);
+  if (!st.over && !st.your_turn) {           // pace the villains so you can watch
+    const wait = (state.lastEvent && state.lastEvent.action === "fold") ? 2000 : SIM_DELAY;
+    state.stepTimer = setTimeout(() => stepBots(data.token), wait);
+  } else if (st.over && !state.revealed) {     // auto-deal next, unless paused to reveal
+    state.stepTimer = setTimeout(() => simPost("/api/sim/next"), SIM_DELAY);
+  }
+}
+
+async function stepBots(token) {
+  try {
+    const r = await post("/api/sim/step", {token});
+    if (r.event && (r.event.action === "call" || r.event.action === "raise")) chipSound();
+    state.game = {token, state: r.state};
+    state.lastEvent = r.event;
+    renderTable($("#view"), state.game);
+  } catch (err) { /* game gone or navigated away */ }
+}
+
+function renderControls(el, data) {
+  const st = data.state; el.innerHTML = "";
+  if (st.over) {
+    if (!state.revealed && st.seats.some(x => x.all_hole && !x.is_hero)) {
+      el.appendChild(actbtn("Reveal cards", () => {
+        if (state.stepTimer) { clearTimeout(state.stepTimer); state.stepTimer = null; }
+        state.revealed = true; renderTable($("#view"), data);
+      }));
+    }
+    el.appendChild(actbtn("Deal now", () => simPost("/api/sim/next"), "primary"));
+    el.appendChild(actbtn("End & analyze", () => endSession()));
+    const won = st.seats.filter(s => s.won);
+    if (won.length) {
+      const note = document.createElement("span"); note.className = "small muted";
+      note.style.marginLeft = "10px";
+      note.textContent = won.map(s => `${s.name} +${s.won}`).join(" · ") + " · next hand dealing…";
+      el.appendChild(note);
+    }
+    return;
+  }
+  if (!st.your_turn) { el.innerHTML = '<span class="small muted">villains acting…</span>'; return; }
+  const lg = st.legal;
+  if (state.checkFold) {                       // pre-selected while the villains acted
+    state.checkFold = false;
+    act(lg.can_check ? "check" : "fold");
+    return;
+  }
+  const act = (kind, amount) => {
+    if (kind === "call" || kind === "raise") chipSound();
+    simPost("/api/sim/act", {kind, amount: amount || 0});
+  };
+  el.appendChild(actbtn("Check / Fold", () => act(lg.can_check ? "check" : "fold")));
+  if (lg.can_fold) el.appendChild(actbtn("Fold", () => act("fold")));
+  if (lg.can_check) el.appendChild(actbtn("Check", () => act("check")));
+  else if (lg.can_call) el.appendChild(actbtn(`Call ${lg.call_amount}`, () => act("call")));
+  if (lg.can_raise) {
+    const potAfter = st.pot + lg.call_amount;
+    const sizeTo = (frac) => {
+      const raw = lg.can_check ? Math.round(frac * st.pot)
+        : (lg.committed + lg.call_amount) + Math.round(frac * potAfter);
+      return Math.min(lg.max_raise_to, Math.max(lg.min_raise_to, raw));
+    };
+    const wrap = document.createElement("div"); wrap.className = "raise-wrap";
+    const slider = document.createElement("input");
+    slider.type = "range"; slider.min = lg.min_raise_to; slider.max = lg.max_raise_to;
+    slider.value = sizeTo(0.66);
+    const amt = document.createElement("span"); amt.className = "raise-amt";
+    const upd = () => { amt.textContent = `to ${slider.value}`; };
+    slider.oninput = upd; upd();
+    const presets = document.createElement("div"); presets.className = "presets";
+    for (const [label, frac] of [["½", 0.5], ["⅔", 0.66], ["pot", 1.0]]) {
+      presets.appendChild(actbtn(label, () => { slider.value = sizeTo(frac); upd(); }, "small"));
+    }
+    presets.appendChild(actbtn("all-in", () => { slider.value = lg.max_raise_to; upd(); }, "small"));
+    wrap.append(slider, amt, presets,
+      actbtn(lg.can_check ? "Bet" : "Raise", () => act("raise", +slider.value), "primary"));
+    el.appendChild(wrap);
+  }
+}
+
+async function endSession() {
+  if (state.stepTimer) { clearTimeout(state.stepTimer); state.stepTimer = null; }
+  const token = state.game.token;
+  const r = await post("/api/sim/analysis", {token});
+  renderAnalysis($("#view"), r.analysis);
+}
+
+function renderAnalysis(view, a) {
+  const money = (c, bb) => `${c >= 0 ? "+" : ""}${c} <span class="muted">(${
+    c >= 0 ? "+" : ""}${bb} bb)</span>`;
+  const stat = (label, v) => `<div class="astat"><div class="astat-v">${
+    v == null ? "—" : v + "%"}</div><div class="astat-l">${label}</div></div>`;
+  view.innerHTML = `<div class="panel"><div class="spread"><h2 style="margin:0">session analysis</h2>
+      <button class="linkbtn" id="a-back">back to setup</button></div>
+    <div class="small muted" style="margin:-4px 0 16px">${a.hands} hands played.</div>
+    <div class="a-headline">
+      <div class="pnl-big ${a.pnl >= 0 ? "up" : "down"}">${a.pnl >= 0 ? "+" : ""}${a.pnl}</div>
+      <div class="small muted">${a.pnl_bb >= 0 ? "+" : ""}${a.pnl_bb} bb · ${
+        a.bb100 >= 0 ? "+" : ""}${a.bb100} bb/100 over ${a.hands} hands</div>
+    </div>
+    <h3 style="margin:20px 0 8px">your line this session</h3>
+    <div class="astats">${stat("VPIP", a.vpip)}${stat("PFR", a.pfr)}${
+      stat("aggression", a.aggression)}${stat("to showdown", a.went_to_showdown)}${
+      stat("won at SD", a.won_at_showdown)}</div>
+    <h3 style="margin:22px 0 8px">against each villain</h3>
+    <div class="a-vs"></div>
+    <h3 style="margin:22px 0 8px">swings</h3>
+    <div class="small">Biggest pot won: ${a.best ? `hand ${a.best.hand_no}, ${money(a.best.net, (a.best.net/1).toFixed(0))}`.replace(/\(.*\)/, "") : "—"}</div>
+    <div class="small">Worst hand: ${a.worst ? `hand ${a.worst.hand_no}, ${a.worst.net}` : "—"}</div>
+  </div>`;
+  const vs = $(".a-vs", view);
+  for (const v of a.vs) {
+    const row = document.createElement("div"); row.className = "a-vs-row";
+    row.innerHTML = `<span>${esc(v.name)}</span>
+      <span class="${v.net >= 0 ? "up" : "down"}" style="font-variant-numeric:tabular-nums">${
+        v.net >= 0 ? "+" : ""}${v.net} <span class="muted">(${
+        v.net_bb >= 0 ? "+" : ""}${v.net_bb} bb)</span></span>`;
+    vs.appendChild(row);
+  }
+  $("#a-back").onclick = () => { state.game = null; state.lastEvent = null; viewPlay(); };
 }
 
 async function viewHero() {
@@ -4057,6 +4596,7 @@ async function render() {
     if (state.tab === "session") viewSession();
     else if (state.tab === "sessions") await viewSessions();
     else if (state.tab === "hero") await viewHero();
+    else if (state.tab === "play") await viewPlay();
     else await viewPlayers();
   } catch (err) {
     $("#view").innerHTML = `<div class="panel err">${esc(err.message)}</div>`;
