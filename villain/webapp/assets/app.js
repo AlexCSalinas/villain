@@ -392,6 +392,26 @@ function profileCard(p, opts) {
   conf.appendChild(info(`${termTip("confidence")}<br><br>
     <span class="hl">also plausibly</span><br>${
       p.archetype_mix.slice(1, 4).map(([n, v]) => `${esc(n)} ${fmtPct(v)}`).join("<br>")}`));
+  // Who they are on the hands they played against you. Only here, never on
+  // the roster: the roster is how everybody plays the field, and two
+  // references in one list is how "tag" stopped meaning anything.
+  if (p.versus) {
+    const vs = document.createElement("span");
+    vs.style.marginLeft = "12px";
+    vs.innerHTML = `<span class="tag arch on">vs you: ${esc(p.versus.archetype)}</span>`;
+    vs.appendChild(info(`<span class="hl">against you</span><br>
+      On the ${p.versus.decisions.toLocaleString()} decisions they made with you
+      on the other side, ${esc(p.versus.regime_label)}, they play like
+      <b>${esc(p.versus.archetype)}</b> (${fmtPct(p.versus.confidence)} sure)
+      &mdash; against <b>${esc(p.archetype)}</b> for the field.<br><br>
+      <span class="hl">also plausibly</span><br>${
+        p.versus.mix.slice(1, 3).map(m =>
+          `${esc(m.archetype)} ${fmtPct(m.share)}`).join("<br>")}<br><br>
+      One table size, never pooled: a player can be one thing against you
+      heads-up and another six-handed, and the average of those describes
+      neither table you sat at.`));
+    line.appendChild(vs);
+  }
   const fieldChip = document.createElement("span");
   fieldChip.style.marginLeft = "12px";
   fieldChip.textContent = "vs the field";

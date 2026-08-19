@@ -37,9 +37,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .priors import Estimate, logit, prior_for, shrink, sigmoid
+from .priors import REGIME_LABELS, Estimate, logit, prior_for, shrink, sigmoid
 from .profile import CROSS_REGIME_DISCOUNT, primary_regime
-from .stats import VS_HERO, StatBook
+from .stats import VS_HERO, Ratio, StatBook
 
 #: How strongly to believe, before seeing any of it, that he plays you the way
 #: he plays everybody -- in opportunities.
@@ -295,3 +295,81 @@ def _baseline(stat: str, book: StatBook | None, regime: str,
         return None
     mean, strength = priors.get(stat) or prior_for(stat, regime)
     return shrink(hits, opps, mean, strength)
+
+
+# ---------------------------------------------------------------------------
+# The same read, taken only on the hands they played against you
+# ---------------------------------------------------------------------------
+
+#: Against-you decisions needed before an archetype is worth naming. An
+#: archetype is a claim about a whole strategy, so it needs more than a single
+#: adjustment does -- but the posterior carries the rest of the doubt, and a
+#: thin read simply comes back unconfident rather than absent.
+MIN_VERSUS_DECISIONS = 400
+
+
+@dataclass
+class VersusRead:
+    """Who they are when they are playing *you*, at one table size."""
+
+    archetype: str
+    confidence: float
+    mix: list
+    regime: str
+    decisions: float
+    hands: int
+
+    @property
+    def regime_label(self) -> str:
+        return REGIME_LABELS.get(self.regime, self.regime)
+
+
+def versus_book(book: StatBook) -> StatBook:
+    """A book made only of the against-you slice, under the ordinary names.
+
+    Every counter the profile machinery understands is recorded twice: once
+    pooled, once for the decisions where the other side was the hero. Renaming
+    the second set is all it takes to run the whole read -- shrinkage,
+    archetype, the lot -- on "how they play you" instead of "how they play".
+    """
+    out = StatBook(player_id=book.player_id, name=book.name,
+                   regime=book.regime, hands=book.hands,
+                   first_seen=book.first_seen, last_seen=book.last_seen)
+    for stat, ratio in book.ratios.items():
+        if not stat.startswith(VS_HERO):
+            continue
+        out.ratios[stat[len(VS_HERO):]] = Ratio(hits=ratio.hits, opps=ratio.opps)
+    for stat, meter in book.meters.items():
+        if stat.startswith(VS_HERO):
+            out.meters[stat[len(VS_HERO):]] = meter
+    return out
+
+
+def versus_read(by_regime: dict[str, StatBook],
+                priors: dict | None = None) -> VersusRead | None:
+    """Their archetype on the hands they played against you, or None.
+
+    Taken at one table size -- whichever carries the most history between the
+    two of you -- and never pooled across sizes. Pooling is what hid the read
+    in the first place: a player can be a station against you heads-up and
+    ordinary against you six-handed, and the average of those is a fiction
+    that describes neither table you sat at.
+    """
+    from .archetypes import match
+    from .profile import build_profile
+
+    best: tuple[float, str, StatBook] | None = None
+    for regime, book in by_regime.items():
+        sliced = versus_book(book)
+        decisions = sum(r.opps for r in sliced.ratios.values())
+        if decisions < MIN_VERSUS_DECISIONS:
+            continue
+        if best is None or decisions > best[0]:
+            best = (decisions, regime, sliced)
+    if best is None:
+        return None
+    decisions, regime, sliced = best
+    profile = build_profile(sliced, priors=priors)
+    archetype, confidence, mix = match(profile)
+    return VersusRead(archetype=archetype, confidence=confidence, mix=mix,
+                      regime=regime, decisions=decisions, hands=sliced.hands)

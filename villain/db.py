@@ -27,7 +27,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .dynamics import adjustments
+from .dynamics import adjustments, versus_read
 from .features import record_hands
 from .model import Hand, hand_from_dict, hand_to_dict
 from .stats import VS_HERO, Meter, Ratio, StatBook
@@ -1104,6 +1104,8 @@ class Store:
             # own -- pooling here would undo the split it exists to show.
             profile.adjustments = adjustments(
                 {profile.regime: books[profile.regime]}, priors=priors)
+            profile.versus = versus_read({profile.regime: books[profile.regime]},
+                                         priors=priors)
         return built
 
     def profile(self, player_id: int):
@@ -1120,6 +1122,7 @@ class Store:
         profile = build_unified(books, priors=priors)
         if profile is not None:
             profile.adjustments = adjustments(books, priors=priors)
+            profile.versus = versus_read(books, priors=priors)
         return profile
 
     def player_hands(self, player_id: int | None = None) -> list[Hand]:

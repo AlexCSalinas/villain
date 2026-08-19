@@ -102,6 +102,20 @@ def as_dict(profile: Profile) -> dict:
         # Where they treat you differently from everyone else. Never priced:
         # what an adjustment is worth depends on how you were playing when
         # they made it, which is not in the hand history.
+        # Who they are on the hands they played against *you*, at the table
+        # size the two of you share most. Deliberately absent from the roster:
+        # a list of everybody is a list of how they play the field, and mixing
+        # the two references in one column is how the field read stopped
+        # meaning anything.
+        "versus": ({
+            "archetype": profile.versus.archetype,
+            "confidence": round(profile.versus.confidence, 3),
+            "regime": profile.versus.regime,
+            "regime_label": profile.versus.regime_label,
+            "decisions": round(profile.versus.decisions),
+            "mix": [{"archetype": k, "share": round(v, 3)}
+                    for k, v in profile.versus.mix[:3]],
+        } if getattr(profile, "versus", None) else None),
         "adjustments": [
             {"stat": a.stat, "behavior": versus_behavior(a.stat),
              # The counter the evidence panel opens on: the against-you slice,
