@@ -248,7 +248,7 @@ def matched_only_by_containment(a: str, b: str, bar: float) -> bool:
     Those are asked, never applied: the shape that makes ``Rauf`` and
     ``RaufLaptop`` one person makes ``Arnav`` and ``Arnav Shah`` two.
     """
-    na, nb = normalise(a), normalise(b)
+    na, nb = normalize(a), normalize(b)
     if _containment_score(na, nb) < bar:
         return False
     from difflib import SequenceMatcher as _SM

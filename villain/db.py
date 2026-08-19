@@ -980,6 +980,7 @@ class Store:
         failure mode -- when players really are alike, it is simply small.
         """
         import statistics
+
         from .priors import logit
         lo, hi = self.SPREAD_BOUNDS
         by: dict[str, dict[str, list[float]]] = {}
@@ -1008,7 +1009,6 @@ class Store:
         sample should not be able to stretch the band, and the point of the
         band is to say what is *normal* here, not what is possible.
         """
-        import statistics
         by: dict[str, dict[str, list[float]]] = {}
         for row in self.conn.execute(
                 "SELECT regime, stat, hits, opps FROM ratios WHERE opps >= 40"):

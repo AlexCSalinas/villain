@@ -273,7 +273,8 @@ def _facing(street_idx, bet_frac, profile, seed=3, trials=140):
     for _ in range(trials):
         h = Hand(_seats(4000, 4000), button=0, sb=1, bb=2,
                  rng=np.random.default_rng(int(rng.integers(1e9))))
-        h.act("call"); h.act("check")
+        h.act("call")
+        h.act("check")
         h.street = street_idx
         size = 3 if street_idx == 1 else 4 if street_idx == 2 else 5
         h.board = list(rng.choice(52, size=size, replace=False))

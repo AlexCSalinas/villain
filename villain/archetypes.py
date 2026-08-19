@@ -380,7 +380,7 @@ def target_frequency(arch: Archetype, feature: str, table_regime: str,
 
 
 #: Opportunities past which a single feature stops accumulating evidence.
-#: ``None`` restores the old behaviour, where the commonest spot wins.
+#: ``None`` restores the old behavior, where the commonest spot wins.
 #: Swept against ``villain validate``, never against a label.
 EVIDENCE_CAP: int | None = None
 
