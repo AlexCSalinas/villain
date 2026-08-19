@@ -41,15 +41,14 @@ MIN_HANDS_FOR_BEHAVIOUR = 60
 #: that two tight-passives are "similar" is not evidence they are one person.
 HIGH_NAME_SCORE = 0.92
 
-#: Two different accounts that show the same screen name are usually a
-#: reconnect, but they can also be two distinct humans that chose the same
-#: nickname. If their time windows overlap substantially, treating them as
-#: one person is risky, so we skip offering an alias question.
-#
-#: This is deliberately conservative: if someone truly did split across two
-#: accounts while playing concurrently for long enough, the merge must be
-#: decided manually rather than being guessed.
-MAX_SAME_NAME_OVERLAP_DAYS = 7
+#: Two accounts showing the same screen name are usually one person whose
+#: site handed them a fresh account id -- a reconnect. They can also be two
+#: humans who picked the same nickname, and the test for that is whether they
+#: were ever dealt into a hand *together*, not whether their active periods
+#: overlap: a regular who reconnects every session has accounts spanning the
+#: same months by construction, so an overlap rule suppresses precisely the
+#: merges it exists to make. Co-occurrence is the real discriminator and it is
+#: already enforced, absolutely, by ``SPURIOUS_OVERLAP``.
 
 
 @dataclass
@@ -233,22 +232,6 @@ def _name_match_reason(a: str, b: str, score: float) -> str:
     return f"“{a}” ≈ “{b}” ({score:.0%})"
 
 
-def _same_name_time_overlap_days(left: dict, right: dict) -> float:
-    """Overlap of the two accounts' active time windows, in days.
-
-    Both ``left`` and ``right`` come from :func:`_account_index` and carry
-    ``first``/``last`` timestamps in milliseconds.
-    """
-    first_a, last_a = left.get("first"), left.get("last")
-    first_b, last_b = right.get("first"), right.get("last")
-    if not first_a or not last_a or not first_b or not last_b:
-        return 0.0
-    overlap_ms = min(last_a, last_b) - max(first_a, first_b)
-    if overlap_ms <= 0:
-        return 0.0
-    return overlap_ms / (1000.0 * 60.0 * 60.0 * 24.0)
-
-
 def _short_account(value) -> str:
     text = str(value or "")
     return text if len(text) <= 10 else f"{text[:6]}\u2026{text[-3:]}"
@@ -326,6 +309,11 @@ class Question:
     names: list[str] = field(default_factory=list)
     default_name: str = ""
     auto: bool = False        # apply without prompting; prefer the DB name
+    #: Every account this one decision covers. Two for an ordinary pair; more
+    #: when a screen name reconnected many times and the whole run is one
+    #: person. ``left``/``right`` stay the two representative sides so anything
+    #: rendering a question does not have to know about clusters.
+    members: list[dict] = field(default_factory=list)
 
 
 def auto_answers(questions: list[Question]) -> dict[str, dict]:
@@ -357,6 +345,46 @@ def _account_index(hands) -> dict[tuple[str, str], dict]:
                 if entry["last"] is None or hand.started_at > entry["last"]:
                     entry["last"] = hand.started_at
     return out
+
+
+def _same_name_clusters(incoming: dict, blocked: dict) -> list[list[tuple[str, str]]]:
+    """Runs of accounts sharing one screen name that were never dealt in together.
+
+    A site that issues a new account id per session turns one regular into
+    dozens of accounts under the same name -- 36 of them for one player in the
+    database this was written against. Asked pairwise that is 630 identical
+    questions about one human; asked as a cluster it is one.
+
+    Splitting is greedy and conservative: an account joins a run only if it
+    co-occurred with nothing already in it, so two people who really do share
+    a nickname stay in separate runs instead of being chained together by
+    transitivity.
+    """
+    from .db import SPURIOUS_OVERLAP
+
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for key, entry in incoming.items():
+        groups.setdefault(display_key(entry["name"]), []).append(key)
+
+    clusters: list[list[tuple[str, str]]] = []
+    for keys in groups.values():
+        if len(keys) < 2:
+            continue
+        # Busiest first, so a run forms around the account with the most hands.
+        remaining = sorted(keys, key=lambda k: -incoming[k]["hands"])
+        while remaining:
+            run = [remaining.pop(0)]
+            rest = []
+            for key in remaining:
+                if any(blocked.get(frozenset((key, member)), 0) > SPURIOUS_OVERLAP
+                       for member in run):
+                    rest.append(key)
+                else:
+                    run.append(key)
+            if len(run) > 1:
+                clusters.append(run)
+            remaining = rest
+    return clusters
 
 
 def _incoming_co_occurrence(hands) -> dict[frozenset, int]:
@@ -484,11 +512,52 @@ def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> 
         a, b = stored.get(a_key), stored.get(b_key)
         return bool(a and b and a["player_id"] == b["player_id"])
 
+    # 2a. One screen name, many account ids, never at a table together: a
+    # reconnect run. Applied without asking -- it is the same evidence the
+    # co-occurrence guard treats as decisive everywhere else, and asking the
+    # user 1,181 times whether "valmik" is "valmik" is not a question, it is
+    # a wall. `villain unlink` splits one back out if it was ever wrong.
+    reconnect_runs = _same_name_clusters(incoming, blocked)
+    for run in reconnect_runs:
+        sides = [{"name": incoming[k]["name"], "hands": incoming[k]["hands"],
+                  "site": k[0], "account": k[1],
+                  "where": "in the hands you are adding"} for k in run]
+        sides.sort(key=lambda side: -side["hands"])
+        busiest = sides[0]
+        total = sum(side["hands"] for side in sides)
+        questions.append(Question(
+            id="reconnects:" + "|".join(sorted(k[1] for k in run)),
+            kind="alias",
+            prompt=(f"{len(sides)} accounts are all called \u201c{busiest['name']}\u201d. "
+                    "Same person?"),
+            detail=(f"The site issued a new account id each time they joined. "
+                    f"None of the {len(sides)} was ever dealt into a hand with "
+                    f"another, which is what a reconnect looks like and what "
+                    f"two different people sharing a nickname would not look "
+                    f"like. Together they are {total} hands."),
+            default=True,
+            confidence=0.98,
+            left=busiest,
+            right=sides[1],
+            names=[busiest["name"]],
+            default_name=busiest["name"],
+            auto=True,
+            members=sides,
+        ))
+
+    # Fuzzy matches are asked between *runs*, not between raw accounts: with
+    # three accounts called Jack and two called Jack2 already clustered, the
+    # pairwise form asked the same question six times.
+    leader = {k: run[0] for run in reconnect_runs for k in run}
+
     seen_pairs: set[frozenset] = set()
     items = sorted(incoming.items())
     for i, (key, entry) in enumerate(items):
         # incoming vs incoming — never auto; two session seats may be two people
         for other_key, other in items[i + 1:]:
+            pair = frozenset((leader.get(key, key), leader.get(other_key, other_key)))
+            if pair in seen_pairs:
+                continue
             overlap = blocked.get(frozenset((key, other_key)), 0)
             if overlap > SPURIOUS_OVERLAP:
                 continue
@@ -497,13 +566,11 @@ def session_questions(store, hands, min_name_score: float = HIGH_NAME_SCORE) -> 
             score = name_similarity(entry["name"], other["name"])
             if score < min_name_score:
                 continue
-            # Same display name is consistent with a reconnect, but if both
-            # accounts are actively seen during the same time window it is
-            # more likely they are distinct humans who happened to pick the
-            # same nickname.
+            # Identical screen names are handled as one cluster above, not as
+            # C(n,2) separate yes/no questions about the same person.
             if display_key(entry["name"]) == display_key(other["name"]):
-                if _same_name_time_overlap_days(entry, other) >= MAX_SAME_NAME_OVERLAP_DAYS:
-                    continue
+                continue
+            seen_pairs.add(pair)
             add_alias_question(
                 f"alias:{key[1]}|{other_key[1]}", score,
                 {"name": entry["name"], "hands": entry["hands"], "site": key[0],

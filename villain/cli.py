@@ -106,18 +106,75 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_import(args) -> int:
+    from .identity import askable_questions, session_questions
+
     report = ImportReport()
+    batch: list = []
     with Store(args.db) as store:
         for path, hands in parse_paths(args.paths):
             report.files += 1
             if not args.quiet:
                 print(f"  {path.name}: {len(hands)} hands")
-            # Defer: rebuilding after each file re-reads every hand those
-            # players appear in, so a directory of N files cost N full passes.
-            store.add_hands(hands, report, defer_rebuild=True)
+            batch.extend(hands)
+        # Identity before storage, and over the whole batch rather than per
+        # file. A site that issues a fresh account id per session turns one
+        # regular into dozens of accounts; importing them as-is made 343
+        # players out of 175 real ones, and every one of those samples is
+        # split. Only the runs the tool is sure of are applied -- the same
+        # never-dealt-in-together evidence it treats as decisive elsewhere.
+        questions = session_questions(store, batch)
+        runs = [q for q in questions if q.auto and q.members]
+        if runs and not args.quiet:
+            accounts = sum(len(q.members) for q in runs)
+            print(f"  merging {accounts} accounts into {len(runs)} players "
+                  f"(same name, never dealt in together)")
+        # Defer: rebuilding after each file re-reads every hand those
+        # players appear in, so a directory of N files cost N full passes.
+        store.add_hands(batch, report, defer_rebuild=True)
+        merged = _apply_runs(store, runs)
+        report.merged_accounts = merged
+        left = askable_questions(questions)
+        if left and not args.quiet:
+            print(f"  {len(left)} pair(s) need you: villain link --suggest")
         if not args.quiet and report.hands_new:
             print("  building profiles...", flush=True)
         store.rebuild_pending()
+    if report.files == 0:
+        print("No file matched a known format.", file=sys.stderr)
+        return 1
+    print(report)
+    return 0
+
+
+def _apply_runs(store, runs) -> int:
+    """Fold each reconnect run onto its busiest account. Returns links made."""
+    merged = 0
+    for question in runs:
+        ids = []
+        for side in question.members:
+            row = store.conn.execute(
+                "SELECT player_id FROM aliases WHERE site = ? AND account = ?",
+                (side["site"], side["account"])).fetchone()
+            if row is not None:
+                ids.append(int(row["player_id"]))
+        keep, seen = None, set()
+        for pid in ids:
+            if pid in seen:
+                continue
+            seen.add(pid)
+            if keep is None:
+                keep = pid
+                continue
+            try:
+                store.link(keep, pid)
+                merged += 1
+            except ValueError:
+                pass                      # co-occurrence refused it; leave apart
+        if keep is not None:
+            store.conn.execute("UPDATE players SET display_name = ? WHERE id = ?",
+                               (question.default_name, keep))
+    store.conn.commit()
+    return merged
     if report.files == 0:
         print("No file matched a known format.", file=sys.stderr)
         return 1
