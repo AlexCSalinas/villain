@@ -51,7 +51,7 @@ regressions named for the modeling mistakes that produced them.
 villain ui                         # http://127.0.0.1:8766
 ```
 
-Standard library HTTP server, one self-contained module. Four tabs.
+Standard library HTTP server; the page lives on disk next to it. Four tabs.
 
 * **Database** — everyone you have recorded, ranked by skill, with the bb/100
   you can attack them for alongside. Drop any number of exports on it at once:
@@ -479,7 +479,7 @@ returning something authoritative-looking and wrong.
 | `cluster.py`, `reads.py` | models learned from your own database |
 | `db.py`, `identity.py` | persistence, aliases, merge safety |
 | `analyze.py`, `glossary.py`, `report.py` | the payload the CLI and UI both render |
-| `cli.py`, `web.py` | commands, local web UI |
+| `cli.py`, `webapp/` | commands, local web UI |
 
 ## Contributing
 

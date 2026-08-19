@@ -27,6 +27,13 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["villain*"]
 
+# The page, stylesheet and script live on disk under villain/webapp/assets/.
+# setuptools includes only .py unless these are listed; a wheel without them
+# serves `/` as a FileNotFoundError, which is how `villain ui` died after
+# `pip install` (non-editable) of the split package.
+[tool.setuptools.package-data]
+"villain.webapp" = ["assets/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

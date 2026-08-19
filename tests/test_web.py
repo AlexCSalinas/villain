@@ -643,3 +643,30 @@ def test_no_against_you_read_without_enough_shared_history():
     b.ratios[VS_HERO + "vpip"] = Ratio(hits=5, opps=20)
     b.ratios["vpip"] = Ratio(hits=5, opps=20)
     assert versus_read({"6max": b}) is None
+
+
+def test_the_page_is_files_on_disk_not_a_string():
+    """Putting the UI on disk only works if the files can actually be read."""
+    from villain.webapp.assets import page, static
+    assert b"<title>Villain</title>" in page()
+    css, kind = static("app.css")
+    assert kind.startswith("text/css") and b"{" in css
+    js, kind = static("app.js")
+    assert "javascript" in kind and b"function" in js
+    assert static("../assets.py") is None
+    assert static("nope.txt") is None
+
+
+def test_the_page_files_are_declared_as_package_data():
+    """setuptools ships only .py unless told. A wheel without these 500'd `/`.
+
+    `pip install -e .` hides the hole because it reads the source tree; a
+    real `pip install` of the wheel did not.
+    """
+    import tomllib
+    from pathlib import Path
+    cfg = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    data = cfg["tool"]["setuptools"]["package-data"]
+    listed = data.get("villain.webapp") or data.get("villain") or []
+    blob = " ".join(listed)
+    assert "assets" in blob, f"UI assets are not package data: {data!r}"

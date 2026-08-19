@@ -4,6 +4,8 @@ The markup, styles and script used to live in one 3,300-line string literal
 inside the server module, which meant no syntax highlighting, no linting, and a
 diff on a CSS tweak that read as a change to Python. They are plain files now,
 served from ``/static``; the server module is back to being about HTTP.
+Declared as package data in ``pyproject.toml`` so a wheel install still
+has them -- setuptools would otherwise ship only the ``.py``.
 """
 
 from __future__ import annotations

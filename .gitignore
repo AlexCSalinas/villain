@@ -3,6 +3,8 @@ __pycache__/
 *.egg-info/
 *.pyc
 .pytest_cache/
+build/
+dist/
 *.db
 .DS_Store
 # Belt and braces: credentials live in ~/.villain/env, never in the repo.
