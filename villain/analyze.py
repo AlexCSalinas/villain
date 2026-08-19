@@ -12,6 +12,7 @@ from .archetypes import ARCHETYPE_BY_NAME, match
 from .exploits import find_leaks, find_watchlist
 from .glossary import component_entry, component_help, component_reading, component_stats, versus_behavior
 from .playbook import combinations_for
+from .priors import REGIME_LABELS
 from .profile import Profile
 from .skill import WEAK_COMPONENT, rate, weaknesses
 from .stats import VS_HERO
@@ -108,6 +109,10 @@ def as_dict(profile: Profile) -> dict:
              "evidence_stat": VS_HERO + a.stat,
              "versus": round(a.versus, 4), "baseline": round(a.baseline, 4),
              "gap": round(a.gap, 4), "direction": a.direction,
+             # Which table size this holds at. A read can run one way heads-up
+             # and the other way six-handed, so an unlabeled pair of them reads
+             # as the tool contradicting itself.
+             "regime": a.regime, "regime_label": REGIME_LABELS.get(a.regime, a.regime),
              "sample": a.opps, "baseline_sample": a.baseline_opps,
              "confidence": round(a.confidence, 3)}
             for a in getattr(profile, "adjustments", [])

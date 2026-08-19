@@ -562,3 +562,35 @@ def test_auto_merges_do_not_swallow_the_questions_that_need_a_human(session, tmp
             apply_answers(SESSIONS[session], {human[0].id: {"same": False}})
             payload = session_payload(session, store)
         assert payload["answered"]
+
+
+def test_a_read_that_only_holds_at_one_table_size_survives(tmp_path):
+    """Translating every table size into the home one can cancel a real read.
+
+    One player folds to turn bets 31% of the time heads-up against the hero
+    and 54% against everybody else, while six-handed the same gap runs the
+    other way. Averaged they cancel and nothing is reported, which is how the
+    strongest against-you read in the database went missing.
+    """
+    from villain.dynamics import REGIME_MIN_OPPS, adjustments
+    from villain.stats import Ratio, StatBook, VS_HERO
+
+    def book(regime, vs_hits, vs_opps, other_hits, other_opps):
+        b = StatBook(player_id="1", name="x", regime=regime, hands=int(other_opps))
+        b.ratios["fold_vs_bet:turn"] = Ratio(hits=vs_hits + other_hits,
+                                             opps=vs_opps + other_opps)
+        b.ratios[VS_HERO + "fold_vs_bet:turn"] = Ratio(hits=vs_hits, opps=vs_opps)
+        return b
+
+    n = REGIME_MIN_OPPS * 3
+    by_regime = {
+        # Heads-up: folds to the hero far less than to anyone else.
+        "hu": book("hu", vs_hits=0.22 * n, vs_opps=n, other_hits=0.52 * n, other_opps=n),
+        # Six-handed: the opposite, and enough of it to cancel the average.
+        "6max": book("6max", vs_hits=0.56 * n, vs_opps=n, other_hits=0.46 * n, other_opps=n),
+    }
+    found = adjustments(by_regime)
+    regimes = {a.regime for a in found if a.stat == "fold_vs_bet:turn"}
+    assert "hu" in regimes, "the heads-up read must survive being averaged away"
+    hu = next(a for a in found if a.regime == "hu")
+    assert hu.gap < 0, "heads-up he folds less, not more"

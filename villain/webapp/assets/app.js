@@ -581,7 +581,8 @@ function profileCard(p, opts) {
       div.className = "leak";
       div.innerHTML = `
         <div class="leak-head">
-          <div class="headline"><b>${esc(a.behavior)}</b></div>
+          <div class="headline"><b>${esc(a.behavior)}</b>${
+            a.regime_label ? ` <span class="tag">${esc(a.regime_label)}</span>` : ""}</div>
           <div class="num small muted">${fmtPct(Math.min(a.confidence, 0.99))} sure</div>
         </div>
         <div class="small muted numbers"></div>`;
