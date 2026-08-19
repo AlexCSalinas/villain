@@ -6,6 +6,7 @@
     villain scout <file>             profile a file without storing it
     villain link --suggest           find accounts that may be one person
     villain unlink <id> <site> <acct> undo a merge for one alias
+    villain note <name> <text...>    attach a note to a player
     villain ui                       open the local web interface
     villain fit                      re-estimate priors from your own games
     villain rebuild                  recompute every profile from stored hands

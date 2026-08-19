@@ -29,7 +29,7 @@ python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
 
-pytest                             # 353 tests
+pytest                             # 369 tests
 ```
 
 That installs two commands, `villain` and `villain-ui`. A small anonymized
@@ -51,7 +51,7 @@ regressions named for the modeling mistakes that produced them.
 villain ui                         # http://127.0.0.1:8766
 ```
 
-Standard library HTTP server, one self-contained module. Four tabs.
+Standard library HTTP server. Four tabs.
 
 * **Database** — everyone you have recorded, ranked by skill, with the bb/100
   you can attack them for alongside. Drop any number of exports on it at once:
@@ -119,11 +119,18 @@ Every command takes `--db PATH`; the default is `~/.villain/villain.db`.
 | `villain players` | who is in the database (`--min-hands N`) |
 | `villain profile NAME` | the full read (`-v` for deviations and timing, `--json`, `--narrate`) |
 | `villain profile NAME --by-table` | split by table size instead of pooling (`--regime hu\|3max\|6max\|full`) |
+| `villain hero` | what only your own cards can grade (`--player` if auto-detection picks wrong) |
+| `villain table NAME...` | lineup briefing for who is sitting here |
 | `villain link --suggest` | find accounts that may be one person |
 | `villain link KEEP ABSORB` | merge player `ABSORB` into player `KEEP` |
+| `villain unlink ID SITE ACCOUNT` | split one alias back onto its own player |
 | `villain note NAME "tilts after a big pot"` | attach a note to a player |
 | `villain fit` | learn priors, clusters and hand strength from your own database (`--min-players N`, default 8) |
 | `villain rebuild` | recompute every profile from stored hands |
+| `villain validate` | score the classifier on hands it has not seen |
+| `villain backtest` | walk leaks forward: found early, checked late |
+| `villain export FILE` | write every hand to a portable archive |
+| `villain import-db FILE` | merge an archive from another machine |
 | `villain ui` | serve the web interface (`--port N`, default 8766; `--no-browser`) |
 
 **PokerNow** is currently the only supported format: open the game log and use
@@ -478,8 +485,12 @@ returning something authoritative-looking and wrong.
 | `evidence.py`, `replay.py` | the hands behind a number |
 | `cluster.py`, `reads.py` | models learned from your own database |
 | `db.py`, `identity.py` | persistence, aliases, merge safety |
+| `hero.py` | what only the exporting player's own cards can grade |
+| `sim.py`, `botplay.py`, `holdem.py` | practice against measured profiles |
+| `portable.py` | `villain export` / `import-db`: move a database, or merge two |
+| `table.py` | lineup briefing; refuses a table EV |
 | `analyze.py`, `glossary.py`, `report.py` | the payload the CLI and UI both render |
-| `cli.py`, `web.py` | commands, local web UI |
+| `cli.py`, `webapp/` | commands, local web UI |
 
 ## Contributing
 

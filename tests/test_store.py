@@ -208,3 +208,17 @@ def test_cli_rejects_unknown_files(tmp_path, capsys):
     junk = tmp_path / "notes.txt"
     junk.write_text("this is not a hand history")
     assert main(["--db", str(tmp_path / "v.db"), "import", str(junk)]) == 1
+
+
+def test_the_readme_names_every_command():
+    """A command the README does not mention is a command that does not exist."""
+    import inspect
+    import re
+    from pathlib import Path
+
+    import villain.cli as cli
+    commands = re.findall(r'add_parser\("([^"]+)"', inspect.getsource(cli.main))
+    assert commands, "parser construction moved; update this test"
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    missing = [name for name in commands if f"`villain {name}" not in readme]
+    assert not missing, f"README does not name {missing}"

@@ -14,15 +14,16 @@ cd villain
 
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e . pytest
+pip install -e ".[dev]"
 
 pytest                             # should be green before you start
+ruff check .                       # CI runs this too
 ```
 
 That installs the `villain` and `villain-ui` commands in editable mode, so your
-changes are picked up without reinstalling. CI runs the same suite on Python
-3.11, 3.12 and 3.13, so if it passes locally on one of those it will almost
-certainly pass on the rest.
+changes are picked up without reinstalling, plus pytest and ruff. CI runs the
+same suite on Python 3.11, 3.12 and 3.13, and ruff on 3.12, so if both pass
+locally on one of those they will almost certainly pass on the rest.
 
 ## The one rule
 
