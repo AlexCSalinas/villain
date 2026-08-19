@@ -310,7 +310,10 @@ def apply_answers(session: dict, answers: dict) -> None:
         if not answer.get("same"):
             continue
         keep_name = answer.get("name") or question.default_name
-        sides = [side for side in (question.left, question.right) if side.get("account")]
+        # A reconnect run covers every account under one name, not just two.
+        sides = [side for side in (question.members
+                                   or (question.left, question.right))
+                 if side.get("account")]
         if not sides:
             continue
         keys = [(side["site"], side["account"]) for side in sides]
@@ -394,21 +397,29 @@ def commit_session(store: Store, token: str, answers: dict) -> dict:
     for qid, question in questions.items():
         if question.kind != "alias" or not said_same(qid, question):
             continue
+        # A reconnect run is one decision covering every account under the
+        # name, so fold all of them in -- linking only left and right merged
+        # two of thirty-six and left the rest as separate players.
+        sides = question.members or [question.left, question.right]
         try:
-            keep = _player_id_of(store, question.left)
-            absorb = _player_id_of(store, question.right)
+            ids = [_player_id_of(store, side) for side in sides]
         except LookupError:
             continue
-        if keep is None or absorb is None or keep == absorb:
+        ids = [i for i in ids if i is not None]
+        if len(set(ids)) < 2:
             continue
-        try:
-            store.link(keep, absorb)
-            store.conn.execute("UPDATE players SET display_name = ? WHERE id = ?",
-                               (chosen_name(qid, question), keep))
-            store.conn.commit()
-            merged += 1
-        except ValueError as exc:
-            blocked.append(str(exc))
+        keep = ids[0]
+        for absorb in ids[1:]:
+            if absorb == keep:
+                continue
+            try:
+                store.link(keep, absorb)
+                merged += 1
+            except ValueError as exc:
+                blocked.append(str(exc))
+        store.conn.execute("UPDATE players SET display_name = ? WHERE id = ?",
+                           (chosen_name(qid, question), keep))
+        store.conn.commit()
 
     session["saved"] = True
     return {

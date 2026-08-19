@@ -158,11 +158,15 @@ class ImportReport:
     duplicates: int = 0
     unusable: int = 0            # stored, but no statistics could be extracted
     players_new: int = 0
+    #: Accounts folded into another player as reconnects of one person.
+    merged_accounts: int = 0
     players: dict[str, int] = field(default_factory=dict)   # display name -> hands added
 
     def __str__(self) -> str:
         text = (f"{self.hands_new} new hands from {self.files} file(s) "
                 f"({self.duplicates} already known), {self.players_new} new player(s)")
+        if self.merged_accounts:
+            text += f", {self.merged_accounts} account(s) merged as reconnects"
         if self.unusable:
             # An import that yields no statistics must not look like a success.
             text += (f"\n  {self.unusable} hand(s) could not be read and "

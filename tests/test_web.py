@@ -97,25 +97,22 @@ def test_similar_names_raise_an_alias_question(session, tmp_path):
 
 
 def test_same_name_overlapping_time_is_not_offered_as_one(session, tmp_path):
-    """Two accounts with the same display name but overlapping play windows
-    should not be offered as one person.
+    """Same name, same months, never at the same table: one person.
 
-    A reconnect can explain different account ids for the same human, but if
-    both ids are actively seen during the same time window it is riskier to
-    guess they are one person.
+    A site that hands out a fresh account id per session makes one regular
+    look like dozens of accounts, and their active windows all overlap by
+    construction -- they are the same person playing all season. Overlapping
+    windows are therefore not evidence of two humans; being dealt into a hand
+    together is, and that is tested separately below.
     """
     from villain.web import SESSIONS
 
-    # Work with a copy: we will tweak timestamps to create a long overlapping
-    # time window.
     hands = copy.deepcopy(SESSIONS[session]["hands"])
     target_name = "player1"
     a_account = next(
         s.player_id for h in hands for s in h.seats if s.name == target_name)
     alt_account = a_account + "-alt"
 
-    # Stretch the hands across many days so the overlap check (>= 7 days) is
-    # meaningful for this fixture.
     base_ms = 1_800_000_000_000
     for i, hand in enumerate(hands):
         hand.started_at = base_ms + i * 86_400_000  # +i days
@@ -129,13 +126,42 @@ def test_same_name_overlapping_time_is_not_offered_as_one(session, tmp_path):
     with Store(tmp_path / "v.db") as store:
         questions = session_questions(store, hands + twin)
 
-    alias = [q for q in questions if q.kind == "alias"]
-    pair = {a_account, alt_account}
-    offered = [
-        q for q in alias
-        if {q.left.get("account"), q.right.get("account")} == pair
-    ]
-    assert not offered, "overlapping same-name accounts should not be merged"
+    runs = [q for q in questions if q.id.startswith("reconnects:")]
+    covering = [q for q in runs
+                if {m["account"] for m in q.members} >= {a_account, alt_account}]
+    assert covering, "same-name accounts that never met should be one run"
+    assert covering[0].auto, "a reconnect run applies without asking"
+
+
+def test_one_run_replaces_a_question_per_pair(session, tmp_path):
+    """Six accounts under one name is one decision, not fifteen."""
+    from villain.web import SESSIONS
+
+    hands = copy.deepcopy(SESSIONS[session]["hands"])
+    target = "player1"
+    base = next(s.player_id for h in hands for s in h.seats if s.name == target)
+    batch = list(hands)
+    for n in range(5):
+        twin = copy.deepcopy(hands)
+        for hand in twin:
+            hand.hand_id = f"{hand.hand_id}-copy{n}"
+            for seat in hand.seats:
+                if seat.name == target:
+                    seat.player_id = f"{base}-alt{n}"
+        batch += twin
+
+    with Store(tmp_path / "v.db") as store:
+        questions = session_questions(store, batch)
+
+    runs = [q for q in questions if q.id.startswith("reconnects:")]
+    mine = [q for q in runs if any(m["account"] == base for m in q.members)]
+    assert len(mine) == 1
+    assert len(mine[0].members) == 6
+    # The pairwise form would have produced C(6,2) = 15 of these.
+    assert not [q for q in questions
+                if q.kind == "alias" and not q.id.startswith("reconnects:")
+                and {q.left.get("account"), q.right.get("account")}
+                <= {base} | {f"{base}-alt{n}" for n in range(5)}]
 
 
 def test_regular_opponents_are_never_offered_as_one(session, tmp_path):
